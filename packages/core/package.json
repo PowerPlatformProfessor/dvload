@@ -1,0 +1,21 @@
+{
+  "name": "@dvload/core",
+  "version": "0.1.0",
+  "description": "Mapping engine and Dataverse OData client. Used by both the Excel add-in and the CLI.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rimraf dist",
+    "test": "node --test --import tsx \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "@types/jszip": "^3.4.1",
+    "tsx": "^4.7.0"
+  }
+}

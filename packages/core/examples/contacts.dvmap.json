@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "name": "Daily contacts import",
+  "description": "Imports the cleaned 'tblContacts' table into Dataverse contacts. Upserts on emailaddress1.",
+  "environmentUrl": "https://contoso.crm.dynamics.com",
+  "targetEntitySet": "contacts",
+  "sourceTable": "tblContacts",
+  "conflictMode": "upsert",
+  "upsertKey": ["emailaddress1"],
+  "batchSize": 100,
+  "maxErrors": 0,
+  "logDir": "./logs",
+  "columns": [
+    {
+      "source": "Email",
+      "target": "emailaddress1",
+      "kind": "string",
+      "treatEmptyAsNull": true
+    },
+    {
+      "source": "First Name",
+      "target": "firstname",
+      "kind": "string",
+      "treatEmptyAsNull": true
+    },
+    {
+      "source": "Last Name",
+      "target": "lastname",
+      "kind": "string",
+      "treatEmptyAsNull": true
+    },
+    {
+      "source": "Birthday",
+      "target": "birthdate",
+      "kind": "dateonly",
+      "treatEmptyAsNull": true
+    },
+    {
+      "source": "Marketing Opt-In",
+      "target": "donotemail",
+      "kind": "boolean",
+      "notes": "Stored inverted on the Dataverse side; transform in Power Query before mapping.",
+      "treatEmptyAsNull": false
+    },
+    {
+      "source": "Account Name",
+      "target": "parentcustomerid_account",
+      "kind": "lookup",
+      "bindEntitySet": "accounts",
+      "lookupResolution": "alternateKey",
+      "keyAttribute": "name",
+      "treatEmptyAsNull": true,
+      "notes": "Requires an alternate key on accounts.name in Dataverse."
+    },
+    {
+      "source": "Preferred Contact Method",
+      "target": "preferredcontactmethodcode",
+      "kind": "choice",
+      "optionMap": {
+        "Any": 1,
+        "Email": 2,
+        "Phone": 3,
+        "Fax": 4,
+        "Mail": 5
+      },
+      "treatEmptyAsNull": true
+    }
+  ]
+}

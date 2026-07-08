@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "name": "Test contacts import",
+  "description": "Dummy mapping for smoke-testing request logging.",
+  "environmentUrl": "https://org1f722cc4.crm.dynamics.com",
+  "targetEntitySet": "contacts",
+  "sourceTable": "tblContacts",
+  "conflictMode": "insert",
+  "batchSize": 100,
+  "maxErrors": 0,
+  "logDir": "./logs",
+  "columns": [
+    {
+      "source": "First Name",
+      "target": "firstname",
+      "kind": "string",
+      "treatEmptyAsNull": true
+    },
+    {
+      "source": "Last Name",
+      "target": "lastname",
+      "kind": "string",
+      "treatEmptyAsNull": true
+    },
+    {
+      "source": "Email",
+      "target": "emailaddress1",
+      "kind": "string",
+      "treatEmptyAsNull": true
+    }
+  ]
+}

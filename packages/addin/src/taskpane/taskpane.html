@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>Dataverse Load</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+
+  <script type="text/javascript" src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+
+  <style>
+    :root { color-scheme: light dark; font-family: "Segoe UI", system-ui, sans-serif; }
+    body { margin: 0; padding: 12px; font-size: 13px; }
+    h1 { font-size: 16px; margin: 0 0 8px 0; }
+    label { display: block; font-weight: 600; margin-top: 10px; margin-bottom: 4px; }
+    select, input, button { font: inherit; padding: 4px 6px; box-sizing: border-box; width: 100%; }
+    button { background: #0078d4; color: white; border: 0; padding: 6px 10px; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    button.secondary { background: #f3f3f3; color: #111; border: 1px solid #ccc; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .mapping-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; padding: 2px 0; }
+    .mapping-row select, .mapping-row input { padding: 2px 4px; }
+    .status { margin-top: 10px; padding: 6px; border-radius: 4px; }
+    .status.info { background: #eef6ff; color: #003a75; }
+    .status.error { background: #fde7e9; color: #5c0011; }
+    .status.success { background: #e9f7ee; color: #0a3d1e; }
+    .progress { background: #eee; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 4px; }
+    .progress > div { background: #0078d4; height: 100%; width: 0%; transition: width 0.2s; }
+    hr { margin: 12px 0; border: 0; border-top: 1px solid #e5e5e5; }
+  </style>
+</head>
+<body>
+  <h1>Load to Dataverse</h1>
+
+  <label for="env">Environment URL</label>
+  <input id="env" placeholder="https://contoso.crm.dynamics.com" />
+
+  <div class="row" style="margin-top: 6px;">
+    <button id="signin" class="secondary" type="button">Sign in</button>
+    <span id="who" style="font-size: 12px; color: #555;"></span>
+  </div>
+
+  <hr />
+
+  <label for="table">Source table</label>
+  <select id="table"><option value="">Loading…</option></select>
+
+  <label for="entity">Target Dataverse entity</label>
+  <select id="entity" disabled><option value="">Sign in to load entities</option></select>
+
+  <label>Column mapping</label>
+  <div id="mappings"></div>
+  <div class="row" style="margin-top: 6px;">
+    <button id="addMap" class="secondary" type="button">Add column</button>
+    <button id="suggest" class="secondary" type="button" title="Suggest mappings by header name similarity">
+      Suggest from names
+    </button>
+  </div>
+
+  <hr />
+
+  <div class="row">
+    <button id="save" class="secondary" type="button">Save mapping…</button>
+    <button id="load" class="secondary" type="button">Load mapping…</button>
+    <button id="run" type="button" style="margin-left: auto;">Run import</button>
+  </div>
+
+  <div id="status" class="status info" style="display:none"></div>
+  <div id="progressWrap" style="display:none">
+    <div class="progress"><div id="progressBar"></div></div>
+    <div id="progressText" style="font-size:12px; color:#555; margin-top:4px;"></div>
+  </div>
+</body>
+</html>

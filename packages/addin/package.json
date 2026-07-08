@@ -1,0 +1,32 @@
+{
+  "name": "@dvload/addin",
+  "version": "0.1.0",
+  "description": "Excel task pane add-in. Picks an Excel table, builds a Dataverse mapping, runs an import.",
+  "private": true,
+  "scripts": {
+    "build": "webpack --mode production",
+    "clean": "rimraf dist",
+    "dev": "webpack serve --mode development",
+    "start": "office-addin-debugging start manifest.xml",
+    "stop": "office-addin-debugging stop manifest.xml",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "test": "node --test --import tsx \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@azure/msal-browser": "^3.7.0",
+    "@dvload/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/office-js": "^1.0.391",
+    "copy-webpack-plugin": "^12.0.2",
+    "html-webpack-plugin": "^5.6.0",
+    "office-addin-debugging": "^5.0.0",
+    "office-addin-dev-certs": "^1.0.0",
+    "office-addin-manifest": "^1.0.0",
+    "ts-loader": "^9.5.1",
+    "tsx": "^4.7.0",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.0.2"
+  }
+}
