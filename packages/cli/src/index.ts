@@ -13,6 +13,7 @@ import {
 import { validateCommand } from "./commands/validate.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { extractPqtCommand, importPqtCommand } from "./commands/pqt.js";
+import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
 
 const program = new Command();
 
@@ -41,11 +42,11 @@ program
   .option("--user", "Use delegated auth for the metadata probe.")
   .action(validateCommand);
 
-// Delegated (user) auth -----------------------------------------------------
 program
   .command("login")
   .description("Sign in interactively (delegated flow). Caches a refresh token.")
-  .requiredOption("--env <url>", "Dataverse environment URL")
+  .option("--env <url>", "Dataverse environment URL")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .option("--tenant <id>", "Azure AD tenant id (default: 'organizations')")
   .option("--client-id <id>", "Override the public-client app id")
   .action(loginCommand);
@@ -54,13 +55,15 @@ program
   .command("logout")
   .description("Clear cached delegated tokens.")
   .option("--env <url>", "Only clear this environment (default: clear all).")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .action(logoutCommand);
 
 // App-only (client credentials) auth ----------------------------------------
 program
   .command("app-login")
   .description("Configure app-only (client credentials) auth for unattended runs.")
-  .requiredOption("--env <url>", "Dataverse environment URL")
+  .option("--env <url>", "Dataverse environment URL")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .requiredOption("--client-id <id>", "Azure AD app (confidential client) id")
   .requiredOption("--tenant-id <id>", "Azure AD tenant id (the Dataverse tenant)")
   .option("--secret-env <name>", "Read the secret from this env var instead of prompting")
@@ -69,14 +72,36 @@ program
 program
   .command("app-logout")
   .description("Clear stored app-only credentials.")
-  .requiredOption("--env <url>", "Dataverse environment URL")
+  .option("--env <url>", "Dataverse environment URL")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .action(appLogoutCommand);
 
 program
   .command("whoami")
   .description("Show which auth mode is configured for an environment and probe a token.")
-  .requiredOption("--env <url>", "Dataverse environment URL")
+  .option("--env <url>", "Dataverse environment URL")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .action(whoamiCommand);
+
+// Environment profiles -------------------------------------------------------
+const profile = program
+  .command("profile")
+  .description("Manage named environment profiles (~/.dvload/profiles.json).");
+
+profile
+  .command("add <name> <url>")
+  .description("Save an environment URL under a short name.")
+  .action(profileAddCommand);
+
+profile
+  .command("remove <name>")
+  .description("Delete a saved profile.")
+  .action(profileRemoveCommand);
+
+profile
+  .command("list")
+  .description("List all saved profiles.")
+  .action(profileListCommand);
 
 // Power Query Template (.pqt) ----------------------------------------------
 program
@@ -95,7 +120,8 @@ program
   .command("import-pqt")
   .description("Synthesize a .dvmap.json from a .pqt's FieldsMetadata. Migration path from Dataverse Dataflows.")
   .argument("<pqt>", "Path to a .pqt file")
-  .requiredOption("--env <url>", "Dataverse environment URL to write into the mapping")
+  .option("--env <url>", "Dataverse environment URL to write into the mapping")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .option("--query <name>", "Which query in the .pqt to read (defaults to the LoadEnabled one)")
   .option("--entity <set>", "Override the target entity set name")
   .option("-o, --out <path>", "Output .dvmap.json path (default: <query>.dvmap.json next to the .pqt)")

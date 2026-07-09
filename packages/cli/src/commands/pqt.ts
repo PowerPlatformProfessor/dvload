@@ -8,6 +8,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import kleur from "kleur";
+import { resolveEnv } from "../profiles.js";
 import {
   extractPqtFromXlsx,
   injectMappingIntoPqt,
@@ -70,7 +71,8 @@ export async function extractPqtCommand(
 
 interface ImportPqtOpts {
   query?: string;
-  env: string;
+  env?: string;
+  profile?: string;
   entity?: string;
   out?: string;
   /** Also extract MashupDocument.pq next to the mapping. */
@@ -78,6 +80,7 @@ interface ImportPqtOpts {
 }
 
 export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promise<void> {
+  const envUrl = await resolveEnv(opts);
   const pqtPath = path.resolve(pqt);
   const archive = await readPqt(await readFile(pqtPath));
 
@@ -89,7 +92,7 @@ export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promis
 
   const queryName = opts.query ?? pickPrimaryQuery(archive, queries);
   const mapping = mappingFromPqt(archive, queryName, {
-    environmentUrl: opts.env,
+    environmentUrl: envUrl,
     targetEntitySet: opts.entity,
   });
 

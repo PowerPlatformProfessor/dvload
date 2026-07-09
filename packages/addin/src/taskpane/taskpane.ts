@@ -18,6 +18,43 @@ import { listTables, readTable, type TableInfo } from "../excel.js";
 import { suggestMappings, suggestionsToMappings } from "../suggest.js";
 
 const SETTINGS_KEY = "dvload:lastMapping";
+const PROFILES_KEY = "dvload:profiles";
+
+interface Profile {
+  name: string;
+  url: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Profile storage (localStorage)                                              */
+/* -------------------------------------------------------------------------- */
+
+function loadProfiles(): Profile[] {
+  try {
+    return JSON.parse(localStorage.getItem(PROFILES_KEY) ?? "[]") as Profile[];
+  } catch {
+    return [];
+  }
+}
+
+function saveProfiles(profiles: Profile[]): void {
+  localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+}
+
+function renderProfilePicker(): void {
+  const sel = el<HTMLSelectElement>("profile");
+  const profiles = loadProfiles();
+  const current = sel.value; // preserve selection if re-rendering
+  sel.innerHTML = "";
+  sel.appendChild(new Option("Select a saved environment…", ""));
+  for (const p of profiles) {
+    sel.appendChild(new Option(`${p.name}  —  ${p.url}`, p.url));
+  }
+  if (current && [...sel.options].some((o) => o.value === current)) {
+    sel.value = current;
+  }
+  el<HTMLButtonElement>("profileDelete").disabled = !sel.value;
+}
 
 interface AppState {
   account: { username: string } | null;
@@ -47,6 +84,45 @@ Office.onReady(async () => {
   state.tables = await listTables();
   populateTablePicker();
   restoreMapping();
+
+  // Profiles
+  renderProfilePicker();
+  el<HTMLSelectElement>("profile").addEventListener("change", (e) => {
+    const url = (e.target as HTMLSelectElement).value;
+    if (!url) return;
+    state.environmentUrl = url;
+    el<HTMLInputElement>("env").value = url;
+    el<HTMLButtonElement>("profileDelete").disabled = false;
+  });
+  el<HTMLButtonElement>("profileDelete").addEventListener("click", () => {
+    const url = el<HTMLSelectElement>("profile").value;
+    if (!url) return;
+    const profiles = loadProfiles().filter((p) => p.url !== url);
+    saveProfiles(profiles);
+    renderProfilePicker();
+  });
+  el<HTMLButtonElement>("profileSaveBtn").addEventListener("click", () => {
+    el<HTMLDivElement>("profileSaveRow").style.display = "";
+    el<HTMLInputElement>("profileName").focus();
+  });
+  el<HTMLButtonElement>("profileSaveCancel").addEventListener("click", () => {
+    el<HTMLDivElement>("profileSaveRow").style.display = "none";
+    el<HTMLInputElement>("profileName").value = "";
+  });
+  el<HTMLButtonElement>("profileSaveConfirm").addEventListener("click", () => {
+    const name = el<HTMLInputElement>("profileName").value.trim();
+    const url = el<HTMLInputElement>("env").value.trim();
+    if (!name || !url) { setStatus("error", "Enter both a name and an environment URL."); return; }
+    const profiles = loadProfiles().filter((p) => p.name !== name);
+    profiles.push({ name, url });
+    saveProfiles(profiles);
+    el<HTMLDivElement>("profileSaveRow").style.display = "none";
+    el<HTMLInputElement>("profileName").value = "";
+    renderProfilePicker();
+    el<HTMLSelectElement>("profile").value = url;
+    el<HTMLButtonElement>("profileDelete").disabled = false;
+    setStatus("success", `Profile "${name}" saved.`);
+  });
 
   el<HTMLInputElement>("env").addEventListener("change", (e) => {
     state.environmentUrl = (e.target as HTMLInputElement).value.trim();

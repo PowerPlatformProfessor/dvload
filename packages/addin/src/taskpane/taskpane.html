@@ -17,6 +17,7 @@
     button { background: #0078d4; color: white; border: 0; padding: 6px 10px; cursor: pointer; }
     button:disabled { opacity: 0.6; cursor: default; }
     button.secondary { background: #f3f3f3; color: #111; border: 1px solid #ccc; }
+    button.icon { width: auto; padding: 4px 8px; }
     .row { display: flex; gap: 6px; align-items: center; }
     .mapping-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; padding: 2px 0; }
     .mapping-row select, .mapping-row input { padding: 2px 4px; }
@@ -32,8 +33,22 @@
 <body>
   <h1>Load to Dataverse</h1>
 
+  <label>Saved environments</label>
+  <div class="row">
+    <select id="profile" style="flex:1"></select>
+    <button id="profileDelete" class="secondary icon" type="button" title="Remove selected profile">✕</button>
+  </div>
+
   <label for="env">Environment URL</label>
   <input id="env" placeholder="https://contoso.crm.dynamics.com" />
+  <div id="profileSaveRow" class="row" style="margin-top:4px; display:none;">
+    <input id="profileName" placeholder="Name this environment…" style="flex:1" />
+    <button id="profileSaveConfirm" type="button" style="width:auto;">Save</button>
+    <button id="profileSaveCancel" class="secondary icon" type="button">Cancel</button>
+  </div>
+  <div style="margin-top:4px;">
+    <button id="profileSaveBtn" class="secondary" type="button" style="font-size:11px;">Save as profile…</button>
+  </div>
 
   <div class="row" style="margin-top: 6px;">
     <button id="signin" class="secondary" type="button">Sign in</button>
