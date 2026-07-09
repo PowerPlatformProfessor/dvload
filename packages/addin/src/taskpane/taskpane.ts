@@ -100,6 +100,12 @@ Office.onReady(async () => {
   populateTablePicker();
   restoreMapping();
 
+  // If there is a cached MSAL account and a saved environment URL, auto-load
+  // entities and restore the entity selection without requiring a Sign-in click.
+  if (state.account && state.environmentUrl) {
+    triggerLoadEntities();
+  }
+
   // Profiles
   renderProfilePicker();
   el<HTMLSelectElement>("profile").addEventListener("change", (e) => {
@@ -108,6 +114,7 @@ Office.onReady(async () => {
     state.environmentUrl = url;
     el<HTMLInputElement>("env").value = url;
     el<HTMLButtonElement>("profileDelete").disabled = false;
+    if (state.account) triggerLoadEntities();
   });
   el<HTMLButtonElement>("profileDelete").addEventListener("click", () => {
     const url = el<HTMLSelectElement>("profile").value;
@@ -204,7 +211,12 @@ async function refreshAccountUI(): Promise<void> {
   state.account = acc ? { username: acc.username } : null;
   el<HTMLSpanElement>("authDot").style.color = acc ? "#107c10" : "#d13438";
   el<HTMLSpanElement>("who").textContent = acc ? acc.username : "Not signed in";
-  el<HTMLSelectElement>("entity").disabled = !acc;
+  const entSel = el<HTMLSelectElement>("entity");
+  entSel.disabled = !acc;
+  // Clear the "Sign in to load entities" placeholder once signed in
+  if (acc && entSel.options.length === 1 && !entSel.options[0].value) {
+    entSel.options[0].text = "Select an entity…";
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -255,6 +267,10 @@ async function onPickEntity(e: Event): Promise<void> {
   state.entitySet = sel.value;
   if (!state.entitySet) return;
   const logical = sel.selectedOptions[0]?.dataset.logical ?? state.entitySet.replace(/s$/, "");
+  await loadEntityAttributes(logical);
+}
+
+async function loadEntityAttributes(logical: string): Promise<void> {
   state.entityLogicalName = logical;
   lookupTargetsCache.clear();
   const client = new DataverseClient({
@@ -597,6 +613,26 @@ async function onRun(): Promise<void> {
 function persistMapping(m: Mapping): void {
   Office.context.document.settings.set(SETTINGS_KEY, JSON.stringify(m));
   Office.context.document.settings.saveAsync();
+}
+
+/** Start loading entities into the entity select, then restore any saved entity selection. */
+function triggerLoadEntities(): void {
+  const entSel = el<HTMLSelectElement>("entity");
+  entSel.innerHTML = `<option value="">Loading entities…</option>`;
+  entSel.disabled = false;
+  loadEntities()
+    .then(async () => {
+      const saved = state.entitySet;
+      if (saved && [...entSel.options].some(o => o.value === saved)) {
+        entSel.value = saved;
+        const logical = entSel.selectedOptions[0]?.dataset.logical;
+        if (logical) await loadEntityAttributes(logical);
+      }
+    })
+    .catch(() => {
+      entSel.innerHTML = `<option value="">Could not load — click Sign in to retry</option>`;
+      entSel.disabled = true;
+    });
 }
 
 function showRunLog(

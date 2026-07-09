@@ -320,8 +320,6 @@ fields:
 - **Windows-only** for scheduled runs (Excel COM dependency).
 - **Power Query refresh** requires Excel to be installed on the machine
   running the schedule. Headless / server scenarios aren't supported.
-- **Polymorphic lookups** (e.g. `regardingobjectid`) need extra plumbing —
-  the `bindEntitySet` field handles single-entity lookups only.
 - **Client secrets** are stored in Windows Credential Manager. For
   long-lived deployments, swap to certificate auth (Azure AD supports it;
   ConfidentialClientApplication accepts a `clientCertificate` instead of

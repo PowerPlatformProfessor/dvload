@@ -68,3 +68,11 @@ dvload whoami --env <url>                                   # check what's confi
 ```
 
 Credentials stored in Windows Credential Manager.
+
+## Documentation sync
+
+`README.md`, `FEATURES.md`, and `PRE-RELEASE-CHECKLIST.md` are the canonical docs for this repo.
+When a feature is added, changed, or a known limit is resolved, update all affected docs in the same edit.
+- `README.md` — user-facing reference (Known limits section, feature descriptions)
+- `FEATURES.md` — full feature inventory and planned work
+- `PRE-RELEASE-CHECKLIST.md` — items that must be done before shipping
