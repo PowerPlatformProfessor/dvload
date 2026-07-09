@@ -11,6 +11,9 @@ import {
   type Mapping,
   type ColumnMapping,
   type DataverseFieldKind,
+  type RequestLogEntry,
+  type RowSuccess,
+  type LoadResult,
   SCHEMA_VERSION,
 } from "@dvload/core";
 import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "../auth.js";
@@ -19,6 +22,12 @@ import { suggestMappings, suggestionsToMappings } from "../suggest.js";
 
 const SETTINGS_KEY = "dvload:lastMapping";
 const PROFILES_KEY = "dvload:profiles";
+
+interface EntityAttribute {
+  logicalName: string;
+  attributeType: string;
+  format?: string;
+}
 
 interface Profile {
   name: string;
@@ -62,7 +71,9 @@ interface AppState {
   tables: TableInfo[];
   selectedTable: TableInfo | null;
   entitySet: string;
-  entityAttributes: string[];
+  entityLogicalName: string;
+  entityAttributes: EntityAttribute[];
+  entities: Array<{ logicalName: string; entitySetName: string; displayName: string }>;
   mappings: ColumnMapping[];
 }
 
@@ -72,9 +83,13 @@ const state: AppState = {
   tables: [],
   selectedTable: null,
   entitySet: "",
+  entityLogicalName: "",
   entityAttributes: [],
+  entities: [],
   mappings: [],
 };
+
+const lookupTargetsCache = new Map<string, string[]>();
 
 Office.onReady(async () => {
   await initAuth();
@@ -187,6 +202,7 @@ function renderDevModeBanner(): void {
 async function refreshAccountUI(): Promise<void> {
   const acc = await getAccount();
   state.account = acc ? { username: acc.username } : null;
+  el<HTMLSpanElement>("authDot").style.color = acc ? "#107c10" : "#d13438";
   el<HTMLSpanElement>("who").textContent = acc ? acc.username : "Not signed in";
   el<HTMLSelectElement>("entity").disabled = !acc;
 }
@@ -216,9 +232,15 @@ async function loadEntities(): Promise<void> {
     getToken: makeTokenProvider(state.environmentUrl),
   });
   const entities = await client.listEntities();
+  const sorted = entities.sort((a, b) => a.LogicalName.localeCompare(b.LogicalName));
+  state.entities = sorted.map(e => ({
+    logicalName: e.LogicalName,
+    entitySetName: e.EntitySetName,
+    displayName: e.DisplayName,
+  }));
   const sel = el<HTMLSelectElement>("entity");
   sel.innerHTML = `<option value="">Select an entity…</option>`;
-  for (const e of entities.sort((a, b) => a.LogicalName.localeCompare(b.LogicalName))) {
+  for (const e of sorted) {
     const opt = document.createElement("option");
     opt.value = e.EntitySetName;
     opt.textContent = `${e.DisplayName || e.LogicalName} (${e.EntitySetName})`;
@@ -233,19 +255,29 @@ async function onPickEntity(e: Event): Promise<void> {
   state.entitySet = sel.value;
   if (!state.entitySet) return;
   const logical = sel.selectedOptions[0]?.dataset.logical ?? state.entitySet.replace(/s$/, "");
+  state.entityLogicalName = logical;
+  lookupTargetsCache.clear();
   const client = new DataverseClient({
     environmentUrl: state.environmentUrl,
     getToken: makeTokenProvider(state.environmentUrl),
   });
-  const def = (await client.getEntityDefinition(logical)) as {
-    Attributes?: { value?: Array<{ LogicalName: string }> };
-  };
-  state.entityAttributes = (def.Attributes?.value ?? []).map((a) => a.LogicalName);
+  const def = await client.getEntityDefinition(logical);
+  // Dataverse may return Attributes as an inline array (OData v4) or wrapped in { value: [] }
+  const rawAttrs: Array<Record<string, unknown>> = Array.isArray(def.Attributes)
+    ? (def.Attributes as Array<Record<string, unknown>>)
+    : ((def.Attributes as { value?: Array<Record<string, unknown>> })?.value ?? []);
+  state.entityAttributes = rawAttrs
+    .map((a) => ({
+      logicalName: String(a["LogicalName"] ?? ""),
+      attributeType: String(a["AttributeType"] ?? "").toLowerCase(),
+      format: a["Format"] != null ? String(a["Format"]) : undefined,
+    }))
+    .filter(a => a.logicalName);
 
   // If the user hasn't started mapping yet, auto-suggest. Otherwise leave
   // existing mappings alone — they can click "Suggest" to fill in the rest.
   if (state.mappings.length === 0 && state.selectedTable) {
-    const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes);
+    const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes.map(a => a.logicalName));
     if (suggestions.length > 0) {
       state.mappings = suggestionsToMappings(suggestions);
       setStatus(
@@ -268,7 +300,7 @@ function onSuggest(): void {
     setStatus("error", "Pick a target entity first.");
     return;
   }
-  const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes, {
+  const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes.map(a => a.logicalName), {
     excludeSources: state.mappings.map((m) => m.source).filter(Boolean),
     excludeTargets: state.mappings.map((m) => m.target).filter(Boolean),
   });
@@ -311,6 +343,79 @@ function addMapping(seed?: ColumnMapping): void {
   rerenderMappings();
 }
 
+function matchesKind(kind: DataverseFieldKind): (a: EntityAttribute) => boolean {
+  // attributeType is stored lowercase; Format comparison is also case-insensitive
+  switch (kind) {
+    case "string":           return a => a.attributeType === "string";
+    case "memo":             return a => a.attributeType === "memo";
+    case "integer":          return a => a.attributeType === "integer" || a.attributeType === "bigint";
+    case "decimal":          return a => a.attributeType === "decimal";
+    case "money":            return a => a.attributeType === "money";
+    case "double":           return a => a.attributeType === "double";
+    case "boolean":          return a => a.attributeType === "boolean";
+    case "datetime":         return a => a.attributeType === "datetime" && a.format?.toLowerCase() !== "dateonly";
+    case "dateonly":         return a => a.attributeType === "datetime" && a.format?.toLowerCase() === "dateonly";
+    case "uniqueidentifier": return a => a.attributeType === "uniqueidentifier";
+    case "lookup":           return a => ["lookup", "owner", "customer"].includes(a.attributeType);
+    case "choice":           return a => a.attributeType === "picklist";
+    case "multichoice":      return a => a.attributeType === "multiselectpicklist";
+    case "status":           return a => a.attributeType === "status";
+    case "state":            return a => a.attributeType === "state";
+    default:                 return () => true;
+  }
+}
+
+type EntityRecord = { logicalName: string; entitySetName: string; displayName: string };
+
+async function applyLookupTargets(
+  entitySetSel: HTMLSelectElement,
+  attrLogical: string,
+  i: number
+): Promise<void> {
+  if (!attrLogical || !state.entityLogicalName || !state.environmentUrl || state.entities.length === 0) return;
+  const cacheKey = `${state.entityLogicalName}/${attrLogical}`;
+  let targets = lookupTargetsCache.get(cacheKey);
+  if (!targets) {
+    const client = new DataverseClient({
+      environmentUrl: state.environmentUrl,
+      getToken: makeTokenProvider(state.environmentUrl),
+    });
+    targets = await client.getLookupTargets(state.entityLogicalName, attrLogical);
+    lookupTargetsCache.set(cacheKey, targets);
+  }
+  const validEntities = targets
+    .map(ln => state.entities.find(e => e.logicalName === ln))
+    .filter((e): e is EntityRecord => e != null);
+  const prev = state.mappings[i]?.bindEntitySet ?? entitySetSel.value;
+  const entitiesToShow = validEntities.length > 0 ? validEntities : state.entities;
+  entitySetSel.innerHTML = "";
+  if (validEntities.length !== 1) entitySetSel.appendChild(new Option("(entity set)…", ""));
+  for (const e of entitiesToShow) {
+    entitySetSel.appendChild(new Option(
+      `${e.displayName || e.logicalName} (${e.entitySetName})`,
+      e.entitySetName
+    ));
+  }
+  if (validEntities.length === 1) {
+    entitySetSel.value = validEntities[0].entitySetName;
+    if (state.mappings[i]) state.mappings[i].bindEntitySet = validEntities[0].entitySetName;
+  } else if (prev && [...entitySetSel.options].some(o => o.value === prev)) {
+    entitySetSel.value = prev;
+  }
+}
+
+function populateTargetSelect(sel: HTMLSelectElement, kind: DataverseFieldKind, currentValue: string): void {
+  sel.innerHTML = "";
+  sel.appendChild(new Option("(target)…", ""));
+  const filtered = state.entityAttributes
+    .filter(matchesKind(kind))
+    .sort((x, y) => x.logicalName.localeCompare(y.logicalName));
+  for (const a of filtered) sel.appendChild(new Option(a.logicalName, a.logicalName));
+  if (currentValue && [...sel.options].some(o => o.value === currentValue)) {
+    sel.value = currentValue;
+  }
+}
+
 function rerenderMappings(): void {
   const root = el<HTMLDivElement>("mappings");
   root.innerHTML = "";
@@ -328,14 +433,6 @@ function rerenderMappings(): void {
       state.mappings[i].source = src.value;
     });
 
-    const tgt = document.createElement("input");
-    tgt.placeholder = "logical name";
-    tgt.value = m.target;
-    tgt.setAttribute("list", "attrs");
-    tgt.addEventListener("change", () => {
-      state.mappings[i].target = tgt.value.trim();
-    });
-
     const kind = document.createElement("select");
     const kinds: DataverseFieldKind[] = [
       "string", "memo", "integer", "decimal", "money", "double",
@@ -343,8 +440,62 @@ function rerenderMappings(): void {
       "lookup", "choice", "multichoice", "status", "state",
     ];
     for (const k of kinds) kind.appendChild(new Option(k, k, m.kind === k, m.kind === k));
+
+    const tgt = document.createElement("select");
+    populateTargetSelect(tgt, m.kind, m.target);
+    tgt.addEventListener("change", () => {
+      state.mappings[i].target = tgt.value;
+      if (state.mappings[i].kind === "lookup" && tgt.value) {
+        applyLookupTargets(entitySetSel, tgt.value, i).catch(() => {});
+      }
+    });
+
+    // Lookup config sub-row
+    const lookupCfg = document.createElement("div");
+    lookupCfg.className = "lookup-cfg";
+    lookupCfg.style.display = m.kind === "lookup" ? "" : "none";
+
+    const entitySetSel = document.createElement("select");
+    entitySetSel.appendChild(new Option("(entity set)…", ""));
+    for (const e of state.entities) {
+      entitySetSel.appendChild(new Option(
+        `${e.displayName || e.logicalName} (${e.entitySetName})`,
+        e.entitySetName
+      ));
+    }
+    if (m.bindEntitySet) entitySetSel.value = m.bindEntitySet;
+    entitySetSel.addEventListener("change", () => {
+      state.mappings[i].bindEntitySet = entitySetSel.value || undefined;
+    });
+
+    const resSel = document.createElement("select");
+    resSel.appendChild(new Option("by GUID", "guid"));
+    resSel.appendChild(new Option("by alt. key", "alternateKey"));
+    resSel.value = m.lookupResolution ?? "guid";
+
+    const keyAttrInput = document.createElement("input");
+    keyAttrInput.placeholder = "key attribute";
+    keyAttrInput.value = m.keyAttribute ?? "";
+    keyAttrInput.style.display = m.lookupResolution === "alternateKey" ? "" : "none";
+    keyAttrInput.addEventListener("change", () => {
+      state.mappings[i].keyAttribute = keyAttrInput.value.trim() || undefined;
+    });
+
+    resSel.addEventListener("change", () => {
+      state.mappings[i].lookupResolution = resSel.value as "guid" | "alternateKey";
+      keyAttrInput.style.display = resSel.value === "alternateKey" ? "" : "none";
+    });
+
+    lookupCfg.append(entitySetSel, resSel, keyAttrInput);
+
     kind.addEventListener("change", () => {
       state.mappings[i].kind = kind.value as DataverseFieldKind;
+      populateTargetSelect(tgt, kind.value as DataverseFieldKind, state.mappings[i].target);
+      state.mappings[i].target = tgt.value;
+      lookupCfg.style.display = kind.value === "lookup" ? "" : "none";
+      if (kind.value === "lookup" && tgt.value) {
+        applyLookupTargets(entitySetSel, tgt.value, i).catch(() => {});
+      }
     });
 
     const remove = document.createElement("button");
@@ -356,19 +507,15 @@ function rerenderMappings(): void {
       rerenderMappings();
     });
 
-    row.append(src, tgt, kind, remove);
+    row.append(src, kind, tgt, remove);
     root.appendChild(row);
-  });
+    root.appendChild(lookupCfg);
 
-  // datalist of known target attributes
-  let dl = document.getElementById("attrs") as HTMLDataListElement | null;
-  if (!dl) {
-    dl = document.createElement("datalist");
-    dl.id = "attrs";
-    document.body.appendChild(dl);
-  }
-  dl.innerHTML = "";
-  for (const a of state.entityAttributes) dl.appendChild(new Option(a));
+    // Pre-resolve targets for already-configured lookup rows
+    if (m.kind === "lookup" && m.target) {
+      applyLookupTargets(entitySetSel, m.target, i).catch(() => {});
+    }
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -404,15 +551,19 @@ async function onRun(): Promise<void> {
     const { rows } = await readTable(mapping.sourceTable);
 
     setStatus("info", `Loading ${rows.length} rows…`);
+    const requestLog: RequestLogEntry[] = [];
+    const successLog: RowSuccess[] = [];
     const client = new DataverseClient({
       environmentUrl: mapping.environmentUrl,
       getToken: makeTokenProvider(mapping.environmentUrl),
+      onRequest: (entry) => requestLog.push(entry),
     });
     const result = await loadRows({
       mapping,
       rows,
       client,
       onProgress: (e) => {
+        if (e.type === "row-success") successLog.push(e.success);
         if (e.type === "batch") {
           setProgress(e.processed, e.total, {
             created: e.created,
@@ -437,6 +588,7 @@ async function onRun(): Promise<void> {
     }
 
     persistMapping(mapping);
+    showRunLog(requestLog, successLog, result, mapping);
   } catch (e) {
     setStatus("error", (e as Error).message);
   }
@@ -445,6 +597,51 @@ async function onRun(): Promise<void> {
 function persistMapping(m: Mapping): void {
   Office.context.document.settings.set(SETTINGS_KEY, JSON.stringify(m));
   Office.context.document.settings.saveAsync();
+}
+
+function showRunLog(
+  requestLog: RequestLogEntry[],
+  successLog: RowSuccess[],
+  result: LoadResult,
+  mapping: Mapping
+): void {
+  el<HTMLDivElement>("logWrap").style.display = "";
+  const errorDiv = el<HTMLDivElement>("errorDetails");
+  if (result.errors.length > 0) {
+    errorDiv.style.display = "";
+    errorDiv.textContent = result.errors
+      .map(e => `row ${e.rowIndex}: [${e.code ?? e.httpStatus ?? ""}] ${e.message}`)
+      .join("\n");
+  } else {
+    errorDiv.style.display = "none";
+  }
+  el<HTMLButtonElement>("downloadLog").onclick = () =>
+    downloadRunLog(requestLog, successLog, result, mapping);
+}
+
+function downloadRunLog(
+  requestLog: RequestLogEntry[],
+  successLog: RowSuccess[],
+  result: LoadResult,
+  mapping: Mapping
+): void {
+  const { errors, ...summary } = result;
+  const lines: string[] = [];
+  lines.push(JSON.stringify({ event: "summary", ...summary }));
+  for (const r of requestLog) lines.push(JSON.stringify(r));
+  for (const s of successLog) lines.push(JSON.stringify({ event: "success", ...s }));
+  for (const e of errors) lines.push(JSON.stringify({ event: "error", ...e }));
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const startedAt = new Date(result.startedAt);
+  const datePart = startedAt.toISOString().slice(0, 10);
+  const timePart = startedAt.toISOString().slice(11, 19).replace(/:/g, "-");
+  const stem = (mapping.name || mapping.sourceTable).replace(/[^\w.-]/g, "_");
+  a.download = `${stem}_${datePart}_${timePart}.jsonl`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function restoreMapping(): void {

@@ -205,6 +205,24 @@ export class DataverseClient {
     }));
   }
 
+  /**
+   * Return the logical names of entities a lookup attribute can target.
+   * Uses the LookupAttributeMetadata cast on the Attributes navigation property.
+   */
+  async getLookupTargets(entityLogicalName: string, attrLogicalName: string): Promise<string[]> {
+    const res = await this.fetchWithRetry(
+      this.url(
+        `EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes` +
+        `/Microsoft.Dynamics.CRM.LookupAttributeMetadata` +
+        `?$select=LogicalName,Targets&$filter=LogicalName eq '${attrLogicalName}'`
+      ),
+      { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+    );
+    if (!res.ok) await throwForResponse(res);
+    const json = (await res.json()) as { value?: Array<{ Targets?: string[] }> };
+    return json.value?.[0]?.Targets ?? [];
+  }
+
   /** Create a single record. Slow for many rows — prefer batch(). */
   async create(entitySet: string, body: Record<string, unknown>): Promise<CreateResult> {
     const res = await this.fetchWithRetry(this.url(entitySet), {

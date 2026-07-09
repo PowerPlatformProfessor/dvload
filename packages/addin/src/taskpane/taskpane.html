@@ -21,6 +21,8 @@
     .row { display: flex; gap: 6px; align-items: center; }
     .mapping-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; padding: 2px 0; }
     .mapping-row select, .mapping-row input { padding: 2px 4px; }
+    .lookup-cfg { display: flex; gap: 4px; padding: 0 0 4px 12px; }
+    .lookup-cfg > * { flex: 1; min-width: 0; }
     .status { margin-top: 10px; padding: 6px; border-radius: 4px; }
     .status.info { background: #eef6ff; color: #003a75; }
     .status.error { background: #fde7e9; color: #5c0011; }
@@ -52,6 +54,7 @@
 
   <div class="row" style="margin-top: 6px;">
     <button id="signin" class="secondary" type="button">Sign in</button>
+    <span id="authDot" style="font-size:16px; line-height:1;">&#9679;</span>
     <span id="who" style="font-size: 12px; color: #555;"></span>
   </div>
 
@@ -84,6 +87,12 @@
   <div id="progressWrap" style="display:none">
     <div class="progress"><div id="progressBar"></div></div>
     <div id="progressText" style="font-size:12px; color:#555; margin-top:4px;"></div>
+  </div>
+  <div id="logWrap" style="display:none; margin-top:6px;">
+    <button id="downloadLog" class="secondary" type="button">Download log…</button>
+    <div id="errorDetails" style="display:none; margin-top:4px; max-height:140px; overflow-y:auto;
+         font-size:11px; font-family:monospace; white-space:pre-wrap;
+         background:#fde7e9; color:#5c0011; padding:6px; border-radius:4px;"></div>
   </div>
 </body>
 </html>
