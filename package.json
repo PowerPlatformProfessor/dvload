@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build --workspace=@dvload/core && npm run build --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
     "dev:cli": "npm run dev --workspace=@dvload/cli",
     "dev:addin": "npm run dev --workspace=@dvload/addin",

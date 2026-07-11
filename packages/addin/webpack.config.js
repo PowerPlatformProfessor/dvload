@@ -41,8 +41,11 @@ module.exports = async (env, argv) => {
         chunks: ["commands"],
       }),
       new webpack.DefinePlugin({
+        // Fallback MUST be one of the WELL_KNOWN_DEV_CLIENT_IDS in src/auth.ts
+        // so the dev-mode banner fires. A private app id here would silently
+        // bypass the entire pre-release safety net.
         ADDIN_CLIENT_ID: JSON.stringify(
-          process.env.DATAVERSE_LOAD_CLIENT_ID || "e6828b0f-9fde-43f8-85d0-602660d498bb"
+          process.env.DATAVERSE_LOAD_CLIENT_ID || "2ad88395-b77d-4561-9441-d0e40824f9bc"
         ),
       }),
       new CopyWebpackPlugin({

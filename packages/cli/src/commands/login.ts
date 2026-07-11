@@ -1,4 +1,5 @@
 import kleur from "kleur";
+
 import {
   loginDelegated,
   logoutDelegated,
@@ -33,7 +34,11 @@ export async function loginCommand(opts: LoginOpts): Promise<void> {
     clientId: opts.clientId,
   });
   console.log(kleur.green(`Signed in as ${account.username} (${envUrl}).`));
-  console.log(kleur.gray("Refresh token cached in Windows Credential Manager."));
+  console.log(
+    kleur.gray(
+      "Account reference stored in the OS keychain; MSAL token cache written to ~/.dvload/."
+    )
+  );
 }
 
 export async function logoutCommand(opts: { env?: string; profile?: string }): Promise<void> {

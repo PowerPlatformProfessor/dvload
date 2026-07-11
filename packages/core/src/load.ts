@@ -1,11 +1,19 @@
-// Orchestration: take a parsed mapping + source rows + a Dataverse client,
+// Orchestration: take a parsed mapping, source rows, and a Dataverse client,
 // and load the data using batched OData. This is the function both the
 // add-in's "Run import" button and the CLI's `run` command call.
 
 import type { Mapping, ColumnMapping } from "./mapping.js";
 import type { SourceRow, LoadResult, RowError, RowSuccess, ProgressFn } from "./types.js";
 import { coerceRow, CoerceError } from "./coerce.js";
-import { DataverseClient, DataverseError, type BatchOperation } from "./dataverse.js";
+import {
+  DataverseClient,
+  DataverseError,
+  assertLogicalName,
+  formatKeyLiteral,
+  type BatchOperation,
+} from "./dataverse.js";
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface LoadOptions {
   mapping: Mapping;
@@ -79,7 +87,9 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
 
     try {
       const results = await client.batch(ops);
+      const seen = new Set<number>();
       for (const r of results) {
+        seen.add(r.contentId);
         const rowIndex = opIndex[r.contentId - 1];
         if (r.ok) {
           succeeded++;
@@ -107,6 +117,18 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
           });
           onProgress?.({ type: "row-error", error: errors[errors.length - 1] });
         }
+      }
+      // Any op the server returned no response for is unaccounted — surface
+      // it as an error rather than letting the totals silently not add up.
+      for (let i = 0; i < ops.length; i++) {
+        if (seen.has(ops[i].contentId)) continue;
+        const rowIndex = opIndex[i];
+        errors.push({
+          rowIndex,
+          sourceRow: rows[rowIndex],
+          message: "no response returned for this operation in the $batch reply",
+        });
+        onProgress?.({ type: "row-error", error: errors[errors.length - 1] });
       }
     } catch (e) {
       // Whole-batch failure (network, auth). Mark every op in this batch failed.
@@ -191,6 +213,7 @@ function buildOperation(
   _rowIndex: number,
   contentId: number
 ): BatchOperation | null {
+  assertLogicalName(mapping.targetEntitySet, "targetEntitySet");
   const { payload, lookups } = coerceRow(row, mapping.columns);
 
   // Bind lookups: foo@odata.bind = "/accounts(<guid>)"
@@ -207,6 +230,10 @@ function buildOperation(
     let guid: string | undefined;
     if (col.lookupResolution === "guid") {
       guid = String(value).trim().toLowerCase();
+      // Cell data goes straight into a URL — must be a real GUID, nothing else.
+      if (!GUID_RE.test(guid)) {
+        throw new CoerceError("not a valid GUID", col.target, value);
+      }
     } else {
       guid = lookupCache.get(col.target)?.get(String(value));
     }
@@ -218,6 +245,7 @@ function buildOperation(
         value
       );
     }
+    assertLogicalName(col.bindEntitySet!, "bindEntitySet");
     payload[`${col.target}@odata.bind`] = `/${col.bindEntitySet}(${guid})`;
   }
 
@@ -258,13 +286,16 @@ function buildKeyExpression(
   row: SourceRow
 ): string {
   const parts = upsertKey.map((attr) => {
+    assertLogicalName(attr, "upsertKey attribute");
     const col = columns.find((c) => c.target === attr);
     if (!col) throw new Error(`upsertKey attribute "${attr}" not present in mapping columns`);
     const v = row[col.source];
     if (v === null || v === undefined || v === "") {
       throw new Error(`upsertKey attribute "${attr}" is blank in source row`);
     }
-    return `${attr}=${typeof v === "number" ? v : `'${String(v).replace(/'/g, "''")}'`}`;
+    // formatKeyLiteral percent-encodes the value so spreadsheet data cannot
+    // inject CRLF/structure into the batch request line.
+    return `${attr}=${formatKeyLiteral(v)}`;
   });
   return parts.join(",");
 }

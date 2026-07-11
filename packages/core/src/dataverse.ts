@@ -1,4 +1,4 @@
-// Thin OData Web API client for Dataverse. Designed to work in both Node
+// Thin OData Web API client for Microsoft Dataverse. Designed to work in both Node
 // and the browser (Office.js add-in). Auth is delegated: callers provide a
 // `getToken()` thunk so this module doesn't pin a specific MSAL flow.
 
@@ -97,6 +97,64 @@ export class DataverseError extends Error {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Input validation                                                            */
+/*                                                                             */
+/* Attribute / entity names and key values flow in from mapping files and     */
+/* spreadsheet cells — untrusted input. Because $batch bodies are built by    */
+/* string concatenation (multipart/mixed with embedded request lines), any    */
+/* unvalidated value is a request-smuggling vector: a cell containing CRLF    */
+/* could inject headers or whole extra operations into the changeset.        */
+/* -------------------------------------------------------------------------- */
+
+const LOGICAL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Validate a Dataverse logical name (entity, entity set, or attribute). */
+export function assertLogicalName(name: string, what: string): string {
+  if (!LOGICAL_NAME_RE.test(name)) {
+    throw new Error(`${what} "${name}" is not a valid Dataverse logical name`);
+  }
+  return name;
+}
+
+/** Validate a GUID (as used in entity keys and @odata.bind paths). */
+export function assertGuid(value: string, what: string): string {
+  if (!GUID_RE.test(value)) {
+    throw new Error(`${what} "${value}" is not a valid GUID`);
+  }
+  return value;
+}
+
+/**
+ * Format a value as an OData key literal, safe for URL embedding: quotes are
+ * doubled per OData rules, then the value is percent-encoded so it cannot
+ * carry CRLF, parens, or other structure into a request line.
+ */
+export function formatKeyLiteral(value: unknown): string {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`Key value ${value} is not a finite number`);
+    return String(value);
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+  // encodeURIComponent leaves ' ( ) ! * ~ raw; escape those too so the
+  // encoded literal contains no characters with structural meaning in an
+  // OData key expression or an HTTP request line.
+  const encoded = encodeURIComponent(String(value).replace(/'/g, "''")).replace(
+    /[()'!*~]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")
+  );
+  return `'${encoded}'`;
+}
+
+/** Last line of defense: no entity-set-relative URL may contain CR/LF or spaces. */
+function assertSafeBatchUrl(url: string): string {
+  if (/[\r\n\s]/.test(url)) {
+    throw new Error(`Refusing to build batch request: URL contains whitespace/CRLF: ${JSON.stringify(url)}`);
+  }
+  return url;
+}
+
 export class DataverseClient {
   private readonly base: string;
   private readonly fetchFn: typeof fetch;
@@ -182,6 +240,7 @@ export class DataverseClient {
 
   /** Fetch entity metadata for one entity (LogicalName -> definition). */
   async getEntityDefinition(logicalName: string): Promise<Record<string, unknown>> {
+    assertLogicalName(logicalName, "Entity logical name");
     const res = await this.fetchWithRetry(
       this.url(`EntityDefinitions(LogicalName='${logicalName}')?$expand=Attributes`),
       { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
@@ -210,6 +269,8 @@ export class DataverseClient {
    * Uses the LookupAttributeMetadata cast on the Attributes navigation property.
    */
   async getLookupTargets(entityLogicalName: string, attrLogicalName: string): Promise<string[]> {
+    assertLogicalName(entityLogicalName, "Entity logical name");
+    assertLogicalName(attrLogicalName, "Attribute logical name");
     const res = await this.fetchWithRetry(
       this.url(
         `EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes` +
@@ -236,7 +297,9 @@ export class DataverseClient {
 
   /** Resolve a record id by alternate key. Returns null if not found. */
   async resolveByKey(entitySet: string, keyAttribute: string, value: unknown): Promise<string | null> {
-    const literal = formatKeyValue(value);
+    assertLogicalName(entitySet, "Entity set");
+    assertLogicalName(keyAttribute, "Key attribute");
+    const literal = formatKeyLiteral(value);
     // We don't know the primary-id field name (and it doesn't always pluralize
     // cleanly — e.g. "people" → "systemuserid"). Read @odata.id instead,
     // which is the canonical URL containing the GUID.
@@ -253,16 +316,20 @@ export class DataverseClient {
   }
 
   /**
-   * Execute a $batch with a single changeset of operations. All ops in a
-   * changeset are atomic — if one fails, the entire changeset rolls back.
-   * Dataverse caps changesets at 1000 operations.
+   * Execute a $batch where EACH operation is wrapped in its own changeset.
+   * Operations therefore execute independently: one row failing does not
+   * roll back its neighbors, and per-row success/failure accounting is
+   * accurate. (A single shared changeset is atomic — Dataverse aborts it on
+   * the first failure and rolls everything back, which silently invalidated
+   * the "created/updated" counts of every other op in the batch, and made
+   * skip-if-exists abort the batch on the first existing record.)
+   * Dataverse caps batches at 1000 operations.
    */
   async batch(operations: BatchOperation[]): Promise<BatchResultItem[]> {
     if (operations.length === 0) return [];
     const batchId = `batch_${cryptoUuid()}`;
-    const changesetId = `changeset_${cryptoUuid()}`;
 
-    const body = buildBatchBody(operations, batchId, changesetId, this.base);
+    const body = buildBatchBody(operations, batchId, this.base);
 
     const res = await this.fetchWithRetry(this.url("$batch"), {
       method: "POST",
@@ -278,7 +345,7 @@ export class DataverseClient {
 
     if (!res.ok) await throwForResponse(res);
     const text = await res.text();
-    return parseBatchResponse(text, operations, changesetId);
+    return parseBatchResponse(text, operations);
   }
 }
 
@@ -336,13 +403,6 @@ function extractLocalizedLabel(displayName: unknown): string {
   return dn.UserLocalizedLabel?.Label ?? "";
 }
 
-function formatKeyValue(value: unknown): string {
-  if (typeof value === "number") return String(value);
-  if (typeof value === "boolean") return value ? "true" : "false";
-  // OData string literal: wrapped in single quotes, with single quotes doubled.
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
 function cryptoUuid(): string {
   // Cross-runtime UUID without bringing in a dependency.
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -356,36 +416,40 @@ function cryptoUuid(): string {
   });
 }
 
-function buildBatchBody(
-  ops: BatchOperation[],
-  batchId: string,
-  changesetId: string,
-  base: string
-): string {
+function buildBatchBody(ops: BatchOperation[], batchId: string, base: string): string {
   const lines: string[] = [];
-  lines.push(`--${batchId}`);
-  lines.push(`Content-Type: multipart/mixed; boundary=${changesetId}`);
-  lines.push("");
 
   for (const op of ops) {
+    // One changeset per operation → independent execution (see batch()).
+    const changesetId = `changeset_${op.contentId}_${cryptoUuid()}`;
+    const url = assertSafeBatchUrl(op.url);
+
+    lines.push(`--${batchId}`);
+    lines.push(`Content-Type: multipart/mixed; boundary=${changesetId}`);
+    lines.push("");
     lines.push(`--${changesetId}`);
     lines.push("Content-Type: application/http");
     lines.push("Content-Transfer-Encoding: binary");
     lines.push(`Content-ID: ${op.contentId}`);
     lines.push("");
-    lines.push(`${op.method} ${base}/${op.url} HTTP/1.1`);
+    lines.push(`${op.method} ${base}/${url} HTTP/1.1`);
     lines.push("Content-Type: application/json; charset=utf-8");
     lines.push("OData-MaxVersion: 4.0");
     lines.push("OData-Version: 4.0");
     lines.push('Prefer: return=representation,odata.include-annotations="*"');
     if (op.headers) {
-      for (const [k, v] of Object.entries(op.headers)) lines.push(`${k}: ${v}`);
+      for (const [k, v] of Object.entries(op.headers)) {
+        if (/[\r\n]/.test(k) || /[\r\n]/.test(v)) {
+          throw new Error(`Refusing to build batch request: header contains CRLF (${k})`);
+        }
+        lines.push(`${k}: ${v}`);
+      }
     }
     lines.push("");
     lines.push(op.body !== undefined ? JSON.stringify(op.body) : "");
+    lines.push(`--${changesetId}--`);
   }
 
-  lines.push(`--${changesetId}--`);
   lines.push(`--${batchId}--`);
   lines.push("");
   return lines.join("\r\n");
@@ -395,26 +459,16 @@ function buildBatchBody(
  * Parse a multipart/mixed batch response. We map each "Content-ID" back to
  * the originating BatchOperation so callers can correlate failures with rows.
  *
- * Dataverse echoes the changeset boundary we sent, so we split on it
- * exactly rather than guessing — that avoids false matches if a body
- * happens to contain "--changeset" as text.
+ * The response now contains one changesetresponse per operation (each with
+ * its own server-generated boundary), so instead of extracting a single
+ * boundary we split on every boundary line (lines starting with "--") and
+ * keep the parts that contain an HTTP status line. Response bodies are
+ * single-line JSON, so no body line can start with "--".
  */
-function parseBatchResponse(
-  text: string,
-  ops: BatchOperation[],
-  changesetId: string
-): BatchResultItem[] {
+function parseBatchResponse(text: string, ops: BatchOperation[]): BatchResultItem[] {
   const results: BatchResultItem[] = [];
-  // Dataverse generates its own changeset boundary in the response body
-  // (e.g. "changesetresponse_<guid>"), which differs from the one we sent.
-  // Extract whichever boundary is actually present; fall back to the sent id.
-  const innerMatch = /boundary=(changesetresponse_[^\s;"\r\n]+)/i.exec(text);
-  const boundary = innerMatch ? `--${innerMatch[1]}` : `--${changesetId}`;
-  // Drop the preamble before the first boundary, then split on each boundary
-  // line. The terminator is `${boundary}--`.
-  const after = text.split(boundary).slice(1);
-  const parts = after
-    .map((p) => p.replace(/^--\s*$/, "")) // strip terminator marker
+  const parts = text
+    .split(/^--[^\r\n]*/m) // every boundary line, batch- and changeset-level
     .filter((p) => /HTTP\/1\.1/.test(p));
 
   for (const part of parts) {

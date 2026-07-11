@@ -1,4 +1,4 @@
-// Register a daily Windows Scheduled Task that:
+// Registers a daily Windows Scheduled Task that:
 //   1. Refreshes Power Query in the workbook (via Excel COM)
 //   2. Runs `dvload run <mapping> -w <workbook>`
 //
@@ -30,6 +30,22 @@ export async function scheduleCommand(mappingPath: string, opts: ScheduleOpts): 
   const workbookFile = path.resolve(opts.workbook);
   const mapping = parseMapping(JSON.parse(await readFile(mappingFile, "utf8")));
   const taskName = opts.name ?? `dvload: ${mapping.name}`;
+
+  // The /TR value is executed via `cmd /c`, so cmd metacharacters in a path
+  // or task name would be interpreted as commands. Refuse rather than trying
+  // to escape cmd's quoting rules.
+  for (const [label, value] of [
+    ["mapping path", mappingFile],
+    ["workbook path", workbookFile],
+    ["task name", taskName],
+  ] as const) {
+    if (/[&|<>^%"!\r\n]/.test(value)) {
+      throw new Error(
+        `The ${label} contains characters not allowed in a scheduled command ` +
+          `(& | < > ^ % " !): ${value}\nRename or move it, or pass a different --name.`
+      );
+    }
+  }
 
   // Strongly nudge toward app-only for scheduled runs. Delegated tokens
   // expire after 90 days of inactivity (or sooner under conditional access),

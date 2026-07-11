@@ -1,4 +1,4 @@
-// Power Query Template (.pqt) commands.
+// Power Query Template (.pqt) CLI commands.
 //
 //   extract-pqt   read Excel → write a .pqt with the M code and (optionally)
 //                 inject FieldsMetadata from a .dvmap.json
@@ -108,6 +108,16 @@ export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promis
   console.log(
     kleur.gray(`  ${mapping.columns.length} column mapping(s) from query "${queryName}"`)
   );
+
+  if (mapping.description?.includes("DeleteExistingDataOnLoad")) {
+    console.log(
+      kleur.yellow(
+        "Note: the source Dataflow used truncate-and-reload (DeleteExistingDataOnLoad). " +
+          "The mapping was written with conflictMode=insert; adjust to upsert + upsertKey " +
+          "if you need update semantics."
+      )
+    );
+  }
 
   if (opts.emitM) {
     const mPath = outPath.replace(/\.dvmap\.json$/, ".pq");

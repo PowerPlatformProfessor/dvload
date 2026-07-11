@@ -1,4 +1,4 @@
-// Power Query Template (.pqt) codec.
+// Power Query Template (.pqt) codec for dvload.
 //
 // .pqt is the format Dataverse Dataflows and Power Query Online emit.
 // It's a plain ZIP containing:
@@ -220,7 +220,10 @@ export function injectMappingIntoPqt(archive: PqtArchive, mapping: Mapping): voi
     );
   }
   q.LoadEnabled = true;
-  q.DeleteExistingDataOnLoad = mapping.conflictMode === "upsert";
+  // Never set DeleteExistingDataOnLoad from conflictMode: in Dataflows it
+  // means truncate-and-reload, which is not upsert semantics. Setting it
+  // for an upsert mapping would make the Dataflow wipe the table each run.
+  q.DeleteExistingDataOnLoad = false;
   q.EntityName = q.EntityName ?? mapping.targetEntitySet;
   q.FieldsMetadata = q.FieldsMetadata ?? {};
   for (const col of mapping.columns) {
@@ -253,15 +256,30 @@ export function mappingFromPqt(
     })
   );
 
+  // DeleteExistingDataOnLoad (truncate-and-reload) has no dvload equivalent
+  // and is NOT upsert — mapping it to "upsert" also produced an invalid
+  // mapping (upsert requires upsertKey, which a .pqt can't supply). Always
+  // emit insert and note the source behavior so the user can decide.
+  const description = [
+    archive.metadata.Description || undefined,
+    q.DeleteExistingDataOnLoad
+      ? "NOTE: the source Dataflow used DeleteExistingDataOnLoad (truncate-and-reload). " +
+        "dvload has no equivalent; this mapping was set to conflictMode=insert. " +
+        "If you need update semantics, set conflictMode=upsert and define upsertKey."
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return {
     schemaVersion: 1,
     name: archive.metadata.Name || queryName,
-    description: archive.metadata.Description,
+    description: description || undefined,
     environmentUrl: opts.environmentUrl,
     targetEntitySet: opts.targetEntitySet ?? q.EntityName ?? queryName,
     sourceTable: queryName,
     columns,
-    conflictMode: q.DeleteExistingDataOnLoad ? "upsert" : "insert",
+    conflictMode: "insert",
     batchSize: 100,
     maxErrors: 0,
     logDir: "./logs",
