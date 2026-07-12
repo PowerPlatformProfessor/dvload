@@ -90,6 +90,41 @@ const state: AppState = {
 };
 
 const lookupTargetsCache = new Map<string, string[]>();
+const optionLabelsCache = new Map<string, Record<string, number>>();
+
+const CHOICE_KINDS: readonly DataverseFieldKind[] = ["choice", "multichoice", "status", "state"];
+
+/**
+ * Fetch option-set labels from metadata and store them as the column's
+ * optionMap, so users can keep human-readable labels in the spreadsheet
+ * instead of typing integer values.
+ */
+async function applyOptionLabels(attrLogical: string, i: number): Promise<void> {
+  if (!attrLogical || !state.entityLogicalName || !state.environmentUrl) return;
+  const cacheKey = `${state.entityLogicalName}/${attrLogical}`;
+  let map = optionLabelsCache.get(cacheKey);
+  if (!map) {
+    try {
+      const client = new DataverseClient({
+        environmentUrl: state.environmentUrl,
+        getToken: makeTokenProvider(state.environmentUrl),
+      });
+      map = await client.getOptionSetLabels(state.entityLogicalName, attrLogical);
+      optionLabelsCache.set(cacheKey, map);
+    } catch {
+      return; // stick with whatever optionMap the user typed
+    }
+  }
+  // Only apply if the row still points at this attribute (async race).
+  if (state.mappings[i]?.target === attrLogical) {
+    state.mappings[i].optionMap = map;
+    setStatus(
+      "info",
+      `Loaded ${Object.keys(map).length} option label(s) for ${attrLogical} — ` +
+        `spreadsheet cells can use labels or integer values.`
+    );
+  }
+}
 
 Office.onReady(async () => {
   await initAuth();
@@ -158,7 +193,52 @@ Office.onReady(async () => {
   el<HTMLButtonElement>("run").addEventListener("click", onRun);
   el<HTMLButtonElement>("save").addEventListener("click", onSave);
   el<HTMLButtonElement>("load").addEventListener("click", onLoad);
+  el<HTMLSelectElement>("conflictMode").addEventListener("change", updateOptionsVisibility);
+  updateOptionsVisibility();
 });
+
+/* -------------------------------------------------------------------------- */
+/* Import options                                                              */
+/* -------------------------------------------------------------------------- */
+
+function updateOptionsVisibility(): void {
+  const mode = el<HTMLSelectElement>("conflictMode").value;
+  const needsKey = mode === "upsert" || mode === "skip-if-exists" || mode === "sync";
+  el<HTMLLabelElement>("upsertKeyLabel").style.display = needsKey ? "" : "none";
+  el<HTMLInputElement>("upsertKey").style.display = needsKey ? "" : "none";
+  const isSync = mode === "sync";
+  el<HTMLLabelElement>("syncActionLabel").style.display = isSync ? "" : "none";
+  el<HTMLSelectElement>("syncAction").style.display = isSync ? "" : "none";
+  el<HTMLInputElement>("skipUnchanged").disabled = !(mode === "upsert" || mode === "sync");
+}
+
+function readOptionsIntoMapping(m: Mapping): void {
+  const mode = el<HTMLSelectElement>("conflictMode").value as Mapping["conflictMode"];
+  m.conflictMode = mode;
+  const keyRaw = el<HTMLInputElement>("upsertKey").value.trim();
+  m.upsertKey = keyRaw ? keyRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  if (mode === "sync") {
+    m.syncAction = el<HTMLSelectElement>("syncAction").value as Mapping["syncAction"];
+  }
+  const batchSize = Number(el<HTMLInputElement>("batchSize").value);
+  if (Number.isInteger(batchSize) && batchSize >= 1 && batchSize <= 1000) m.batchSize = batchSize;
+  const concurrency = Number(el<HTMLInputElement>("concurrency").value);
+  if (Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 8) m.concurrency = concurrency;
+  m.bypassCustomLogic = el<HTMLInputElement>("bypassCustomLogic").checked;
+  m.skipUnchanged =
+    el<HTMLInputElement>("skipUnchanged").checked && (mode === "upsert" || mode === "sync");
+}
+
+function writeOptionsFromMapping(m: Mapping): void {
+  el<HTMLSelectElement>("conflictMode").value = m.conflictMode;
+  el<HTMLInputElement>("upsertKey").value = (m.upsertKey ?? []).join(", ");
+  el<HTMLSelectElement>("syncAction").value = m.syncAction ?? "deactivate";
+  el<HTMLInputElement>("batchSize").value = String(m.batchSize);
+  el<HTMLInputElement>("concurrency").value = String(m.concurrency ?? 1);
+  el<HTMLInputElement>("bypassCustomLogic").checked = m.bypassCustomLogic ?? false;
+  el<HTMLInputElement>("skipUnchanged").checked = m.skipUnchanged ?? false;
+  updateOptionsVisibility();
+}
 
 /* -------------------------------------------------------------------------- */
 /* UI helpers                                                                  */
@@ -273,6 +353,7 @@ async function onPickEntity(e: Event): Promise<void> {
 async function loadEntityAttributes(logical: string): Promise<void> {
   state.entityLogicalName = logical;
   lookupTargetsCache.clear();
+  optionLabelsCache.clear();
   const client = new DataverseClient({
     environmentUrl: state.environmentUrl,
     getToken: makeTokenProvider(state.environmentUrl),
@@ -463,6 +544,8 @@ function rerenderMappings(): void {
       state.mappings[i].target = tgt.value;
       if (state.mappings[i].kind === "lookup" && tgt.value) {
         applyLookupTargets(entitySetSel, tgt.value, i).catch(() => {});
+      } else if (CHOICE_KINDS.includes(state.mappings[i].kind) && tgt.value) {
+        applyOptionLabels(tgt.value, i).catch(() => {});
       }
     });
 
@@ -511,6 +594,8 @@ function rerenderMappings(): void {
       lookupCfg.style.display = kind.value === "lookup" ? "" : "none";
       if (kind.value === "lookup" && tgt.value) {
         applyLookupTargets(entitySetSel, tgt.value, i).catch(() => {});
+      } else if (CHOICE_KINDS.includes(kind.value as DataverseFieldKind) && tgt.value) {
+        applyOptionLabels(tgt.value, i).catch(() => {});
       }
     });
 
@@ -551,7 +636,11 @@ function buildMapping(): Mapping {
     batchSize: 100,
     maxErrors: 0,
     logDir: "./logs",
+    concurrency: 1,
+    bypassCustomLogic: false,
+    skipUnchanged: false,
   };
+  readOptionsIntoMapping(m);
   return m;
 }
 
@@ -593,7 +682,10 @@ async function onRun(): Promise<void> {
 
     const summary =
       `${result.created} created, ${result.updated} updated, ` +
-      `${result.skipped} skipped, ${result.failed} failed`;
+      `${result.skipped} skipped` +
+      (result.unchanged > 0 ? ` (${result.unchanged} unchanged)` : "") +
+      (result.removed > 0 ? `, ${result.removed} removed` : "") +
+      `, ${result.failed} failed`;
     if (result.failed === 0) {
       setStatus("success", `Done. ${summary}.`);
     } else {
@@ -694,6 +786,7 @@ function restoreMapping(): void {
       tableSel.value = m.sourceTable;
       state.selectedTable = state.tables.find((t) => t.name === m.sourceTable) ?? null;
     }
+    writeOptionsFromMapping(m);
     rerenderMappings();
   } catch {
     // ignore: stored mapping was a different schema version
@@ -725,6 +818,7 @@ function onLoad(): void {
       el<HTMLInputElement>("env").value = m.environmentUrl;
       state.entitySet = m.targetEntitySet;
       state.mappings = m.columns;
+      writeOptionsFromMapping(m);
       rerenderMappings();
       setStatus("success", `Loaded ${m.name}.`);
     } catch (e) {

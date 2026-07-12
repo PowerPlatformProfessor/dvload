@@ -23,6 +23,10 @@
     .mapping-row select, .mapping-row input { padding: 2px 4px; }
     .lookup-cfg { display: flex; gap: 4px; padding: 0 0 4px 12px; }
     .lookup-cfg > * { flex: 1; min-width: 0; }
+    .opts-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
+    .opts-grid label { margin: 0; font-weight: 500; font-size: 12px; }
+    .opts-grid .check { display: flex; align-items: center; gap: 6px; grid-column: 1 / span 2; }
+    .opts-grid .check input { width: auto; }
     .status { margin-top: 10px; padding: 6px; border-radius: 4px; }
     .status.info { background: #eef6ff; color: #003a75; }
     .status.error { background: #fde7e9; color: #5c0011; }
@@ -73,6 +77,43 @@
     <button id="suggest" class="secondary" type="button" title="Suggest mappings by header name similarity">
       Suggest from names
     </button>
+  </div>
+
+  <hr />
+
+  <label>Import options</label>
+  <div class="opts-grid">
+    <label for="conflictMode">On existing rows</label>
+    <select id="conflictMode">
+      <option value="insert">Insert only</option>
+      <option value="upsert">Upsert (update or create)</option>
+      <option value="skip-if-exists">Skip if exists</option>
+      <option value="sync">Sync (upsert + remove missing)</option>
+    </select>
+
+    <label for="upsertKey" id="upsertKeyLabel" style="display:none">Upsert key attribute(s)</label>
+    <input id="upsertKey" placeholder="e.g. emailaddress1 (comma-separate for compound keys)" style="display:none" />
+
+    <label for="syncAction" id="syncActionLabel" style="display:none">Missing records</label>
+    <select id="syncAction" style="display:none">
+      <option value="deactivate">Deactivate (statecode = 1)</option>
+      <option value="delete">Delete permanently</option>
+    </select>
+
+    <label for="batchSize">Batch size</label>
+    <input id="batchSize" type="number" min="1" max="1000" value="100" />
+
+    <label for="concurrency">Parallel batches</label>
+    <input id="concurrency" type="number" min="1" max="8" value="1" />
+
+    <div class="check">
+      <input id="bypassCustomLogic" type="checkbox" />
+      <label for="bypassCustomLogic">Bypass plugins &amp; Power Automate flows (needs bypass privilege)</label>
+    </div>
+    <div class="check">
+      <input id="skipUnchanged" type="checkbox" />
+      <label for="skipUnchanged">Skip unchanged rows (upsert/sync; one extra read per row)</label>
+    </div>
   </div>
 
   <hr />

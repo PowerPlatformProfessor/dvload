@@ -96,6 +96,28 @@ function readByRange(sheet: any, ref: string): ReadTableResult {
   return { headers, rows };
 }
 
+/**
+ * Write rows to a new .xlsx with a table named `tableName` (default the
+ * same shape dvload reads). Used for the failed-rows re-run file.
+ */
+export async function writeRowsToFile(
+  path: string,
+  headers: string[],
+  rows: SourceRow[],
+  tableName = "FailedRows"
+): Promise<void> {
+  const wb = new ExcelJS.Workbook();
+  const sheet = wb.addWorksheet("Failed rows");
+  sheet.addTable({
+    name: tableName,
+    ref: "A1",
+    headerRow: true,
+    columns: headers.map((h) => ({ name: h })),
+    rows: rows.map((r) => headers.map((h) => (r[h] === undefined ? null : r[h]))),
+  });
+  await wb.xlsx.writeFile(path);
+}
+
 /** "A1" -> { col: 1, row: 1 }. */
 function parseAddress(addr: string): { col: number; row: number } {
   const m = /^([A-Z]+)(\d+)$/.exec(addr);

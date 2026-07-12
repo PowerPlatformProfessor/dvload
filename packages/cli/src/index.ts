@@ -3,6 +3,7 @@
 
 import { Command } from "commander";
 import { runCommand } from "./commands/run.js";
+import { runAllCommand } from "./commands/run-all.js";
 import {
   loginCommand,
   logoutCommand,
@@ -31,8 +32,22 @@ program
   .option("--dry-run", "Coerce + plan the import but don't call Dataverse.")
   .option("--user", "Force delegated (interactive) auth even if app-only credentials are configured.")
   .option("--max-errors <n>", "Override mapping.maxErrors", parseIntStrict)
+  .option("--concurrency <n>", "Parallel $batch requests (1-8); overrides mapping.concurrency", parseIntStrict)
+  .option("--resume", "Resume an interrupted run from its checkpoint (same workbook only).")
+  .option("--notify-url <url>", "POST a {text} summary to this webhook after the run.")
+  .option("--no-failed-rows", "Don't write the failed-rows .xlsx re-run file.")
   .option("--no-color", "Disable color output.")
   .action(runCommand);
+
+program
+  .command("run-all")
+  .description("Run several mappings in order from a manifest (dependencies between tables).")
+  .argument("<manifest>", "Path to a manifest .json with a runs[] array")
+  .option("--dry-run", "Coerce + plan all imports but don't call Dataverse.")
+  .option("--user", "Force delegated auth for all runs.")
+  .option("--notify-url <url>", "POST a {text} summary per run.")
+  .option("--no-failed-rows", "Don't write failed-rows .xlsx files.")
+  .action(runAllCommand);
 
 program
   .command("validate")

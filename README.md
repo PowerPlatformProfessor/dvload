@@ -183,7 +183,23 @@ dvload run ./contacts.dvmap.json -w ./customers.xlsx --refresh
 
 # Force the interactive (delegated) flow even if app-only is configured.
 dvload run ./contacts.dvmap.json -w ./customers.xlsx --user
+
+# Faster bulk loads: 4 parallel batches, skip plugin/flow execution.
+dvload run ./contacts.dvmap.json -w ./customers.xlsx --concurrency 4
+
+# Resume an interrupted run from its checkpoint (same workbook only).
+dvload run ./contacts.dvmap.json -w ./customers.xlsx --resume
+
+# Post a summary to a Teams/Slack incoming webhook when done.
+dvload run ./contacts.dvmap.json -w ./customers.xlsx --notify-url https://hooks.example/...
+
+# Run several mappings in dependency order (accounts before contacts).
+dvload run-all ./nightly.manifest.json
 ```
+
+Failed rows are written to `logs/failed_<workbook>_<timestamp>.xlsx` in the
+same column shape as the source table — fix the cells and re-run just that
+file. Suppress with `--no-failed-rows` if the data is sensitive.
 
 ### Add-in (development)
 
@@ -311,9 +327,17 @@ fields:
 | `batchSize` | Rows per `$batch` changeset (Dataverse caps at 1000). |
 | `columns[].kind` | `string`, `integer`, `boolean`, `datetime`, `dateonly`, `lookup`, `choice`, etc. |
 | `columns[].bindEntitySet` | For `lookup`: the entity set to bind to. |
-| `columns[].lookupResolution` | `guid` or `alternateKey`. |
-| `columns[].keyAttribute` | When `lookupResolution=alternateKey`: the attribute to match on. |
-| `columns[].optionMap` | For `choice`/`multichoice`: human label → integer option value. |
+| `columns[].lookupResolution` | `guid`, `alternateKey`, or `text` (match any attribute by exact text). |
+| `columns[].keyAttribute` | When `lookupResolution=alternateKey/text`: the attribute to match on. |
+| `columns[].createIfMissing` | `text` lookups: create the record when no match exists. |
+| `columns[].duplicateBehavior` | `text` lookups: `error` (default) or `first` when 2+ records match. |
+| `columns[].optionMap` | For `choice`/`multichoice`: human label → integer option value. The add-in fills this automatically from metadata. |
+| `syncAction` | `conflictMode=sync`: `deactivate` (default) or `delete` records missing from the source. |
+| `concurrency` | Parallel `$batch` requests, 1-8. Default 1. |
+| `skipUnchanged` | upsert/sync: pre-read targets and skip rows/attributes with no changes. |
+| `bypassCustomLogic` | Send bypass headers so plugins and Power Automate flows don't fire. |
+| `impersonateUserId` | systemuser GUID to impersonate (`MSCRMCallerID`). |
+| `notifyUrl` | Webhook that receives a `{text}` summary after each run. |
 
 ## Known limits in v1
 

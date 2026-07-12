@@ -191,6 +191,9 @@ function mapping(overrides: Partial<Mapping> = {}): Mapping {
     batchSize: 100,
     maxErrors: 0,
     logDir: "./logs",
+    concurrency: 1,
+    bypassCustomLogic: false,
+    skipUnchanged: false,
     ...overrides,
   };
 }

@@ -1,10 +1,20 @@
 // Orchestration: take a parsed mapping, source rows, and a Dataverse client,
 // and load the data using batched OData. This is the function both the
 // add-in's "Run import" button and the CLI's `run` command call.
+//
+// Feature notes:
+//  - Lookups resolve by GUID, alternate key, or text match (with optional
+//    create-if-missing and duplicate handling).
+//  - skipUnchanged pre-reads each target record and strips attributes whose
+//    values already match, skipping no-op rows entirely.
+//  - conflictMode "sync" runs an upsert pass, then deactivates or deletes
+//    target records whose keys are absent from the source.
+//  - mapping.concurrency batches run in parallel (bounded pool).
+//  - bypassCustomLogic / impersonateUserId become per-operation headers.
 
 import type { Mapping, ColumnMapping } from "./mapping.js";
 import type { SourceRow, LoadResult, RowError, RowSuccess, ProgressFn } from "./types.js";
-import { coerceRow, CoerceError } from "./coerce.js";
+import { coerceRow, coerceValue, CoerceError } from "./coerce.js";
 import {
   DataverseClient,
   DataverseError,
@@ -23,16 +33,23 @@ export interface LoadOptions {
   onProgress?: ProgressFn;
   /** If true, do everything except actually call Dataverse. */
   dryRun?: boolean;
+  /** Resume: skip rows before this offset (they count as skipped). */
+  startOffset?: number;
 }
 
 export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
   const { mapping, rows, client, onProgress, dryRun } = opts;
+  const startOffset = clampOffset(opts.startOffset ?? 0, rows.length, mapping.batchSize);
   const startedAt = new Date().toISOString();
   const errors: RowError[] = [];
-  let succeeded = 0;
-  let created = 0;
-  let updated = 0;
-  let skipped = 0;
+  const counters = {
+    succeeded: 0,
+    created: 0,
+    updated: 0,
+    skipped: startOffset, // resumed-past rows were handled by a previous run
+    unchanged: 0,
+    removed: 0,
+  };
 
   onProgress?.({ type: "start", total: rows.length });
 
@@ -40,27 +57,48 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
   // resolve them once, and reuse the GUID across all rows that reference them.
   const lookupCache = await buildLookupCache(mapping, rows, client, dryRun ?? false);
 
-  // Slice rows into changesets of mapping.batchSize.
-  for (let offset = 0; offset < rows.length; offset += mapping.batchSize) {
-    if (mapping.maxErrors > 0 && errors.length >= mapping.maxErrors) {
-      // Stop scheduling more batches.
-      const remaining = rows.length - offset;
-      skipped += remaining;
-      break;
-    }
+  const extraHeaders = buildOpHeaders(mapping);
+  const kindByTarget = new Map(mapping.columns.map((c) => [c.target, c.kind]));
 
-    const slice = rows.slice(offset, offset + mapping.batchSize);
+  // Pre-slice the work so a bounded pool can pick batches off the list.
+  const batches: Array<{ offset: number; slice: SourceRow[] }> = [];
+  for (let offset = startOffset; offset < rows.length; offset += mapping.batchSize) {
+    batches.push({ offset, slice: rows.slice(offset, offset + mapping.batchSize) });
+  }
+
+  let processed = startOffset;
+  let nextBatch = 0;
+  const completedThrough: boolean[] = new Array(batches.length).fill(false);
+  let checkpointFrontier = 0;
+
+  const emitBatchProgress = (): void => {
+    onProgress?.({
+      type: "batch",
+      processed,
+      total: rows.length,
+      succeeded: counters.succeeded,
+      created: counters.created,
+      updated: counters.updated,
+      failed: errors.length,
+      skipped: counters.skipped,
+    });
+  };
+
+  const runBatch = async (batchIdx: number): Promise<void> => {
+    const { offset, slice } = batches[batchIdx];
     const ops: BatchOperation[] = [];
-    const opIndex: number[] = []; // contentId -> rowIndex within full `rows`
+    const opIndex: number[] = []; // position in ops -> rowIndex within full `rows`
+    const opKeyExpr: Array<string | undefined> = [];
 
     for (let i = 0; i < slice.length; i++) {
       const rowIndex = offset + i;
       const sourceRow = slice[i];
       try {
-        const op = buildOperation(mapping, sourceRow, lookupCache, rowIndex, ops.length + 1);
-        if (op) {
-          ops.push(op);
+        const built = buildOperation(mapping, sourceRow, lookupCache, ops.length + 1, extraHeaders);
+        if (built) {
+          ops.push(built.op);
           opIndex.push(rowIndex);
+          opKeyExpr.push(built.keyExpr);
         }
       } catch (e) {
         errors.push(toRowError(e, rowIndex, sourceRow));
@@ -68,46 +106,54 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
       }
     }
 
-    if (dryRun || ops.length === 0) {
-      // Pretend the batch was a create-only insert for accounting purposes.
-      succeeded += ops.length;
-      created += ops.length;
-      onProgress?.({
-        type: "batch",
-        processed: offset + slice.length,
-        total: rows.length,
-        succeeded,
-        created,
-        updated,
-        failed: errors.length,
-        skipped,
-      });
-      continue;
+    // Delta detection: drop attributes that already match the target record;
+    // drop whole ops with no differences.
+    let effectiveOps = ops;
+    let effectiveIndex = opIndex;
+    if (!dryRun && mapping.skipUnchanged && (mapping.conflictMode === "upsert" || mapping.conflictMode === "sync")) {
+      const filtered = await applySkipUnchanged(
+        client, mapping, kindByTarget, ops, opIndex, opKeyExpr, counters
+      );
+      effectiveOps = filtered.ops;
+      effectiveIndex = filtered.opIndex;
+    }
+
+    if (dryRun || effectiveOps.length === 0) {
+      if (dryRun) {
+        // Pretend the batch was a create-only insert for accounting purposes.
+        counters.succeeded += effectiveOps.length;
+        counters.created += effectiveOps.length;
+      }
+      processed += slice.length;
+      emitBatchProgress();
+      return;
     }
 
     try {
-      const results = await client.batch(ops);
+      const results = await client.batch(effectiveOps);
       const seen = new Set<number>();
       for (const r of results) {
         seen.add(r.contentId);
-        const rowIndex = opIndex[r.contentId - 1];
+        const pos = effectiveOps.findIndex((o) => o.contentId === r.contentId);
+        const rowIndex = effectiveIndex[pos];
         if (r.ok) {
-          succeeded++;
+          counters.succeeded++;
           // With Prefer: return=representation:
           //   201 Created → POST or PATCH-upsert that created a new record
           //   200 OK      → PATCH that found and updated an existing record
-          //   204 No Content → PATCH/DELETE without representation (we don't ask for this)
-          if (r.status === 201) created++;
-          else if (r.status === 200 || r.status === 204) updated++;
-          const success: RowSuccess = { rowIndex, sourceRow: rows[rowIndex], status: r.status, ...(r.id ? { id: r.id } : {}) };
+          if (r.status === 201) counters.created++;
+          else if (r.status === 200 || r.status === 204) counters.updated++;
+          const success: RowSuccess = {
+            rowIndex,
+            sourceRow: rows[rowIndex],
+            status: r.status,
+            ...(r.id ? { id: r.id } : {}),
+          };
           onProgress?.({ type: "row-success", success });
-        } else if (
-          r.status === 412 &&
-          mapping.conflictMode === "skip-if-exists"
-        ) {
+        } else if (r.status === 412 && mapping.conflictMode === "skip-if-exists") {
           // If-None-Match: * matched an existing record. That's the
           // explicit skip the user asked for, not an error.
-          skipped++;
+          counters.skipped++;
         } else {
           errors.push({
             rowIndex,
@@ -120,9 +166,9 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
       }
       // Any op the server returned no response for is unaccounted — surface
       // it as an error rather than letting the totals silently not add up.
-      for (let i = 0; i < ops.length; i++) {
-        if (seen.has(ops[i].contentId)) continue;
-        const rowIndex = opIndex[i];
+      for (let i = 0; i < effectiveOps.length; i++) {
+        if (seen.has(effectiveOps[i].contentId)) continue;
+        const rowIndex = effectiveIndex[i];
         errors.push({
           rowIndex,
           sourceRow: rows[rowIndex],
@@ -132,30 +178,61 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
       }
     } catch (e) {
       // Whole-batch failure (network, auth). Mark every op in this batch failed.
-      for (const idx of opIndex) {
+      for (const idx of effectiveIndex) {
         errors.push(toRowError(e, idx, rows[idx]));
       }
     }
 
-    onProgress?.({
-      type: "batch",
-      processed: offset + slice.length,
-      total: rows.length,
-      succeeded,
-      created,
-      updated,
-      failed: errors.length,
-      skipped,
-    });
+    processed += slice.length;
+    emitBatchProgress();
+  };
+
+  // Bounded worker pool. JS is single-threaded, so counter mutation is safe;
+  // only the HTTP requests overlap.
+  const poolSize = Math.max(1, Math.min(mapping.concurrency ?? 1, batches.length || 1));
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (mapping.maxErrors > 0 && errors.length >= mapping.maxErrors) return;
+      const idx = nextBatch++;
+      if (idx >= batches.length) return;
+      await runBatch(idx);
+      completedThrough[idx] = true;
+      // Advance the contiguous-completion frontier for checkpointing.
+      while (checkpointFrontier < batches.length && completedThrough[checkpointFrontier]) {
+        checkpointFrontier++;
+      }
+      const committedOffset =
+        checkpointFrontier < batches.length
+          ? batches[checkpointFrontier].offset
+          : rows.length;
+      onProgress?.({ type: "checkpoint", offset: committedOffset });
+    }
+  };
+  await Promise.all(Array.from({ length: poolSize }, worker));
+
+  // Batches never started because maxErrors tripped: count their rows skipped.
+  if (mapping.maxErrors > 0 && errors.length >= mapping.maxErrors) {
+    const attempted = batches
+      .filter((_, i) => completedThrough[i])
+      .reduce((n, b) => n + b.slice.length, 0);
+    const remaining = rows.length - startOffset - attempted;
+    if (remaining > 0) counters.skipped += remaining;
+  }
+
+  // Sync pass: remove target records whose keys are absent from the source.
+  if (mapping.conflictMode === "sync" && !dryRun) {
+    await syncRemoveMissing(client, mapping, rows, extraHeaders, counters, errors, onProgress);
   }
 
   const result: LoadResult = {
     total: rows.length,
-    succeeded,
-    created,
-    updated,
+    succeeded: counters.succeeded,
+    created: counters.created,
+    updated: counters.updated,
     failed: errors.length,
-    skipped,
+    skipped: counters.skipped,
+    unchanged: counters.unchanged,
+    removed: counters.removed,
     startedAt,
     finishedAt: new Date().toISOString(),
     errors,
@@ -165,10 +242,32 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Internals                                                                   */
+/* Operation headers (bypass + impersonation)                                  */
 /* -------------------------------------------------------------------------- */
 
-type LookupCache = Map<string /* target */, Map<string /* sourceValueKey */, string /* guid */>>;
+function buildOpHeaders(mapping: Mapping): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (mapping.bypassCustomLogic) {
+    h["MSCRM.BypassCustomPluginExecution"] = "true";
+    h["MSCRM.SuppressCallbackRegistrationExpanderJob"] = "true";
+  }
+  if (mapping.impersonateUserId) {
+    h["MSCRMCallerID"] = mapping.impersonateUserId;
+  }
+  return h;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Lookup cache                                                                */
+/* -------------------------------------------------------------------------- */
+
+interface LookupEntry {
+  guid?: string;
+  /** Populated instead of guid when resolution failed with a specific reason. */
+  failure?: string;
+}
+
+type LookupCache = Map<string /* target */, Map<string /* sourceValueKey */, LookupEntry>>;
 
 async function buildLookupCache(
   mapping: Mapping,
@@ -178,9 +277,10 @@ async function buildLookupCache(
 ): Promise<LookupCache> {
   const cache: LookupCache = new Map();
   const lookups = mapping.columns.filter((c) => c.kind === "lookup");
+  const extraHeaders = buildOpHeaders(mapping);
 
   for (const col of lookups) {
-    const inner = new Map<string, string>();
+    const inner = new Map<string, LookupEntry>();
     cache.set(col.target, inner);
 
     if (dryRun) continue;
@@ -193,12 +293,53 @@ async function buildLookupCache(
       uniques.add(String(v));
     }
 
+    if (col.lookupResolution === "alternateKey") {
+      for (const value of uniques) {
+        try {
+          const id = await client.resolveByKey(col.bindEntitySet!, col.keyAttribute!, value);
+          if (id) inner.set(value, { guid: id });
+        } catch {
+          // leave unresolved; the loader errors per-row using this column
+        }
+      }
+      continue;
+    }
+
+    // Text resolution: match on any attribute, detect duplicates, optionally
+    // create missing records.
+    const info = await client.getEntitySetInfo(col.bindEntitySet!);
     for (const value of uniques) {
       try {
-        const id = await client.resolveByKey(col.bindEntitySet!, col.keyAttribute!, value);
-        if (id) inner.set(value, id);
-      } catch {
-        // leave unresolved; load.ts will error per-row using this column
+        const ids = await client.resolveByText(
+          col.bindEntitySet!,
+          col.keyAttribute!,
+          value,
+          info.primaryIdAttribute
+        );
+        if (ids.length === 1) {
+          inner.set(value, { guid: ids[0] });
+        } else if (ids.length > 1) {
+          if (col.duplicateBehavior === "first") {
+            inner.set(value, { guid: ids[0] });
+          } else {
+            inner.set(value, {
+              failure: `ambiguous text lookup: 2+ ${col.bindEntitySet} records have ${col.keyAttribute} = ${JSON.stringify(value)}`,
+            });
+          }
+        } else if (col.createIfMissing) {
+          const created = await client.create(
+            col.bindEntitySet!,
+            { [col.keyAttribute!]: value },
+            extraHeaders
+          );
+          if (created.id) inner.set(value, { guid: created.id });
+          else inner.set(value, { failure: "create-if-missing returned no id" });
+        }
+        // else: no match, no create → left unset; row errors as unresolved.
+      } catch (e) {
+        inner.set(value, {
+          failure: `text lookup failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
       }
     }
   }
@@ -206,13 +347,231 @@ async function buildLookupCache(
   return cache;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Delta detection (skipUnchanged)                                             */
+/* -------------------------------------------------------------------------- */
+
+async function applySkipUnchanged(
+  client: DataverseClient,
+  mapping: Mapping,
+  kindByTarget: Map<string, string>,
+  ops: BatchOperation[],
+  opIndex: number[],
+  opKeyExpr: Array<string | undefined>,
+  counters: { skipped: number; unchanged: number }
+): Promise<{ ops: BatchOperation[]; opIndex: number[] }> {
+  const keptOps: BatchOperation[] = [];
+  const keptIndex: number[] = [];
+
+  // Fetch existing records in small parallel chunks to bound connection use.
+  const CHUNK = 10;
+  for (let start = 0; start < ops.length; start += CHUNK) {
+    const chunk = ops.slice(start, start + CHUNK);
+    const fetched = await Promise.all(
+      chunk.map(async (op, j) => {
+        const keyExpr = opKeyExpr[start + j];
+        if (!keyExpr || op.method !== "PATCH") return { existing: null as Record<string, unknown> | null };
+        const body = op.body as Record<string, unknown>;
+        const select = Object.keys(body).filter(
+          (k) => !k.includes("@") && kindByTarget.get(k) !== "lookup"
+        );
+        if (select.length === 0) return { existing: null };
+        try {
+          return { existing: await client.getRecord(mapping.targetEntitySet, keyExpr, select) };
+        } catch {
+          return { existing: null }; // on read failure, fall back to sending everything
+        }
+      })
+    );
+
+    for (let j = 0; j < chunk.length; j++) {
+      const op = chunk[j];
+      const existing = fetched[j].existing;
+      if (!existing) {
+        keptOps.push(op);
+        keptIndex.push(opIndex[start + j]);
+        continue;
+      }
+      const body = op.body as Record<string, unknown>;
+      const newBody: Record<string, unknown> = {};
+      let changes = 0;
+      for (const [k, v] of Object.entries(body)) {
+        if (k.includes("@")) {
+          // Lookup binds are always sent — comparing navigation values is
+          // not worth an extra metadata round-trip per column.
+          newBody[k] = v;
+          changes++;
+          continue;
+        }
+        if (!valuesEqual(kindByTarget.get(k), v, existing[k])) {
+          newBody[k] = v;
+          changes++;
+        }
+      }
+      if (changes === 0) {
+        counters.skipped++;
+        counters.unchanged++;
+        continue; // drop the op entirely
+      }
+      keptOps.push({ ...op, body: newBody });
+      keptIndex.push(opIndex[start + j]);
+    }
+  }
+
+  return { ops: keptOps, opIndex: keptIndex };
+}
+
+/** Loose comparison between our wire value and the value Dataverse returned. */
+export function valuesEqual(kind: string | undefined, ours: unknown, theirs: unknown): boolean {
+  const oursNull = ours === null || ours === undefined;
+  const theirsNull = theirs === null || theirs === undefined;
+  if (oursNull || theirsNull) return oursNull === theirsNull;
+
+  switch (kind) {
+    case "datetime": {
+      const a = Date.parse(String(ours));
+      const b = Date.parse(String(theirs));
+      return !Number.isNaN(a) && a === b;
+    }
+    case "multichoice": {
+      const norm = (v: unknown): string =>
+        String(v)
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .sort()
+          .join(",");
+      return norm(ours) === norm(theirs);
+    }
+    case "integer":
+    case "decimal":
+    case "money":
+    case "double":
+    case "choice":
+    case "status":
+    case "state":
+      return Number(ours) === Number(theirs);
+    case "boolean":
+      return Boolean(ours) === Boolean(theirs);
+    case "uniqueidentifier":
+      return String(ours).toLowerCase() === String(theirs).toLowerCase();
+    default:
+      return String(ours) === String(theirs);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Sync: remove target records missing from the source                         */
+/* -------------------------------------------------------------------------- */
+
+async function syncRemoveMissing(
+  client: DataverseClient,
+  mapping: Mapping,
+  rows: SourceRow[],
+  extraHeaders: Record<string, string>,
+  counters: { removed: number },
+  errors: RowError[],
+  onProgress?: ProgressFn
+): Promise<void> {
+  if (rows.length === 0) {
+    throw new Error(
+      "conflictMode=sync refuses to run with 0 source rows — that would " +
+        `${mapping.syncAction ?? "deactivate"} every record in ${mapping.targetEntitySet}. ` +
+        "If the table is intentionally empty, run the removal manually."
+    );
+  }
+  const keyAttrs = mapping.upsertKey!;
+  for (const a of keyAttrs) assertLogicalName(a, "upsertKey attribute");
+  const action = mapping.syncAction ?? "deactivate";
+
+  // Build the set of key tuples present in the source.
+  const sourceKeys = new Set<string>();
+  for (const row of rows) {
+    const tuple = keyAttrs.map((attr) => {
+      const col = mapping.columns.find((c) => c.target === attr)!;
+      const coerced = coerceValue(row[col.source], col);
+      return normalizeKeyPart(coerced);
+    });
+    sourceKeys.add(tuple.join(" "));
+  }
+
+  const info = await client.getEntitySetInfo(mapping.targetEntitySet);
+  const select = [info.primaryIdAttribute, ...keyAttrs].join(",");
+  // For deactivate, only active records are candidates.
+  const filter = action === "deactivate" ? "&$filter=statecode eq 0" : "";
+  const targets = await client.queryAll(
+    `${mapping.targetEntitySet}?$select=${select}${filter}`
+  );
+
+  const toRemove: string[] = [];
+  for (const t of targets) {
+    const tuple = keyAttrs.map((attr) => normalizeKeyPart(t[attr]));
+    if (!sourceKeys.has(tuple.join(" "))) {
+      const id = String(t[info.primaryIdAttribute] ?? "");
+      if (GUID_RE.test(id)) toRemove.push(id);
+    }
+  }
+
+  onProgress?.({ type: "sync", checked: targets.length, toRemove: toRemove.length, removed: 0 });
+
+  for (let offset = 0; offset < toRemove.length; offset += mapping.batchSize) {
+    const slice = toRemove.slice(offset, offset + mapping.batchSize);
+    const ops: BatchOperation[] = slice.map((id, i) => ({
+      contentId: i + 1,
+      method: action === "delete" ? "DELETE" : "PATCH",
+      url: `${mapping.targetEntitySet}(${id})`,
+      body: action === "delete" ? undefined : { statecode: 1 },
+      headers: extraHeaders,
+    }));
+    try {
+      const results = await client.batch(ops);
+      for (const r of results) {
+        if (r.ok) {
+          counters.removed++;
+        } else {
+          errors.push({
+            rowIndex: -1,
+            sourceRow: { [info.primaryIdAttribute]: slice[r.contentId - 1] },
+            message: `sync ${action} failed: ${r.errorMessage ?? `HTTP ${r.status}`}`,
+            httpStatus: r.status,
+          });
+        }
+      }
+    } catch (e) {
+      for (const id of slice) {
+        errors.push({
+          rowIndex: -1,
+          sourceRow: { [info.primaryIdAttribute]: id },
+          message: `sync ${action} failed: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
+    onProgress?.({
+      type: "sync",
+      checked: targets.length,
+      toRemove: toRemove.length,
+      removed: counters.removed,
+    });
+  }
+}
+
+function normalizeKeyPart(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "number") return String(v);
+  return String(v).trim();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Operation building                                                          */
+/* -------------------------------------------------------------------------- */
+
 function buildOperation(
   mapping: Mapping,
   row: SourceRow,
   lookupCache: LookupCache,
-  _rowIndex: number,
-  contentId: number
-): BatchOperation | null {
+  contentId: number,
+  extraHeaders: Record<string, string>
+): { op: BatchOperation; keyExpr?: string } | null {
   assertLogicalName(mapping.targetEntitySet, "targetEntitySet");
   const { payload, lookups } = coerceRow(row, mapping.columns);
 
@@ -235,7 +594,11 @@ function buildOperation(
         throw new CoerceError("not a valid GUID", col.target, value);
       }
     } else {
-      guid = lookupCache.get(col.target)?.get(String(value));
+      const entry = lookupCache.get(col.target)?.get(String(value));
+      if (entry?.failure) {
+        throw new CoerceError(entry.failure, col.target, value);
+      }
+      guid = entry?.guid;
     }
 
     if (!guid) {
@@ -249,30 +612,41 @@ function buildOperation(
     payload[`${col.target}@odata.bind`] = `/${col.bindEntitySet}(${guid})`;
   }
 
+  const headers = Object.keys(extraHeaders).length > 0 ? { ...extraHeaders } : undefined;
+
   switch (mapping.conflictMode) {
     case "insert":
       return {
-        contentId,
-        method: "POST",
-        url: mapping.targetEntitySet,
-        body: payload,
+        op: {
+          contentId,
+          method: "POST",
+          url: mapping.targetEntitySet,
+          body: payload,
+          ...(headers ? { headers } : {}),
+        },
       };
 
     case "upsert":
+    case "sync":
     case "skip-if-exists": {
       if (!mapping.upsertKey || mapping.upsertKey.length === 0) {
         throw new Error("conflictMode requires upsertKey");
       }
       const keyExpr = buildKeyExpression(mapping.upsertKey, mapping.columns, row);
       return {
-        contentId,
-        method: "PATCH",
-        url: `${mapping.targetEntitySet}(${keyExpr})`,
-        body: payload,
-        headers:
-          mapping.conflictMode === "skip-if-exists"
-            ? { "If-None-Match": "*" } // create-only; fail if exists
-            : {},
+        op: {
+          contentId,
+          method: "PATCH",
+          url: `${mapping.targetEntitySet}(${keyExpr})`,
+          body: payload,
+          headers: {
+            ...(headers ?? {}),
+            ...(mapping.conflictMode === "skip-if-exists"
+              ? { "If-None-Match": "*" } // create-only; fail if exists
+              : {}),
+          },
+        },
+        keyExpr,
       };
     }
     default:
@@ -280,7 +654,7 @@ function buildOperation(
   }
 }
 
-function buildKeyExpression(
+export function buildKeyExpression(
   upsertKey: string[],
   columns: ColumnMapping[],
   row: SourceRow
@@ -298,6 +672,13 @@ function buildKeyExpression(
     return `${attr}=${formatKeyLiteral(v)}`;
   });
   return parts.join(",");
+}
+
+function clampOffset(offset: number, total: number, batchSize: number): number {
+  if (!Number.isInteger(offset) || offset <= 0) return 0;
+  if (offset >= total) return total;
+  // Align to a batch boundary so resume can't split a previous batch.
+  return offset - (offset % batchSize);
 }
 
 function toRowError(e: unknown, rowIndex: number, sourceRow: SourceRow): RowError {

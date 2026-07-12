@@ -6,7 +6,7 @@
 // (we had brittle install issues with zod). The trade-off is verbose
 // checks below in exchange for zero dependencies.
 
-import type { DataverseFieldKind, ConflictMode } from "./types.js";
+import type { DataverseFieldKind, ConflictMode, SyncAction } from "./types.js";
 
 export const SCHEMA_VERSION = 1 as const;
 
@@ -19,10 +19,26 @@ export interface ColumnMapping {
   kind: DataverseFieldKind;
   /** For lookups: the entity set name to bind to (e.g. "accounts"). */
   bindEntitySet?: string;
-  /** For lookups: how to resolve the source value into a Dataverse record id. */
-  lookupResolution?: "guid" | "alternateKey";
-  /** When lookupResolution = alternateKey: the attribute to match on. */
+  /**
+   * For lookups: how to resolve the source value into a Dataverse record id.
+   *  - "guid": the cell already contains the record GUID
+   *  - "alternateKey": match on a defined Dataverse alternate key
+   *  - "text": match on ANY text attribute via $filter (KingswaySoft-style
+   *    text lookup); requires keyAttribute; supports createIfMissing.
+   */
+  lookupResolution?: "guid" | "alternateKey" | "text";
+  /** When lookupResolution = alternateKey or text: the attribute to match on. */
   keyAttribute?: string;
+  /**
+   * lookupResolution=text only: create a record in bindEntitySet (with
+   * keyAttribute = source value) when no match is found. Default false.
+   */
+  createIfMissing?: boolean;
+  /**
+   * lookupResolution=text only: what to do when the text matches 2+ records.
+   * "error" (default) fails the row; "first" takes the first match.
+   */
+  duplicateBehavior?: "error" | "first";
   /** For choice/multichoice/status/state: optional label-to-int map. */
   optionMap?: Record<string, number>;
   /** If true, empty source values are sent as null (clears the field). */
@@ -62,6 +78,32 @@ export interface Mapping {
   maxErrors: number;
   /** Where to write run logs (relative to mapping file). */
   logDir: string;
+  /** Concurrent $batch requests in flight (1-8). Default 1 (sequential). */
+  concurrency: number;
+  /**
+   * Send MSCRM.BypassCustomPluginExecution and
+   * MSCRM.SuppressCallbackRegistrationExpanderJob on every operation.
+   * Skips synchronous plugins and Power Automate triggers during the load.
+   * The app user / signed-in user needs the prvBypassCustomPlugins privilege.
+   */
+  bypassCustomLogic: boolean;
+  /**
+   * Impersonate this systemuser (GUID) — records show them as creator/owner.
+   * Sent as the MSCRMCallerID header. Caller needs prvActOnBehalfOfAnotherUser.
+   */
+  impersonateUserId?: string;
+  /**
+   * upsert/sync only: pre-read each target record and drop attributes whose
+   * values already match; skip the row entirely if nothing changed. Reduces
+   * audit noise and plugin churn at the cost of one GET per row.
+   * Lookup columns are always sent (navigation-property values can't be
+   * compared cheaply).
+   */
+  skipUnchanged: boolean;
+  /** conflictMode=sync only: what to do with missing records. Default "deactivate". */
+  syncAction?: SyncAction;
+  /** POST a {text: summary} JSON to this webhook after each run (Teams/Slack compatible). */
+  notifyUrl?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -86,7 +128,11 @@ const FIELD_KINDS: readonly DataverseFieldKind[] = [
   "state",
 ];
 
-const CONFLICT_MODES: readonly ConflictMode[] = ["insert", "upsert", "skip-if-exists"];
+const CONFLICT_MODES: readonly ConflictMode[] = ["insert", "upsert", "skip-if-exists", "sync"];
+
+const SYNC_ACTIONS: readonly SyncAction[] = ["deactivate", "delete"];
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /* -------------------------------------------------------------------------- */
 /* Parsing helpers                                                             */
@@ -166,6 +212,19 @@ export function parseMapping(input: unknown): Mapping {
     );
   }
 
+  const syncAction = input.syncAction ?? (conflictMode === "sync" ? "deactivate" : undefined);
+  if (
+    syncAction !== undefined &&
+    (typeof syncAction !== "string" || !SYNC_ACTIONS.includes(syncAction as SyncAction))
+  ) {
+    throw new MappingParseError(`syncAction must be one of: ${SYNC_ACTIONS.join(", ")}`);
+  }
+
+  const impersonateUserId = optionalString(input.impersonateUserId, "impersonateUserId");
+  if (impersonateUserId !== undefined && !GUID_RE.test(impersonateUserId)) {
+    throw new MappingParseError("impersonateUserId must be a systemuser GUID");
+  }
+
   return {
     schemaVersion: SCHEMA_VERSION,
     name: requireString(input.name, "name"),
@@ -188,6 +247,15 @@ export function parseMapping(input: unknown): Mapping {
         ? 0
         : requireNumberInRange(input.maxErrors, "maxErrors", 0, Number.MAX_SAFE_INTEGER),
     logDir: optionalString(input.logDir, "logDir") ?? "./logs",
+    concurrency:
+      input.concurrency === undefined
+        ? 1
+        : requireNumberInRange(input.concurrency, "concurrency", 1, 8),
+    bypassCustomLogic: optionalBoolean(input.bypassCustomLogic, false, "bypassCustomLogic"),
+    impersonateUserId,
+    skipUnchanged: optionalBoolean(input.skipUnchanged, false, "skipUnchanged"),
+    syncAction: syncAction as SyncAction | undefined,
+    notifyUrl: optionalString(input.notifyUrl, "notifyUrl"),
   };
 }
 
@@ -203,9 +271,17 @@ function parseColumnMapping(input: unknown, path: string): ColumnMapping {
   if (
     lookupResolution !== undefined &&
     lookupResolution !== "guid" &&
-    lookupResolution !== "alternateKey"
+    lookupResolution !== "alternateKey" &&
+    lookupResolution !== "text"
   ) {
-    throw new MappingParseError(`${path}.lookupResolution must be "guid" or "alternateKey"`);
+    throw new MappingParseError(
+      `${path}.lookupResolution must be "guid", "alternateKey", or "text"`
+    );
+  }
+
+  const duplicateBehavior = input.duplicateBehavior;
+  if (duplicateBehavior !== undefined && duplicateBehavior !== "error" && duplicateBehavior !== "first") {
+    throw new MappingParseError(`${path}.duplicateBehavior must be "error" or "first"`);
   }
 
   let optionMap: Record<string, number> | undefined;
@@ -227,8 +303,10 @@ function parseColumnMapping(input: unknown, path: string): ColumnMapping {
     target: requireString(input.target, `${path}.target`),
     kind: kind as DataverseFieldKind,
     bindEntitySet: optionalString(input.bindEntitySet, `${path}.bindEntitySet`),
-    lookupResolution: lookupResolution as "guid" | "alternateKey" | undefined,
+    lookupResolution: lookupResolution as "guid" | "alternateKey" | "text" | undefined,
     keyAttribute: optionalString(input.keyAttribute, `${path}.keyAttribute`),
+    createIfMissing: optionalBoolean(input.createIfMissing, false, `${path}.createIfMissing`) || undefined,
+    duplicateBehavior: duplicateBehavior as "error" | "first" | undefined,
     optionMap,
     treatEmptyAsNull: optionalBoolean(input.treatEmptyAsNull, true, `${path}.treatEmptyAsNull`),
     format: optionalString(input.format, `${path}.format`),
@@ -252,13 +330,50 @@ export function validateMapping(m: Mapping): string[] {
     if (col.kind === "lookup") {
       if (!col.bindEntitySet) errors.push(`Lookup column ${col.target} missing bindEntitySet`);
       if (!col.lookupResolution) errors.push(`Lookup column ${col.target} missing lookupResolution`);
-      if (col.lookupResolution === "alternateKey" && !col.keyAttribute) {
-        errors.push(`Lookup column ${col.target} uses alternateKey but no keyAttribute set`);
+      if (
+        (col.lookupResolution === "alternateKey" || col.lookupResolution === "text") &&
+        !col.keyAttribute
+      ) {
+        errors.push(
+          `Lookup column ${col.target} uses ${col.lookupResolution} but no keyAttribute set`
+        );
+      }
+    } else {
+      if (col.createIfMissing) {
+        errors.push(`Column ${col.target}: createIfMissing only applies to lookup columns`);
+      }
+      if (col.duplicateBehavior) {
+        errors.push(`Column ${col.target}: duplicateBehavior only applies to lookup columns`);
+      }
+    }
+    if (col.kind === "lookup" && col.lookupResolution !== "text") {
+      if (col.createIfMissing) {
+        errors.push(`Lookup column ${col.target}: createIfMissing requires lookupResolution=text`);
+      }
+      if (col.duplicateBehavior) {
+        errors.push(`Lookup column ${col.target}: duplicateBehavior requires lookupResolution=text`);
       }
     }
   }
-  if (m.conflictMode === "upsert" && (!m.upsertKey || m.upsertKey.length === 0)) {
-    errors.push("conflictMode=upsert requires at least one upsertKey attribute");
+  if (
+    (m.conflictMode === "upsert" || m.conflictMode === "sync") &&
+    (!m.upsertKey || m.upsertKey.length === 0)
+  ) {
+    errors.push(`conflictMode=${m.conflictMode} requires at least one upsertKey attribute`);
+  }
+  if (m.syncAction && m.conflictMode !== "sync") {
+    errors.push("syncAction only applies when conflictMode=sync");
+  }
+  if (m.skipUnchanged && m.conflictMode !== "upsert" && m.conflictMode !== "sync") {
+    errors.push("skipUnchanged requires conflictMode=upsert or sync");
+  }
+  // upsertKey attributes must exist in columns — catch at validate time, not per-row.
+  if (m.upsertKey) {
+    for (const attr of m.upsertKey) {
+      if (!m.columns.some((c) => c.target === attr)) {
+        errors.push(`upsertKey attribute "${attr}" is not mapped in columns`);
+      }
+    }
   }
   return errors;
 }

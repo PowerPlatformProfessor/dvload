@@ -23,8 +23,15 @@ export type DataverseFieldKind =
   | "status"
   | "state";
 
-/** What to do when a row already exists (matched by alternate key). */
-export type ConflictMode = "insert" | "upsert" | "skip-if-exists";
+/**
+ * What to do when a row already exists (matched by alternate key).
+ * "sync" = upsert + remove (deactivate or delete, per syncAction) any target
+ * record whose key is absent from the source table.
+ */
+export type ConflictMode = "insert" | "upsert" | "skip-if-exists" | "sync";
+
+/** What "sync" does with target records missing from the source. */
+export type SyncAction = "deactivate" | "delete";
 
 /** A successfully processed row from a load run. */
 export interface RowSuccess {
@@ -60,6 +67,13 @@ export interface LoadResult {
    *   - rows we didn't attempt because maxErrors stopped the run early
    */
   skipped: number;
+  /**
+   * Rows skipped because skipUnchanged found no differing attributes.
+   * Subset of `skipped`.
+   */
+  unchanged: number;
+  /** conflictMode=sync only: target records deactivated or deleted. */
+  removed: number;
   startedAt: string;
   finishedAt: string;
   errors: RowError[];
@@ -81,4 +95,8 @@ export type ProgressEvent =
     }
   | { type: "row-success"; success: RowSuccess }
   | { type: "row-error"; error: RowError }
+  /** conflictMode=sync: progress of the remove-missing pass. */
+  | { type: "sync"; checked: number; toRemove: number; removed: number }
+  /** Emitted after each committed batch; offset = next row offset to process. */
+  | { type: "checkpoint"; offset: number }
   | { type: "done"; result: LoadResult };

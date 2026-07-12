@@ -155,9 +155,19 @@ function assertSafeBatchUrl(url: string): string {
   return url;
 }
 
+/** Shape of one option in Dataverse option-set metadata. */
+interface OptionMetadata {
+  Value?: number;
+  Label?: { UserLocalizedLabel?: { Label?: string } };
+}
+
 export class DataverseClient {
   private readonly base: string;
   private readonly fetchFn: typeof fetch;
+  private readonly entitySetInfoCache = new Map<
+    string,
+    { logicalName: string; primaryIdAttribute: string }
+  >();
 
   constructor(private readonly opts: DataverseClientOptions) {
     const apiVersion = opts.apiVersion ?? "v9.2";
@@ -285,14 +295,168 @@ export class DataverseClient {
   }
 
   /** Create a single record. Slow for many rows — prefer batch(). */
-  async create(entitySet: string, body: Record<string, unknown>): Promise<CreateResult> {
+  async create(
+    entitySet: string,
+    body: Record<string, unknown>,
+    extraHeaders?: Record<string, string>
+  ): Promise<CreateResult> {
     const res = await this.fetchWithRetry(this.url(entitySet), {
       method: "POST",
-      headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) },
+      headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()), ...(extraHeaders ?? {}) },
       body: JSON.stringify(body),
     });
     if (!res.ok) await throwForResponse(res);
     return parseCreateResult(res);
+  }
+
+  /**
+   * GET a collection URL and follow @odata.nextLink until exhausted.
+   * `path` is entity-set-relative and already query-encoded by the caller.
+   */
+  async queryAll(path: string): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let next: string | null = this.url(path);
+    while (next) {
+      const res = await this.fetchWithRetry(next, {
+        headers: {
+          ...DEFAULT_HEADERS,
+          ...(await this.authHeaders()),
+          // Cap page size; Dataverse default is 5000 which is fine, but be explicit.
+          Prefer: 'odata.maxpagesize=5000,odata.include-annotations="*"',
+        },
+      });
+      if (!res.ok) await throwForResponse(res);
+      const json = (await res.json()) as {
+        value?: Array<Record<string, unknown>>;
+        "@odata.nextLink"?: string;
+      };
+      out.push(...(json.value ?? []));
+      next = json["@odata.nextLink"] ?? null;
+    }
+    return out;
+  }
+
+  /**
+   * Look up { logicalName, primaryIdAttribute } for an entity SET name
+   * (e.g. "accounts" → { account, accountid }). Cached per client instance.
+   */
+  async getEntitySetInfo(entitySetName: string): Promise<{ logicalName: string; primaryIdAttribute: string }> {
+    assertLogicalName(entitySetName, "Entity set");
+    const cached = this.entitySetInfoCache.get(entitySetName);
+    if (cached) return cached;
+    const res = await this.fetchWithRetry(
+      this.url(
+        `EntityDefinitions?$select=LogicalName,PrimaryIdAttribute&$filter=EntitySetName eq '${entitySetName}'`
+      ),
+      { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+    );
+    if (!res.ok) await throwForResponse(res);
+    const json = (await res.json()) as {
+      value?: Array<{ LogicalName?: string; PrimaryIdAttribute?: string }>;
+    };
+    const e = json.value?.[0];
+    if (!e?.LogicalName || !e?.PrimaryIdAttribute) {
+      throw new Error(`No entity found with EntitySetName "${entitySetName}"`);
+    }
+    const info = { logicalName: e.LogicalName, primaryIdAttribute: e.PrimaryIdAttribute };
+    this.entitySetInfoCache.set(entitySetName, info);
+    return info;
+  }
+
+  /**
+   * Text lookup: find records where `attribute` equals `value` (exact match).
+   * Returns up to 2 ids so the caller can detect ambiguity cheaply.
+   */
+  async resolveByText(
+    entitySet: string,
+    attribute: string,
+    value: unknown,
+    primaryIdAttribute: string
+  ): Promise<string[]> {
+    assertLogicalName(entitySet, "Entity set");
+    assertLogicalName(attribute, "Attribute");
+    assertLogicalName(primaryIdAttribute, "Primary id attribute");
+    const literal = formatKeyLiteral(value);
+    const res = await this.fetchWithRetry(
+      this.url(
+        `${entitySet}?$select=${primaryIdAttribute}&$filter=${attribute} eq ${literal}&$top=2`
+      ),
+      { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+    );
+    if (!res.ok) await throwForResponse(res);
+    const json = (await res.json()) as { value?: Array<Record<string, unknown>> };
+    return (json.value ?? [])
+      .map((r) => String(r[primaryIdAttribute] ?? ""))
+      .filter(Boolean);
+  }
+
+  /**
+   * Read one record by alternate-key expression with a $select list.
+   * Returns null on 404. keyExpr must be built from validated parts
+   * (see buildKeyExpression in load.ts).
+   */
+  async getRecord(
+    entitySet: string,
+    keyExpr: string,
+    select: string[]
+  ): Promise<Record<string, unknown> | null> {
+    assertLogicalName(entitySet, "Entity set");
+    for (const s of select) assertLogicalName(s, "Select attribute");
+    const res = await this.fetchWithRetry(
+      this.url(`${entitySet}(${keyExpr})?$select=${select.join(",")}`),
+      { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) await throwForResponse(res);
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  /**
+   * Fetch option-set label → integer value for a picklist or multi-select
+   * picklist attribute. Handles both local and global option sets.
+   */
+  async getOptionSetLabels(
+    entityLogicalName: string,
+    attrLogicalName: string
+  ): Promise<Record<string, number>> {
+    assertLogicalName(entityLogicalName, "Entity logical name");
+    assertLogicalName(attrLogicalName, "Attribute logical name");
+    const casts = [
+      "Microsoft.Dynamics.CRM.PicklistAttributeMetadata",
+      "Microsoft.Dynamics.CRM.MultiSelectPicklistAttributeMetadata",
+      "Microsoft.Dynamics.CRM.StatusAttributeMetadata",
+      "Microsoft.Dynamics.CRM.StateAttributeMetadata",
+    ];
+    for (const cast of casts) {
+      const res = await this.fetchWithRetry(
+        this.url(
+          `EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes/${cast}` +
+            `?$select=LogicalName&$filter=LogicalName eq '${attrLogicalName}'` +
+            `&$expand=OptionSet($select=Options),GlobalOptionSet($select=Options)`
+        ),
+        { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+      );
+      if (!res.ok) continue; // wrong cast for this attribute; try the next
+      const json = (await res.json()) as {
+        value?: Array<{
+          OptionSet?: { Options?: OptionMetadata[] };
+          GlobalOptionSet?: { Options?: OptionMetadata[] };
+        }>;
+      };
+      const attr = json.value?.[0];
+      const options = attr?.OptionSet?.Options ?? attr?.GlobalOptionSet?.Options;
+      if (!options) continue;
+      const map: Record<string, number> = {};
+      for (const o of options) {
+        const label = o.Label?.UserLocalizedLabel?.Label;
+        if (label && typeof o.Value === "number") map[label] = o.Value;
+      }
+      if (Object.keys(map).length > 0) return map;
+    }
+    throw new Error(
+      `No option-set metadata found for ${entityLogicalName}.${attrLogicalName} ` +
+        `(is it a choice/multichoice/status/state attribute?)`
+    );
   }
 
   /** Resolve a record id by alternate key. Returns null if not found. */
