@@ -225,6 +225,13 @@ export function parseMapping(input: unknown): Mapping {
     throw new MappingParseError("impersonateUserId must be a systemuser GUID");
   }
 
+  // The run summary is POSTed to notifyUrl, so a shared mapping file can
+  // point it anywhere. Require TLS (or localhost for testing).
+  const notifyUrl = optionalString(input.notifyUrl, "notifyUrl");
+  if (notifyUrl !== undefined && !/^(https:\/\/|http:\/\/localhost(:\d+)?\/)/i.test(notifyUrl)) {
+    throw new MappingParseError("notifyUrl must be an https:// URL (or http://localhost for testing)");
+  }
+
   return {
     schemaVersion: SCHEMA_VERSION,
     name: requireString(input.name, "name"),
@@ -255,7 +262,7 @@ export function parseMapping(input: unknown): Mapping {
     impersonateUserId,
     skipUnchanged: optionalBoolean(input.skipUnchanged, false, "skipUnchanged"),
     syncAction: syncAction as SyncAction | undefined,
-    notifyUrl: optionalString(input.notifyUrl, "notifyUrl"),
+    notifyUrl,
   };
 }
 

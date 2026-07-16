@@ -1,4 +1,5 @@
 import kleur from "kleur";
+import { readFile } from "node:fs/promises";
 
 import {
   loginDelegated,
@@ -11,6 +12,7 @@ import {
   dataverseScope,
   warnIfWellKnown,
   isWellKnownDevClient,
+  parseClientCertificate,
 } from "../auth.js";
 import { promptSecret } from "../prompt.js";
 import { resolveEnv } from "../profiles.js";
@@ -36,7 +38,7 @@ export async function loginCommand(opts: LoginOpts): Promise<void> {
   console.log(kleur.green(`Signed in as ${account.username} (${envUrl}).`));
   console.log(
     kleur.gray(
-      "Account reference stored in the OS keychain; MSAL token cache written to ~/.dvload/."
+      "Account reference stored in the dvload secure store; encrypted MSAL token cache written to ~/.dvload/."
     )
   );
 }
@@ -57,21 +59,34 @@ interface AppLoginOpts {
   tenantId: string;
   /** If set, read the secret from this env var instead of prompting. */
   secretEnv?: string;
+  /** Path to a PEM containing the certificate + private key (instead of a secret). */
+  cert?: string;
 }
 
 export async function appLoginCommand(opts: AppLoginOpts): Promise<void> {
   const envUrl = await resolveEnv(opts);
-  let secret = opts.secretEnv ? process.env[opts.secretEnv] : undefined;
-  if (!secret) {
-    secret = await promptSecret("Client secret (input hidden): ");
-  }
-  if (!secret) throw new Error("Client secret was empty.");
 
-  await saveAppOnlyCredentials(envUrl, {
-    clientId: opts.clientId,
-    tenantId: opts.tenantId,
-    secret,
-  });
+  if (opts.cert) {
+    const pem = await readFile(opts.cert, "utf8");
+    parseClientCertificate(pem); // validate before saving
+    await saveAppOnlyCredentials(envUrl, {
+      clientId: opts.clientId,
+      tenantId: opts.tenantId,
+      certificatePem: pem,
+    });
+  } else {
+    let secret = opts.secretEnv ? process.env[opts.secretEnv] : undefined;
+    if (!secret) {
+      secret = await promptSecret("Client secret (input hidden): ");
+    }
+    if (!secret) throw new Error("Client secret was empty.");
+
+    await saveAppOnlyCredentials(envUrl, {
+      clientId: opts.clientId,
+      tenantId: opts.tenantId,
+      secret,
+    });
+  }
 
   // Probe the credentials by acquiring a token. Cleaner UX than failing
   // later during a real run.
@@ -120,7 +135,11 @@ export async function whoamiCommand(opts: WhoamiOpts): Promise<void> {
     const creds = await loadAppOnlyCredentials(envUrl);
     console.log(`  client id: ${creds!.clientId}`);
     console.log(`  tenant id: ${creds!.tenantId}`);
-    console.log(`  secret:    ${kleur.gray("(stored in Credential Manager)")}`);
+    console.log(
+      `  credential: ${kleur.gray(
+        creds!.certificatePem ? "certificate (stored in secure store)" : "secret (stored in secure store)"
+      )}`
+    );
   } else if (mode === "delegated") {
     console.log(kleur.gray("  refresh token cached for the last user that signed in."));
   } else {

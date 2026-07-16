@@ -121,7 +121,14 @@
   <div class="row">
     <button id="save" class="secondary" type="button">Save mapping…</button>
     <button id="load" class="secondary" type="button">Load mapping…</button>
+    <button id="importPqt" class="secondary" type="button" title="Import queries + field mappings from a Dataverse Dataflow / Power Query Online .pqt export">Import .pqt…</button>
     <button id="run" type="button" style="margin-left: auto;">Run import</button>
+  </div>
+  <div id="pqtRow" class="row" style="margin-top:6px; display:none;">
+    <select id="pqtQuery" style="flex:1"></select>
+    <button id="pqtUse" type="button" style="width:auto;">Use mapping</button>
+    <button id="pqtCopyM" class="secondary" type="button" style="width:auto;"
+            title="Copy the M code to paste into Excel: Data → Get Data → Blank Query → Advanced Editor">Copy M</button>
   </div>
 
   <div id="status" class="status info" style="display:none"></div>

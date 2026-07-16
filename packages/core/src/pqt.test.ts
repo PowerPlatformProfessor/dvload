@@ -3,8 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildWorkbookWithQueries,
+  extractPqtFromXlsx,
   injectMappingIntoPqt,
   mappingFromPqt,
+  mappingsFromPqtAll,
   STANDARD_CONTENT_TYPES,
   type PqtArchive,
 } from "./pqt.js";
@@ -84,4 +87,34 @@ test("mappingFromPqt adds no note for plain Dataflows", () => {
   });
   assert.equal(m.conflictMode, "insert");
   assert.equal(m.description, undefined);
+});
+
+test("mappingsFromPqtAll returns one mapping per query", () => {
+  const a = archive(false);
+  a.mashupMetadata.QueriesMetadata["Accounts"] = {
+    QueryId: "q2",
+    QueryName: "Accounts",
+    QueryGroupId: null,
+    LoadEnabled: false,
+    FieldsMetadata: {},
+  };
+  const all = mappingsFromPqtAll(a, { environmentUrl: "https://unit.crm.dynamics.com" });
+  assert.deepEqual(Object.keys(all).sort(), ["Accounts", "Contacts"]);
+  assert.equal(all["Contacts"].columns.length, 1);
+  assert.equal(all["Accounts"].columns.length, 0);
+});
+
+test("EXPERIMENTAL: pqt → workbook → extract round-trips the M document", async () => {
+  const a = archive(false);
+  a.mashupDocument =
+    'section Section1;\r\nshared Contacts = let Source = Csv.Document("x") in Source;\r\nshared #"My Query" = 1 + 1;';
+  const xlsxBytes = await buildWorkbookWithQueries(a);
+
+  // The workbook must contain a DataMashup part our own parser accepts.
+  const roundTripped = await extractPqtFromXlsx(xlsxBytes);
+  assert.equal(roundTripped.mashupDocument, a.mashupDocument);
+  assert.deepEqual(
+    Object.keys(roundTripped.mashupMetadata.QueriesMetadata).sort(),
+    ["Contacts", "My Query"]
+  );
 });

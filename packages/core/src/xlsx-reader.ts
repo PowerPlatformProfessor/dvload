@@ -38,6 +38,16 @@ export async function readTableFromFile(
   path: string,
   opts: ReadTableOptions
 ): Promise<ReadTableResult> {
+  // Delimited-text sources: same output shape, no workbook/table concepts
+  // (tableName and sheetName are ignored).
+  if (/\.(csv|tsv)$/i.test(path)) {
+    const { readFile } = await import("node:fs/promises");
+    const { readTableFromCsvString } = await import("./csv-reader.js");
+    const text = await readFile(path, "utf8");
+    return readTableFromCsvString(text, {
+      delimiter: /\.tsv$/i.test(path) ? "\t" : ",",
+    });
+  }
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(path);
   return extractTable(wb, opts);

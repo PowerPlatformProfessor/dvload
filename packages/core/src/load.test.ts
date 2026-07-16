@@ -72,7 +72,8 @@ function textLookupMapping(col: Partial<Mapping["columns"][0]> = {}): Mapping {
 test("text lookup resolves a unique match and binds it", async () => {
   const { client, batches } = fakeClient({
     getEntitySetInfo: async () => ({ logicalName: "account", primaryIdAttribute: "accountid" }),
-    resolveByText: async () => [GUID_A],
+    resolveManyByText: async (_es: string, _attr: string, values: unknown[]) =>
+      new Map(values.map((v) => [String(v).toLowerCase(), [GUID_A]])),
   });
 
   const result = await loadRows({
@@ -90,7 +91,8 @@ test("ambiguous text lookup fails the row by default, resolves with duplicateBeh
   const make = () =>
     fakeClient({
       getEntitySetInfo: async () => ({ logicalName: "account", primaryIdAttribute: "accountid" }),
-      resolveByText: async () => [GUID_A, GUID_B],
+      resolveManyByText: async (_es: string, _attr: string, values: unknown[]) =>
+        new Map(values.map((v) => [String(v).toLowerCase(), [GUID_A, GUID_B]])),
     });
 
   const strict = await loadRows({
@@ -116,7 +118,7 @@ test("createIfMissing creates the record and uses its id; without it the row fai
   let createdBody: Record<string, unknown> | undefined;
   const withCreate = fakeClient({
     getEntitySetInfo: async () => ({ logicalName: "account", primaryIdAttribute: "accountid" }),
-    resolveByText: async () => [],
+    resolveManyByText: async () => new Map(),
     create: async (_set: string, body: Record<string, unknown>) => {
       createdBody = body;
       return { id: GUID_B, entityUrl: "" };
@@ -135,7 +137,7 @@ test("createIfMissing creates the record and uses its id; without it the row fai
 
   const noCreate = fakeClient({
     getEntitySetInfo: async () => ({ logicalName: "account", primaryIdAttribute: "accountid" }),
-    resolveByText: async () => [],
+    resolveManyByText: async () => new Map(),
   });
   const failed = await loadRows({
     mapping: textLookupMapping(),

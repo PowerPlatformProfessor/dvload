@@ -4,10 +4,18 @@
 //
 // We shell out to schtasks.exe (built in to Windows). Lives in the user's
 // scope, no admin rights required.
+//
+// Instead of putting the whole command line into /TR (which is executed
+// via cmd.exe and subject to its quoting/metacharacter rules), we write a
+// small .cmd wrapper into ~/.dvload/tasks/ and point /TR at that file.
+// The wrapper pins the absolute node executable and CLI entry script, so
+// the task keeps working even when `dvload` isn't on the task's PATH.
 
 import { spawn } from "node:child_process";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
 import kleur from "kleur";
 import { parseMapping } from "@dvload/core";
 import { detectAuthMode } from "../auth.js";
@@ -31,18 +39,18 @@ export async function scheduleCommand(mappingPath: string, opts: ScheduleOpts): 
   const mapping = parseMapping(JSON.parse(await readFile(mappingFile, "utf8")));
   const taskName = opts.name ?? `dvload: ${mapping.name}`;
 
-  // The /TR value is executed via `cmd /c`, so cmd metacharacters in a path
-  // or task name would be interpreted as commands. Refuse rather than trying
-  // to escape cmd's quoting rules.
+  // Quotes and newlines cannot be represented safely in a .cmd argument or
+  // a schtasks task name. Everything else (spaces, &, %, …) is fine now
+  // that the command lives in a wrapper script.
   for (const [label, value] of [
     ["mapping path", mappingFile],
     ["workbook path", workbookFile],
     ["task name", taskName],
   ] as const) {
-    if (/[&|<>^%"!\r\n]/.test(value)) {
+    if (/["\r\n]/.test(value)) {
       throw new Error(
-        `The ${label} contains characters not allowed in a scheduled command ` +
-          `(& | < > ^ % " !): ${value}\nRename or move it, or pass a different --name.`
+        `The ${label} contains a double quote or newline, which cannot be scheduled safely: ${value}\n` +
+          `Rename or move it, or pass a different --name.`
       );
     }
   }
@@ -50,6 +58,9 @@ export async function scheduleCommand(mappingPath: string, opts: ScheduleOpts): 
   // Strongly nudge toward app-only for scheduled runs. Delegated tokens
   // expire after 90 days of inactivity (or sooner under conditional access),
   // and a scheduled task can't pop a device-code prompt to recover.
+  // cmd.exe expands %VAR% inside batch files; escape literal % as %%.
+  const q = (s: string): string => `"${s.replace(/%/g, "%%")}"`;
+
   const mode = await detectAuthMode(mapping.environmentUrl);
   if (mode !== "appOnly") {
     console.log(
@@ -57,21 +68,43 @@ export async function scheduleCommand(mappingPath: string, opts: ScheduleOpts): 
         "Warning: this environment is using " + mode + " auth.\n" +
           "Scheduled runs will eventually fail when the refresh token expires.\n" +
           "Recommended: run `dvload app-login --env " + mapping.environmentUrl +
-          " --client-id <id> --tenant-id <id>` first."
+          " --client-id <id> --tenant-id <id>` first (a certificate via --cert never expires by rotation policy)."
       )
     );
   }
 
-  // Locate the dvload CLI: prefer the global npm install on PATH;
-  // fall back to "node <this script>" so the task works in dev too.
-  const command = `dvload run "${mappingFile}" -w "${workbookFile}" --refresh`;
+  // Resolve the CLI entry point relative to this compiled file
+  // (dist/commands/schedule.js → dist/index.js). Pinning node + script
+  // avoids depending on PATH inside the Task Scheduler environment.
+  // In a single-exe (SEA) build there is no script file on disk — the exe
+  // itself IS the CLI, so invoke it directly.
+  const cliEntry = fileURLToPath(new URL("../index.js", import.meta.url));
+  let launcher: string;
+  try {
+    await access(cliEntry);
+    launcher = `${q(process.execPath)} ${q(cliEntry)}`;
+  } catch {
+    launcher = q(process.execPath);
+  }
+
+  const wrapper =
+    "@echo off\r\n" +
+    `${launcher} run ${q(mappingFile)} -w ${q(workbookFile)} --refresh --non-interactive\r\n`;
+
+  const taskDir = path.join(os.homedir(), ".dvload", "tasks");
+  await mkdir(taskDir, { recursive: true });
+  const scriptFile = path.join(
+    taskDir,
+    `${taskName.replace(/[^\w.-]+/g, "_")}.cmd`
+  );
+  await writeFile(scriptFile, wrapper, "utf8");
 
   const args = [
     "/Create",
     "/TN",
     taskName,
     "/TR",
-    `cmd /c ${command}`,
+    `"${scriptFile}"`,
     "/SC",
     "DAILY",
     "/ST",
@@ -93,6 +126,7 @@ export async function scheduleCommand(mappingPath: string, opts: ScheduleOpts): 
   });
 
   console.log(kleur.green(`Registered Scheduled Task "${taskName}" for ${opts.time} daily.`));
+  console.log(kleur.gray(`  Wrapper script: ${scriptFile}`));
   console.log(kleur.gray("  To remove: schtasks /Delete /TN \"" + taskName + "\" /F"));
   console.log(kleur.gray("  To run now: schtasks /Run  /TN \"" + taskName + "\""));
 }

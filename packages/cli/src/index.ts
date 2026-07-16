@@ -13,7 +13,7 @@ import {
 } from "./commands/login.js";
 import { validateCommand } from "./commands/validate.js";
 import { scheduleCommand } from "./commands/schedule.js";
-import { extractPqtCommand, importPqtCommand } from "./commands/pqt.js";
+import { extractPqtCommand, importPqtCommand, pqtToXlsxCommand } from "./commands/pqt.js";
 import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
 
 const program = new Command();
@@ -25,9 +25,9 @@ program
 
 program
   .command("run")
-  .description("Execute a saved .dvmap.json against an .xlsx workbook.")
+  .description("Execute a saved .dvmap.json against an .xlsx (or .csv/.tsv) source file.")
   .argument("<mapping>", "Path to a .dvmap.json file")
-  .requiredOption("-w, --workbook <path>", "Path to the .xlsx workbook")
+  .requiredOption("-w, --workbook <path>", "Path to the .xlsx workbook (or .csv/.tsv file)")
   .option("--refresh", "Refresh Power Query in Excel before reading (Windows-only).")
   .option("--dry-run", "Coerce + plan the import but don't call Dataverse.")
   .option("--user", "Force delegated (interactive) auth even if app-only credentials are configured.")
@@ -37,6 +37,8 @@ program
   .option("--notify-url <url>", "POST a {text} summary to this webhook after the run.")
   .option("--no-failed-rows", "Don't write the failed-rows .xlsx re-run file.")
   .option("--no-color", "Disable color output.")
+  .option("--non-interactive", "Fail fast instead of prompting for device-code login (default when piped).")
+  .option("--json", "Print the run result as JSON on stdout; suppress progress output.")
   .action(runCommand);
 
 program
@@ -82,6 +84,7 @@ program
   .requiredOption("--client-id <id>", "Azure AD app (confidential client) id")
   .requiredOption("--tenant-id <id>", "Azure AD tenant id (the Dataverse tenant)")
   .option("--secret-env <name>", "Read the secret from this env var instead of prompting")
+  .option("--cert <pem-path>", "Use a certificate (PEM with cert + private key) instead of a secret")
   .action(appLoginCommand);
 
 program
@@ -141,7 +144,15 @@ program
   .option("--entity <set>", "Override the target entity set name")
   .option("-o, --out <path>", "Output .dvmap.json path (default: <query>.dvmap.json next to the .pqt)")
   .option("--emit-m", "Also write the MashupDocument.pq alongside the mapping.")
+  .option("--all-queries", "Emit one .dvmap.json per query (-o becomes the output directory).")
   .action(importPqtCommand);
+
+program
+  .command("pqt-to-xlsx")
+  .description("EXPERIMENTAL: build an .xlsx with the .pqt's queries embedded in Power Query.")
+  .argument("<pqt>", "Path to a .pqt file (e.g. exported from Dataverse Dataflows)")
+  .option("-o, --out <path>", "Output .xlsx path (default: <pqt-name>.xlsx next to the .pqt)")
+  .action(pqtToXlsxCommand);
 
 // Scheduling ---------------------------------------------------------------
 program

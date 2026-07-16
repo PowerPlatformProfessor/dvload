@@ -12,11 +12,22 @@ export const PROFILES_FILE = path.join(os.homedir(), ".dvload", "profiles.json")
 export type Profiles = Record<string, string>;
 
 export async function readProfiles(): Promise<Profiles> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(PROFILES_FILE, "utf8");
+    raw = await fs.readFile(PROFILES_FILE, "utf8");
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw e;
+  }
+  // A parse failure must NOT silently become "no profiles" — a stray comma
+  // would make every --profile lookup fail with a misleading message.
+  try {
     return JSON.parse(raw) as Profiles;
-  } catch {
-    return {};
+  } catch (e) {
+    throw new Error(
+      `${PROFILES_FILE} is not valid JSON (${(e as Error).message}). ` +
+        `Fix or delete the file, then re-add profiles with \`dvload profile add\`.`
+    );
   }
 }
 

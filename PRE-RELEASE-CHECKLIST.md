@@ -81,9 +81,9 @@ AppSource submission:
 
 ## 4. CLI distribution
 
-- Bundle as a single executable: `pkg packages/cli/dist/index.js -t node20-win-x64`
-  (or use `nexe`). Don't ship the raw Node project — `keytar` won't
-  resolve cleanly without the build step.
+- Bundle as a single executable: `npm run bundle --workspace=@dvload/cli`,
+  then the Node SEA steps in `.github/workflows/release.yml` (keytar is
+  gone, so the bundle has no native addons and SEA works cleanly).
 - Code-sign the .exe so Windows SmartScreen doesn't yell at users.
   EV certs are nice but not strictly required for personal-scale distribution.
 - Publish to GitHub Releases with checksums (SHA-256) in the release notes.

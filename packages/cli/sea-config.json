@@ -1,0 +1,5 @@
+{
+  "main": "build/dvload.cjs",
+  "output": "build/sea-prep.blob",
+  "disableExperimentalSEAWarning": true
+}

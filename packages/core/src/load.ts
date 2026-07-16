@@ -130,7 +130,11 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
     }
 
     try {
-      const results = await client.batch(effectiveOps);
+      // insert mode = plain POST creates: replaying after a 503/504 that
+      // arrived mid-execution would duplicate records, so only 429 retries.
+      const results = await client.batch(effectiveOps, {
+        idempotent: mapping.conflictMode !== "insert",
+      });
       const seen = new Set<number>();
       for (const r of results) {
         seen.add(r.contentId);
@@ -305,17 +309,27 @@ async function buildLookupCache(
       continue;
     }
 
-    // Text resolution: match on any attribute, detect duplicates, optionally
-    // create missing records.
+    // Text resolution: batched `or`-filter queries (one request per ~15
+    // unique values instead of one per value), then detect duplicates and
+    // optionally create missing records.
     const info = await client.getEntitySetInfo(col.bindEntitySet!);
-    for (const value of uniques) {
+    const uniqueList = [...uniques];
+    let resolved: Map<string, string[]>;
+    try {
+      resolved = await client.resolveManyByText(
+        col.bindEntitySet!,
+        col.keyAttribute!,
+        uniqueList,
+        info.primaryIdAttribute
+      );
+    } catch (e) {
+      const failure = `text lookup failed: ${e instanceof Error ? e.message : String(e)}`;
+      for (const value of uniqueList) inner.set(value, { failure });
+      continue;
+    }
+    for (const value of uniqueList) {
+      const ids = resolved.get(value.toLowerCase()) ?? [];
       try {
-        const ids = await client.resolveByText(
-          col.bindEntitySet!,
-          col.keyAttribute!,
-          value,
-          info.primaryIdAttribute
-        );
         if (ids.length === 1) {
           inner.set(value, { guid: ids[0] });
         } else if (ids.length > 1) {
@@ -484,7 +498,10 @@ async function syncRemoveMissing(
   for (const a of keyAttrs) assertLogicalName(a, "upsertKey attribute");
   const action = mapping.syncAction ?? "deactivate";
 
-  // Build the set of key tuples present in the source.
+  // Build the set of key tuples present in the source. Tuple parts are
+  // joined with NUL — a printable separator (like a space) lets values
+  // containing it collide across parts (["a b","c"] vs ["a","b c"]).
+  const SEP = "\u0000";
   const sourceKeys = new Set<string>();
   for (const row of rows) {
     const tuple = keyAttrs.map((attr) => {
@@ -492,7 +509,7 @@ async function syncRemoveMissing(
       const coerced = coerceValue(row[col.source], col);
       return normalizeKeyPart(coerced);
     });
-    sourceKeys.add(tuple.join(" "));
+    sourceKeys.add(tuple.join(SEP));
   }
 
   const info = await client.getEntitySetInfo(mapping.targetEntitySet);
@@ -506,7 +523,7 @@ async function syncRemoveMissing(
   const toRemove: string[] = [];
   for (const t of targets) {
     const tuple = keyAttrs.map((attr) => normalizeKeyPart(t[attr]));
-    if (!sourceKeys.has(tuple.join(" "))) {
+    if (!sourceKeys.has(tuple.join(SEP))) {
       const id = String(t[info.primaryIdAttribute] ?? "");
       if (GUID_RE.test(id)) toRemove.push(id);
     }

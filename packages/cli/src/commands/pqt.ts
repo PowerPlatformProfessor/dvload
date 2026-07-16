@@ -10,9 +10,11 @@ import path from "node:path";
 import kleur from "kleur";
 import { resolveEnv } from "../profiles.js";
 import {
+  buildWorkbookWithQueries,
   extractPqtFromXlsx,
   injectMappingIntoPqt,
   mappingFromPqt,
+  mappingsFromPqtAll,
   parseMapping,
   parseQueryNames,
   readPqt,
@@ -77,6 +79,8 @@ interface ImportPqtOpts {
   out?: string;
   /** Also extract MashupDocument.pq next to the mapping. */
   emitM?: boolean;
+  /** Emit one .dvmap.json per query instead of picking one. */
+  allQueries?: boolean;
 }
 
 export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promise<void> {
@@ -88,6 +92,33 @@ export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promis
   if (queries.length === 0) {
     // Synthesize from the M document if MashupMetadata had nothing.
     queries.push(...parseQueryNames(archive.mashupDocument));
+  }
+
+  if (opts.allQueries) {
+    const mappings = mappingsFromPqtAll(archive, { environmentUrl: envUrl });
+    const outDir = opts.out ? path.resolve(opts.out) : path.dirname(pqtPath);
+    await mkdir(outDir, { recursive: true });
+    let withColumns = 0;
+    for (const [name, m] of Object.entries(mappings)) {
+      const file = path.join(outDir, `${name.replace(/\W+/g, "-").toLowerCase()}.dvmap.json`);
+      await writeFile(file, serializeMapping(m));
+      if (m.columns.length > 0) withColumns++;
+      console.log(
+        kleur.green(`Wrote ${file}`) +
+          kleur.gray(` (${m.columns.length} column mapping(s))`)
+      );
+    }
+    console.log(
+      kleur.gray(
+        `${Object.keys(mappings).length} quer(ies) exported, ${withColumns} with Dataverse field mappings.`
+      )
+    );
+    if (opts.emitM) {
+      const mPath = path.join(outDir, `${stemOf(pqtPath)}.pq`);
+      await writeFile(mPath, archive.mashupDocument);
+      console.log(kleur.green(`Wrote ${mPath}`));
+    }
+    return;
   }
 
   const queryName = opts.query ?? pickPrimaryQuery(archive, queries);
@@ -134,6 +165,39 @@ export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promis
       )
     );
   }
+}
+
+/**
+ * EXPERIMENTAL: turn a .pqt into an .xlsx whose Power Query editor contains
+ * every query, ready for "Load To…". The DataMashup part is synthesized per
+ * MS-QDEFF; if Excel refuses the file, fall back to `import-pqt --emit-m`
+ * and paste the M into a Blank Query's Advanced Editor.
+ */
+export async function pqtToXlsxCommand(pqt: string, opts: { out?: string }): Promise<void> {
+  const pqtPath = path.resolve(pqt);
+  const archive = await readPqt(await readFile(pqtPath));
+  const outPath = opts.out
+    ? path.resolve(opts.out)
+    : path.join(path.dirname(pqtPath), `${stemOf(pqtPath)}.xlsx`);
+
+  const bytes = await buildWorkbookWithQueries(archive);
+  await mkdir(path.dirname(outPath), { recursive: true });
+  await writeFile(outPath, bytes);
+
+  const queries = Object.keys(archive.mashupMetadata.QueriesMetadata);
+  const names = queries.length > 0 ? queries : parseQueryNames(archive.mashupDocument);
+  console.log(kleur.green(`Wrote ${outPath}`));
+  console.log(
+    kleur.gray(
+      `  ${names.length} quer(ies) embedded: ${names.join(", ")}\n` +
+        `  Open in Excel → Data → Queries & Connections to see them; use "Load To…" per query.\n` +
+        `  (Experimental QDEFF writer — if Excel complains, use import-pqt --emit-m and paste the M.)`
+    )
+  );
+}
+
+function stemOf(file: string): string {
+  return path.basename(file, path.extname(file));
 }
 
 function pickPrimaryQuery(

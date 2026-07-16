@@ -1,0 +1,54 @@
+name: Release (single-exe CLI)
+
+# Builds dvload.exe via Node's Single Executable Application pipeline and
+# attaches it to the GitHub release. Trigger by pushing a tag like v0.2.0.
+#
+# BEFORE the first public release:
+#   1. Set DATAVERSE_LOAD_CLIENT_ID as a repo variable (your own Entra app).
+#   2. Add code signing (Azure Trusted Signing or a conventional cert) at
+#      the marked step — an unsigned exe will trip SmartScreen for users.
+#   3. After the release exists, submit the winget manifest
+#      (packaging/winget/) and update packaging/scoop/dvload.json hashes.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # SEA is more mature on 22 than 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Bundle CLI to a single CJS file
+        run: npm run bundle --workspace=@dvload/cli
+
+      - name: Build SEA blob and inject into node.exe
+        shell: pwsh
+        working-directory: packages/cli
+        run: |
+          node --experimental-sea-config sea-config.json
+          node -e "require('fs').copyFileSync(process.execPath, 'build/dvload.exe')"
+          npx postject build/dvload.exe NODE_SEA_BLOB build/sea-prep.blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+
+      # --- CODE SIGNING GOES HERE ------------------------------------------
+      # Example (Azure Trusted Signing):
+      # - uses: azure/trusted-signing-action@v0
+      #   with: { files-folder: packages/cli/build, files-folder-filter: exe, ... }
+      # ----------------------------------------------------------------------
+
+      - name: Smoke test
+        run: packages/cli/build/dvload.exe --version
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/cli/build/dvload.exe

@@ -6,15 +6,16 @@
 
 | Command | Description |
 |---|---|
-| `run` | Load rows from an `.xlsx` table into Dataverse via OData. Flags: `--dry-run`, `--refresh`, `--user`, `--max-errors`, `--concurrency`, `--resume`, `--notify-url`, `--no-failed-rows`. |
+| `run` | Load rows from an `.xlsx` table (or `.csv`/`.tsv` file) into Dataverse via OData. Flags: `--dry-run`, `--refresh`, `--user`, `--max-errors`, `--concurrency`, `--resume`, `--notify-url`, `--no-failed-rows`, `--non-interactive`, `--json` (machine-readable result for pipelines). |
 | `run-all` | Run several mappings in declared order from a manifest `.json` (for lookup dependencies between tables). Honors `stopOnError`. |
 | `validate` | Check a `.dvmap.json` against local schema and live Dataverse metadata. `--no-remote` skips the network probe. |
-| `login` / `logout` | Delegated (device-code) auth; caches a refresh token in Windows Credential Manager. |
-| `app-login` / `app-logout` | App-only (client credentials) auth; secret stored in Windows Credential Manager. |
+| `login` / `logout` | Delegated (device-code) auth; refresh token cached DPAPI-encrypted in `~/.dvload/`. |
+| `app-login` / `app-logout` | App-only auth via client secret or certificate (`--cert <pem>`); stored in the DPAPI-protected secure store. |
 | `whoami` | Show which auth mode is configured for an environment and probe a live token. |
 | `profile add/remove/list` | Named environment shortcuts stored in `~/.dvload/profiles.json`. |
 | `extract-pqt` | Extract Power Query M code from an `.xlsx` into a `.pqt` archive, optionally injecting a column mapping into `MashupMetadata.json`. |
-| `import-pqt` | Synthesise a `.dvmap.json` from the `MashupMetadata.json` inside an existing `.pqt`. |
+| `import-pqt` | Synthesise a `.dvmap.json` from the `MashupMetadata.json` inside an existing `.pqt`. `--all-queries` emits one mapping per query; `--emit-m` writes the M document. |
+| `pqt-to-xlsx` | **Experimental:** build an `.xlsx` with the `.pqt`'s queries embedded natively in Power Query (QDEFF/DataMashup writer). Queries arrive connection-only; use "Load To…" in Excel. |
 | `schedule` | Register a Windows Scheduled Task for nightly unattended imports (`dvload run --refresh`). |
 
 ### Mapping engine (`@dvload/core`)
@@ -45,6 +46,7 @@
 - Auto-suggest column mappings based on column name similarity
 - Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows
 - Option-set labels fetched from metadata: picking a choice/multichoice/status/state target auto-fills `optionMap`, so spreadsheet cells can contain labels instead of integers
+- Import .pqt: read a Dataverse Dataflow / PQ Online export in the task pane, list its queries with field-mapping counts, populate the mapping grid from any query, and copy the M code for pasting into Excel's Advanced Editor
 - Persists the last mapping per workbook in Office Settings store
 - Saved environment profiles in `localStorage`
 - Dev-mode banner — warns when using the fallback Microsoft PowerApps client ID
@@ -57,9 +59,10 @@
 |---|---|
 | **macOS / Linux scheduling** | `schedule` uses Windows Task Scheduler. Cross-platform support is v2 scope. |
 | **Headless / server-side Power Query refresh** | Currently requires Excel desktop installed on the machine; server scenarios unsupported. |
-| **Certificate auth for app-only** | Replace client secret (which must be rotated) with a certificate. `ConfidentialClientApplication` already supports `clientCertificate`. |
-| **Single-file executable distribution** | Bundle CLI with `pkg`/`nexe`, code-sign the `.exe` so Windows SmartScreen passes. |
-| **`winget` package** | Publish to the Windows Package Manager for easy install. |
-| **CI build** | GitHub Actions workflow: `npm ci && npm run build` to keep the scaffold honest. |
-| **Production add-in host** | Replace all `localhost:3000` URLs in `manifest.xml` with a real hosted URL. |
-| **AppSource listing** | Finalise manifest (real GUID, icons, metadata), test on Win/Mac/Web/iPad, submit via Partner Center. |
+| ~~**Certificate auth for app-only**~~ | Done: `dvload app-login --cert <pem>` stores the cert in the secure store. |
+| ~~**Single-file executable distribution**~~ | Scaffolded: `npm run bundle` (esbuild) + Node SEA in `.github/workflows/release.yml`. Code signing still to wire up (see `packaging/README.md`). |
+| ~~**`winget` package**~~ | Documented in `packaging/README.md`; submit after the first signed release. Scoop manifest template in `packaging/scoop/`. |
+| ~~**CI build**~~ | Done: `.github/workflows/ci.yml` (build + test + lint on windows-latest). |
+| **Production add-in host** | Replace all `localhost:3000` URLs in `manifest.xml` with a real hosted URL. Production webpack builds now refuse the borrowed dev client id. |
+| **AppSource listing** | Finalise manifest (real GUID, icons, metadata), test on Win/Mac/Web/iPad, submit via Partner Center. Centralized Deployment (M365 admin center) is the better route for known orgs. |
+| **`dvload init` wizard** | Guided first-run: env URL → profile → auth choice → login. Collapses the Entra-registration onboarding cliff. |

@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: windows-latest # CLI targets Windows (DPAPI, schtasks, Excel COM)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          # CI builds the add-in with the dev client id; real releases must
+          # set DATAVERSE_LOAD_CLIENT_ID instead (see webpack.config.js guard).
+          DVLOAD_ALLOW_DEV_CLIENT: "1"
+      - run: npm test
+      - run: npm run lint

@@ -9,7 +9,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "clean": "rimraf dist",
+    "bundle": "node scripts/bundle.mjs",
+    "clean": "rimraf dist build",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "node --test --import tsx \"src/**/*.test.ts\""
@@ -18,10 +19,10 @@
     "@azure/msal-node": "^2.6.0",
     "@dvload/core": "0.1.0",
     "commander": "^12.0.0",
-    "keytar": "^7.9.0",
     "kleur": "^4.1.5"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "tsx": "^4.7.0"
   }
 }

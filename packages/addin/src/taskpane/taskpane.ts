@@ -14,6 +14,9 @@ import {
   type RequestLogEntry,
   type RowSuccess,
   type LoadResult,
+  type PqtArchive,
+  readPqt,
+  mappingFromPqt,
   SCHEMA_VERSION,
 } from "@dvload/core";
 import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "../auth.js";
@@ -193,9 +196,96 @@ Office.onReady(async () => {
   el<HTMLButtonElement>("run").addEventListener("click", onRun);
   el<HTMLButtonElement>("save").addEventListener("click", onSave);
   el<HTMLButtonElement>("load").addEventListener("click", onLoad);
+  el<HTMLButtonElement>("importPqt").addEventListener("click", onImportPqt);
+  el<HTMLButtonElement>("pqtUse").addEventListener("click", onUsePqtMapping);
+  el<HTMLButtonElement>("pqtCopyM").addEventListener("click", onCopyPqtM);
   el<HTMLSelectElement>("conflictMode").addEventListener("change", updateOptionsVisibility);
   updateOptionsVisibility();
 });
+
+/* -------------------------------------------------------------------------- */
+/* .pqt import (Dataverse Dataflows / Power Query Online export)               */
+/* -------------------------------------------------------------------------- */
+
+let currentPqt: PqtArchive | null = null;
+
+function onImportPqt(): void {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".pqt,application/zip";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      currentPqt = await readPqt(await file.arrayBuffer());
+      const names = Object.keys(currentPqt.mashupMetadata.QueriesMetadata);
+      const sel = el<HTMLSelectElement>("pqtQuery");
+      sel.innerHTML = "";
+      for (const name of names) {
+        const q = currentPqt.mashupMetadata.QueriesMetadata[name];
+        const nFields = Object.keys(q.FieldsMetadata ?? {}).length;
+        const suffix = nFields > 0 ? ` — ${nFields} field mapping(s)` : " — no mappings";
+        sel.appendChild(new Option(`${name}${suffix}`, name));
+      }
+      el<HTMLDivElement>("pqtRow").style.display = "";
+      setStatus(
+        "info",
+        `Read "${currentPqt.metadata.Name || file.name}": ${names.length} quer${names.length === 1 ? "y" : "ies"}. ` +
+          `Pick one and click "Use mapping", or "Copy M" to paste the queries into Excel's Advanced Editor.`
+      );
+    } catch (e) {
+      currentPqt = null;
+      el<HTMLDivElement>("pqtRow").style.display = "none";
+      setStatus("error", `Couldn't read .pqt: ${(e as Error).message}`);
+    }
+  };
+  input.click();
+}
+
+function onUsePqtMapping(): void {
+  if (!currentPqt) return;
+  const queryName = el<HTMLSelectElement>("pqtQuery").value;
+  if (!queryName) return;
+  try {
+    const m = mappingFromPqt(currentPqt, queryName, {
+      environmentUrl: state.environmentUrl || "",
+    });
+    state.mappings = m.columns;
+    // Try to select the matching target entity if entities are loaded.
+    const entSel = el<HTMLSelectElement>("entity");
+    const match = [...entSel.options].find(
+      (o) => o.value === m.targetEntitySet || o.dataset.logical === m.targetEntitySet
+    );
+    if (match) {
+      entSel.value = match.value;
+      state.entitySet = match.value;
+      const logical = match.dataset.logical;
+      if (logical) loadEntityAttributes(logical).catch(() => {});
+    }
+    rerenderMappings();
+    setStatus(
+      "success",
+      `Loaded ${m.columns.length} column mapping(s) from query "${queryName}"` +
+        (match ? ` (target: ${m.targetEntitySet}).` : `. Target "${m.targetEntitySet}" — sign in and pick the entity to verify attributes.`)
+    );
+  } catch (e) {
+    setStatus("error", (e as Error).message);
+  }
+}
+
+async function onCopyPqtM(): Promise<void> {
+  if (!currentPqt) return;
+  try {
+    await navigator.clipboard.writeText(currentPqt.mashupDocument);
+    setStatus(
+      "success",
+      "M code copied. In Excel: Data → Get Data → From Other Sources → Blank Query → " +
+        "Advanced Editor → paste. Each shared member becomes a query."
+    );
+  } catch {
+    setStatus("error", "Clipboard access denied — save the mapping instead and use the CLI (--emit-m).");
+  }
+}
 
 /* -------------------------------------------------------------------------- */
 /* Import options                                                              */

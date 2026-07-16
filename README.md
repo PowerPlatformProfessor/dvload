@@ -131,7 +131,15 @@ dvload app-login \
   --env https://contoso.crm.dynamics.com \
   --client-id <confidential-client-id> \
   --tenant-id <directory-tenant-id>
-# prompts for the secret; stored in Windows Credential Manager
+# prompts for the secret; stored DPAPI-protected in ~/.dvload/secrets.dat
+
+# or, better for scheduled runs — a certificate instead of a secret
+# (no rotation-policy expiry; PEM must contain cert + private key):
+dvload app-login \
+  --env https://contoso.crm.dynamics.com \
+  --client-id <confidential-client-id> \
+  --tenant-id <directory-tenant-id> \
+  --cert ./dvload-app.pem
 ```
 
 The command probes the credentials by acquiring a token; if anything is
@@ -312,6 +320,32 @@ Online with the proper field mappings, export to .pqt, and from there
 either keep running it as a Dataflow or pull the mapping into the CLI
 and run locally on your own schedule.
 
+```bash
+# One .dvmap.json per query (for multi-table Dataflows):
+dvload import-pqt ./flow.pqt --env https://contoso.crm.dynamics.com --all-queries -o ./mappings/
+```
+
+### Load a Dataflow's queries into Excel (experimental)
+
+```bash
+dvload pqt-to-xlsx ./flow.pqt -o ./flow.xlsx
+```
+
+Builds a fresh workbook with the .pqt's M queries embedded natively in
+Power Query (synthesized `DataMashup`/QDEFF part). Open it in Excel →
+Data → Queries & Connections: every query is there as connection-only;
+use *Load To…* to land one on a sheet. The QDEFF writer is experimental —
+if Excel rejects the file, the fallback is `import-pqt --emit-m` and
+pasting the M into a Blank Query's Advanced Editor.
+
+### In the add-in
+
+*Import .pqt…* in the task pane reads a Dataflow export directly: it
+lists every query with its field-mapping count, *Use mapping* populates
+the column grid from the selected query's `FieldsMetadata`, and *Copy M*
+puts the M document on the clipboard for pasting into Excel's Advanced
+Editor.
+
 ## Mapping JSON shape
 
 See `packages/core/examples/contacts.dvmap.json` for a full example. Key
@@ -344,10 +378,9 @@ fields:
 - **Windows-only** for scheduled runs (Excel COM dependency).
 - **Power Query refresh** requires Excel to be installed on the machine
   running the schedule. Headless / server scenarios aren't supported.
-- **Client secrets** are stored in Windows Credential Manager. For
-  long-lived deployments, swap to certificate auth (Azure AD supports it;
-  ConfidentialClientApplication accepts a `clientCertificate` instead of
-  `clientSecret`).
+- **Secrets and tokens** live in `~/.dvload/` — DPAPI-protected
+  (CurrentUser) on Windows, mode 0600 on POSIX. For long-lived
+  deployments prefer certificate auth: `dvload app-login --cert <pem>`.
 
 ## License
 

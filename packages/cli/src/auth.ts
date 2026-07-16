@@ -2,14 +2,17 @@
 //
 //   1. Delegated (user signs in)
 //      - PublicClientApplication + device-code flow
-//      - Refresh token cached via keytar (Windows Credential Manager)
+//      - Refresh token cached in an encrypted MSAL cache file (DPAPI on
+//        Windows, 0600 on POSIX)
 //      - Best for interactive use
 //
 //   2. App-only (client credentials)
 //      - ConfidentialClientApplication, no user
-//      - Client id, tenant id, and secret stored in keytar
+//      - Secret OR certificate; stored in the dvload secure store
+//        (DPAPI-protected on Windows — see secure-store.ts)
 //      - Best for scheduled/unattended runs (no 90-day refresh expiry,
-//        no MFA / conditional-access surprises)
+//        no MFA / conditional-access surprises). Certificates avoid
+//        secret-rotation churn entirely.
 //
 // `getTokenProvider()` picks app-only if it's configured for the
 // environment, falling back to delegated. Pass `forceUser: true` to
@@ -25,12 +28,18 @@ import {
   type ICachePlugin,
   type TokenCacheContext,
 } from "@azure/msal-node";
-import keytar from "keytar";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-
-const SERVICE = "dvload";
+import {
+  getSecret,
+  setSecret,
+  deleteSecret,
+  listAccounts,
+  protectBytes,
+  unprotectBytes,
+} from "./secure-store.js";
 
 /**
  * Microsoft-published multi-tenant public clients with Dataverse access
@@ -89,8 +98,10 @@ export interface DelegatedAuthOptions {
 export interface AppOnlyCredentials {
   clientId: string;
   tenantId: string;
-  /** The plain client secret. Stored in OS keychain — never written to disk. */
-  secret: string;
+  /** Plain client secret (mutually exclusive with certificatePem). */
+  secret?: string;
+  /** PEM containing the certificate + private key (mutually exclusive with secret). */
+  certificatePem?: string;
 }
 
 export interface TokenProviderOptions extends DelegatedAuthOptions {
@@ -113,9 +124,7 @@ function host(envUrl: string): string {
 const keys = {
   delegatedAccount: (env: string) => `delegated:${host(env)}`,
   delegatedTenant: (env: string) => `delegatedTenant:${host(env)}`,
-  appOnlyClientId: (env: string) => `appOnly:${host(env)}:clientId`,
-  appOnlyTenantId: (env: string) => `appOnly:${host(env)}:tenantId`,
-  appOnlySecret: (env: string) => `appOnly:${host(env)}:secret`,
+  appOnly: (env: string) => `appOnly:${host(env)}`,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -123,21 +132,36 @@ const keys = {
 /* -------------------------------------------------------------------------- */
 
 function msalCachePath(env: string): string {
+  // .bin: DPAPI-protected on Windows, plain 0600 JSON elsewhere.
+  return path.join(os.homedir(), ".dvload", `msal-cache-${host(env)}.bin`);
+}
+
+function legacyMsalCachePath(env: string): string {
   return path.join(os.homedir(), ".dvload", `msal-cache-${host(env)}.json`);
 }
 
 /**
  * File-based ICachePlugin so MSAL's token cache (containing refresh
- * tokens) survives across process invocations. Same pattern as Azure CLI
- * and other Microsoft CLI tools. Written with mode 0o600 on POSIX;
- * Windows relies on the default ACL on the user's home directory.
+ * tokens) survives across process invocations. The cache holds refresh
+ * tokens, so at rest it is DPAPI-protected (CurrentUser) on Windows and
+ * written with mode 0600 on POSIX. Older plaintext .json caches are read
+ * once for migration, then replaced and deleted.
  */
 function makeCachePlugin(env: string): ICachePlugin {
   const filePath = msalCachePath(env);
+  const legacyPath = legacyMsalCachePath(env);
   return {
     async beforeCacheAccess(ctx: TokenCacheContext) {
       try {
-        const data = await fs.readFile(filePath, "utf8");
+        const raw = await fs.readFile(filePath);
+        ctx.tokenCache.deserialize((await unprotectBytes(raw)).toString("utf8"));
+        return;
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      // Migration: read the pre-encryption plaintext cache if present.
+      try {
+        const data = await fs.readFile(legacyPath, "utf8");
         ctx.tokenCache.deserialize(data);
       } catch (e: unknown) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
@@ -146,45 +170,41 @@ function makeCachePlugin(env: string): ICachePlugin {
     async afterCacheAccess(ctx: TokenCacheContext) {
       if (ctx.cacheHasChanged) {
         await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.writeFile(filePath, ctx.tokenCache.serialize(), { mode: 0o600 });
+        const data = await protectBytes(Buffer.from(ctx.tokenCache.serialize(), "utf8"));
+        await fs.writeFile(filePath, data, { mode: 0o600 });
+        await fs.unlink(legacyPath).catch(() => {}); // remove plaintext copy
       }
     },
   };
 }
 
 export async function loadAppOnlyCredentials(env: string): Promise<AppOnlyCredentials | null> {
-  const [clientId, tenantId, secret] = await Promise.all([
-    keytar.getPassword(SERVICE, keys.appOnlyClientId(env)),
-    keytar.getPassword(SERVICE, keys.appOnlyTenantId(env)),
-    keytar.getPassword(SERVICE, keys.appOnlySecret(env)),
-  ]);
-  if (!clientId || !tenantId || !secret) return null;
-  return { clientId, tenantId, secret };
+  const raw = await getSecret(keys.appOnly(env));
+  if (!raw) return null;
+  try {
+    const creds = JSON.parse(raw) as AppOnlyCredentials;
+    if (!creds.clientId || !creds.tenantId || (!creds.secret && !creds.certificatePem)) return null;
+    return creds;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveAppOnlyCredentials(
   env: string,
   creds: AppOnlyCredentials
 ): Promise<void> {
-  await Promise.all([
-    keytar.setPassword(SERVICE, keys.appOnlyClientId(env), creds.clientId),
-    keytar.setPassword(SERVICE, keys.appOnlyTenantId(env), creds.tenantId),
-    keytar.setPassword(SERVICE, keys.appOnlySecret(env), creds.secret),
-  ]);
+  await setSecret(keys.appOnly(env), JSON.stringify(creds));
 }
 
 export async function clearAppOnlyCredentials(env: string): Promise<void> {
-  await Promise.all([
-    keytar.deletePassword(SERVICE, keys.appOnlyClientId(env)),
-    keytar.deletePassword(SERVICE, keys.appOnlyTenantId(env)),
-    keytar.deletePassword(SERVICE, keys.appOnlySecret(env)),
-  ]);
+  await deleteSecret(keys.appOnly(env));
 }
 
 export async function detectAuthMode(env: string): Promise<AuthMode> {
   const appOnly = await loadAppOnlyCredentials(env);
   if (appOnly) return "appOnly";
-  const delegated = await keytar.getPassword(SERVICE, keys.delegatedAccount(env));
+  const delegated = await getSecret(keys.delegatedAccount(env));
   return delegated ? "delegated" : "none";
 }
 
@@ -195,6 +215,33 @@ export async function detectAuthMode(env: string): Promise<AuthMode> {
 export function dataverseScope(environmentUrl: string): string {
   const u = new URL(environmentUrl);
   return `${u.origin}/.default`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Certificates                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Extract the certificate + private key from a PEM bundle and compute the
+ * SHA-1 thumbprint MSAL needs for the client-assertion header (x5t).
+ */
+export function parseClientCertificate(pem: string): {
+  thumbprint: string;
+  privateKey: string;
+} {
+  const certMatch = /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/.exec(pem);
+  if (!certMatch) {
+    throw new Error("PEM file does not contain a CERTIFICATE block.");
+  }
+  if (!/-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/.test(pem)) {
+    throw new Error(
+      "PEM file does not contain a PRIVATE KEY block. Provide a single PEM " +
+        "with both the certificate and its (unencrypted) private key."
+    );
+  }
+  const der = Buffer.from(certMatch[1].replace(/\s+/g, ""), "base64");
+  const thumbprint = crypto.createHash("sha1").update(der).digest("hex").toUpperCase();
+  return { thumbprint, privateKey: pem };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -231,7 +278,7 @@ function makePublicApp(opts: DelegatedAuthOptions): PublicClientApplication {
   return new PublicClientApplication(config);
 }
 
-/** Interactive device-code login. Caches account marker via keytar. */
+/** Interactive device-code login. Caches an account marker in the secure store. */
 export async function loginDelegated(opts: DelegatedAuthOptions): Promise<AccountInfo> {
   const app = makePublicApp(opts);
   const result = await app.acquireTokenByDeviceCode({
@@ -252,15 +299,10 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
     },
   });
   if (!result?.account) throw new Error("Device-code flow returned no account.");
-  await keytar.setPassword(
-    SERVICE,
-    keys.delegatedAccount(opts.environmentUrl),
-    result.account.homeAccountId
-  );
+  await setSecret(keys.delegatedAccount(opts.environmentUrl), result.account.homeAccountId);
   // Remember which tenant this login used so subsequent commands
   // (whoami, run, validate) can hit the same authority without --tenant.
-  await keytar.setPassword(
-    SERVICE,
+  await setSecret(
     keys.delegatedTenant(opts.environmentUrl),
     opts.tenantId ?? result.account.tenantId ?? "organizations"
   );
@@ -269,24 +311,24 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
 
 export async function logoutDelegated(env?: string): Promise<void> {
   if (env) {
-    await keytar.deletePassword(SERVICE, keys.delegatedAccount(env));
-    await keytar.deletePassword(SERVICE, keys.delegatedTenant(env));
-    try {
-      await fs.unlink(msalCachePath(env));
-    } catch {
-      /* no cache file */
-    }
+    await deleteSecret(keys.delegatedAccount(env));
+    await deleteSecret(keys.delegatedTenant(env));
+    await fs.unlink(msalCachePath(env)).catch(() => {});
+    await fs.unlink(legacyMsalCachePath(env)).catch(() => {});
     return;
   }
   // Clear every delegated:* entry. Leave app-only creds alone.
-  const all = await keytar.findCredentials(SERVICE);
-  for (const c of all) {
-    if (c.account.startsWith("delegated:") || c.account.startsWith("delegatedTenant:")) {
-      await keytar.deletePassword(SERVICE, c.account);
+  for (const account of await listAccounts("delegated")) {
+    await deleteSecret(account);
+  }
+  // Cache files are per-env; delete every one we can find.
+  const dir = path.join(os.homedir(), ".dvload");
+  const files = await fs.readdir(dir).catch(() => [] as string[]);
+  for (const f of files) {
+    if (/^msal-cache-.*\.(bin|json)$/.test(f)) {
+      await fs.unlink(path.join(dir, f)).catch(() => {});
     }
   }
-  // Cache files are per-env; we can only find and delete them per env,
-  // so the mass-logout leaves stray files. Not ideal but harmless.
 }
 
 function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string> {
@@ -303,18 +345,12 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
       // the caller passed one explicitly. Without this, silent acquisition
       // fails because MSAL keys cache entries by authority.
       if (!opts.tenantId) {
-        const storedTenant = await keytar.getPassword(
-          SERVICE,
-          keys.delegatedTenant(opts.environmentUrl)
-        );
+        const storedTenant = await getSecret(keys.delegatedTenant(opts.environmentUrl));
         if (storedTenant) effectiveOpts = { ...opts, tenantId: storedTenant };
       }
       app = makePublicApp(effectiveOpts);
 
-      const accountId = await keytar.getPassword(
-        SERVICE,
-        keys.delegatedAccount(opts.environmentUrl)
-      );
+      const accountId = await getSecret(keys.delegatedAccount(opts.environmentUrl));
       if (accountId) {
         cachedAccount = await app.getTokenCache().getAccountByHomeId(accountId);
       }
@@ -351,13 +387,15 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
 /* -------------------------------------------------------------------------- */
 
 function makeAppOnlyProvider(env: string, creds: AppOnlyCredentials): () => Promise<string> {
-  const app = new ConfidentialClientApplication({
-    auth: {
-      clientId: creds.clientId,
-      authority: `https://login.microsoftonline.com/${creds.tenantId}`,
-      clientSecret: creds.secret,
-    },
-  });
+  const authority = `https://login.microsoftonline.com/${creds.tenantId}`;
+  let auth: Configuration["auth"];
+  if (creds.certificatePem) {
+    const { thumbprint, privateKey } = parseClientCertificate(creds.certificatePem);
+    auth = { clientId: creds.clientId, authority, clientCertificate: { thumbprint, privateKey } };
+  } else {
+    auth = { clientId: creds.clientId, authority, clientSecret: creds.secret! };
+  }
+  const app = new ConfidentialClientApplication({ auth });
   return async () => {
     const r = await app.acquireTokenByClientCredential({ scopes: [dataverseScope(env)] });
     if (!r?.accessToken) throw new Error("client_credentials grant failed (no token returned).");

@@ -29,6 +29,14 @@ export interface RunOpts {
   notifyUrl?: string;
   /** Set false (--no-failed-rows) to suppress the failed-rows .xlsx. */
   failedRows?: boolean;
+  /**
+   * Never fall back to an interactive device-code prompt. Defaults to true
+   * when stdout is not a TTY (scheduled/piped runs) so an expired token
+   * fails fast instead of hanging on a prompt nobody can see.
+   */
+  nonInteractive?: boolean;
+  /** Emit the LoadResult as JSON on stdout; suppress pretty output. */
+  json?: boolean;
 }
 
 export async function runCommand(mappingPath: string, opts: RunOpts): Promise<void> {
@@ -41,6 +49,9 @@ export async function runCommand(mappingPath: string, opts: RunOpts): Promise<vo
  * Returns null when the mapping failed schema validation (exitCode set).
  */
 export async function executeRun(mappingPath: string, opts: RunOpts): Promise<LoadResult | null> {
+  const quiet = opts.json === true;
+  const log = quiet ? () => {} : console.log.bind(console);
+  const write = quiet ? () => {} : process.stdout.write.bind(process.stdout);
   const mappingFile = path.resolve(mappingPath);
   const raw = await readFile(mappingFile, "utf8");
   const mapping = parseMapping(JSON.parse(raw));
@@ -69,33 +80,37 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     const cp = await readCheckpoint(checkpointFile, workbookPath);
     if (cp !== null) {
       startOffset = cp;
-      console.log(kleur.yellow(`Resuming from row offset ${startOffset} (checkpoint found).`));
+      log(kleur.yellow(`Resuming from row offset ${startOffset} (checkpoint found).`));
       if (opts.refresh) {
-        console.log(
+        log(
           kleur.yellow("  --refresh skipped: refreshing would change the data under a resume.")
         );
         opts = { ...opts, refresh: false };
       }
     } else {
-      console.log(kleur.gray("No usable checkpoint — starting from the beginning."));
+      log(kleur.gray("No usable checkpoint — starting from the beginning."));
     }
   }
 
   if (opts.refresh) {
-    console.log(kleur.gray("Refreshing Power Query in Excel..."));
+    log(kleur.gray("Refreshing Power Query in Excel..."));
     await refreshWorkbook({ workbook: workbookPath });
   }
 
-  console.log(kleur.gray(`Reading table "${mapping.sourceTable}" from ${workbookPath}`));
+  log(kleur.gray(`Reading table "${mapping.sourceTable}" from ${workbookPath}`));
   const { headers, rows } = await readTableFromFile(workbookPath, {
     tableName: mapping.sourceTable,
     sheetName: mapping.sourceSheet,
   });
-  console.log(kleur.gray(`  ${rows.length} row(s) loaded.`));
+  log(kleur.gray(`  ${rows.length} row(s) loaded.`));
 
+  // Unattended runs (scheduled tasks, pipes, CI) must never block on a
+  // device-code prompt written into a log nobody reads.
+  const nonInteractive = opts.nonInteractive ?? !process.stdout.isTTY;
   const getToken = await getTokenProvider({
     environmentUrl: mapping.environmentUrl,
     forceUser: opts.user,
+    silentOnly: nonInteractive,
   });
 
   const requestLog: RequestLogEntry[] = [];
@@ -107,7 +122,7 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     onRequest: (entry) => requestLog.push(entry),
     retry: {
       onRetry: (info) => {
-        console.log(
+        log(
           kleur.yellow(
             `\n  [retry ${info.attempt}] ${info.status} ${info.url} — ` +
               `waiting ${(info.delayMs / 1000).toFixed(1)}s (${info.source})`
@@ -143,17 +158,17 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
             .catch(() => {});
         }
       } else if (e.type === "sync") {
-        process.stdout.write(
+        write(
           `\r  sync: ${e.removed}/${e.toRemove} removed (${e.checked} target records checked)     `
         );
       } else if (e.type === "batch") {
         const pct = Math.round((e.processed / Math.max(1, e.total)) * 100);
-        process.stdout.write(
+        write(
           `\r  ${pct}%  created=${e.created}  updated=${e.updated}  ` +
             `skipped=${e.skipped}  failed=${e.failed}  ${e.processed}/${e.total}     `
         );
       } else if (e.type === "done") {
-        process.stdout.write("\n");
+        write("\n");
       }
     },
   });
@@ -178,7 +193,12 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     }
   }
 
-  printSummary(mapping, result, failedFile);
+  if (quiet) {
+    // Machine-readable result for pipelines/monitoring.
+    console.log(JSON.stringify({ ...result, failedRowsFile: failedFile ?? null }));
+  } else {
+    printSummary(mapping, result, failedFile);
+  }
 
   const notifyUrl = opts.notifyUrl ?? mapping.notifyUrl;
   if (notifyUrl && !opts.dryRun) {

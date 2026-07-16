@@ -191,12 +191,16 @@ export class DataverseClient {
    * cap. Only retries on the configured status codes (default 429/503/504);
    * other failures are returned to the caller verbatim.
    */
-  private async fetchWithRetry(input: string | URL, init?: RequestInit): Promise<Response> {
+  private async fetchWithRetry(
+    input: string | URL,
+    init?: RequestInit,
+    retryableOverride?: number[]
+  ): Promise<Response> {
     const policy = this.opts.retry ?? {};
     const maxAttempts = policy.maxAttempts ?? 5;
     const baseDelay = policy.baseDelayMs ?? 500;
     const maxDelay = policy.maxDelayMs ?? 60_000;
-    const retryable = new Set(policy.retryableStatuses ?? [429, 503, 504]);
+    const retryable = new Set(retryableOverride ?? policy.retryableStatuses ?? [429, 503, 504]);
 
     const url = typeof input === "string" ? input : (input as URL).toString();
     const method = ((init?.method) ?? "GET").toUpperCase();
@@ -391,6 +395,51 @@ export class DataverseClient {
   }
 
   /**
+   * Batched text lookup: resolve MANY distinct values against one attribute
+   * in chunked `or`-filter queries instead of one request per value (the
+   * N+1 pattern resolveByText produces on large lookup columns).
+   *
+   * Returns a map keyed by the LOWERCASED source value (Dataverse text
+   * comparison is case-insensitive) → all matching record ids. Values with
+   * no entry in the map had no match.
+   */
+  async resolveManyByText(
+    entitySet: string,
+    attribute: string,
+    values: unknown[],
+    primaryIdAttribute: string
+  ): Promise<Map<string, string[]>> {
+    assertLogicalName(entitySet, "Entity set");
+    assertLogicalName(attribute, "Attribute");
+    assertLogicalName(primaryIdAttribute, "Primary id attribute");
+
+    const out = new Map<string, string[]>();
+    if (values.length === 0) return out;
+
+    // Chunk small enough to keep the URL well under common limits even for
+    // long-ish values (each is percent-encoded by formatKeyLiteral).
+    const CHUNK = 15;
+    for (let start = 0; start < values.length; start += CHUNK) {
+      const chunk = values.slice(start, start + CHUNK);
+      const filter = chunk
+        .map((v) => `${attribute} eq ${formatKeyLiteral(v)}`)
+        .join(" or ");
+      const rows = await this.queryAll(
+        `${entitySet}?$select=${primaryIdAttribute},${attribute}&$filter=${filter}`
+      );
+      for (const r of rows) {
+        const key = String(r[attribute] ?? "").toLowerCase();
+        const id = String(r[primaryIdAttribute] ?? "");
+        if (!id) continue;
+        const list = out.get(key) ?? [];
+        list.push(id);
+        out.set(key, list);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Read one record by alternate-key expression with a $select list.
    * Returns null on 404. keyExpr must be built from validated parts
    * (see buildKeyExpression in load.ts).
@@ -489,23 +538,39 @@ export class DataverseClient {
    * skip-if-exists abort the batch on the first existing record.)
    * Dataverse caps batches at 1000 operations.
    */
-  async batch(operations: BatchOperation[]): Promise<BatchResultItem[]> {
+  async batch(
+    operations: BatchOperation[],
+    opts?: {
+      /**
+       * Whether replaying the whole batch is safe. PATCH-by-key upserts and
+       * DELETEs are; plain POST creates are NOT — a 503/504 can arrive after
+       * some operations already executed, and a replay would duplicate them.
+       * When false, only 429 (guaranteed not-executed) is retried.
+       */
+      idempotent?: boolean;
+    }
+  ): Promise<BatchResultItem[]> {
     if (operations.length === 0) return [];
     const batchId = `batch_${cryptoUuid()}`;
 
     const body = buildBatchBody(operations, batchId, this.base);
 
-    const res = await this.fetchWithRetry(this.url("$batch"), {
-      method: "POST",
-      headers: {
-        ...(await this.authHeaders()),
-        "OData-MaxVersion": "4.0",
-        "OData-Version": "4.0",
-        Accept: "application/json",
-        "Content-Type": `multipart/mixed; boundary=${batchId}`,
+    const retryableOverride = opts?.idempotent === false ? [429] : undefined;
+    const res = await this.fetchWithRetry(
+      this.url("$batch"),
+      {
+        method: "POST",
+        headers: {
+          ...(await this.authHeaders()),
+          "OData-MaxVersion": "4.0",
+          "OData-Version": "4.0",
+          Accept: "application/json",
+          "Content-Type": `multipart/mixed; boundary=${batchId}`,
+        },
+        body,
       },
-      body,
-    });
+      retryableOverride
+    );
 
     if (!res.ok) await throwForResponse(res);
     const text = await res.text();
@@ -657,8 +722,6 @@ function parseBatchResponse(text: string, ops: BatchOperation[]): BatchResultIte
         if (!ok) {
           const err = (body as { error?: { message?: string } }).error;
           errorMessage = err?.message ?? `HTTP ${status}`;
-        } else if (op.method === "POST") {
-          id = (body as { [k: string]: unknown })[`${op.url.split("(")[0].replace(/s$/, "")}id`] as string | undefined;
         }
       } catch {
         if (!ok) errorMessage = rawBody;
@@ -667,10 +730,19 @@ function parseBatchResponse(text: string, ops: BatchOperation[]): BatchResultIte
       errorMessage = `HTTP ${status}`;
     }
 
-    // Also try to read OData-EntityId for created records when body is empty.
-    if (op.method === "POST" && !id) {
+    // Created-record id: read the OData-EntityId header (canonical entity
+    // URL) rather than guessing the primary-id attribute name from the
+    // entity-set name — naive de-pluralization breaks on "opportunities",
+    // "addresses", etc.
+    if (op.method === "POST" || op.method === "PATCH") {
       const eid = /OData-EntityId:\s*[^\r\n]*\(([0-9a-f-]{36})\)/i.exec(part)?.[1];
       if (eid) id = eid;
+      // With Prefer: return=representation the body has @odata.id instead.
+      if (!id && body && typeof body === "object") {
+        const odataId = String((body as Record<string, unknown>)["@odata.id"] ?? "");
+        const m = /\(([0-9a-f-]{36})\)/i.exec(odataId);
+        if (m) id = m[1];
+      }
     }
 
     results.push({ contentId, status, ok, body, errorMessage, id });

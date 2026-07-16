@@ -290,6 +290,241 @@ export function mappingFromPqt(
 }
 
 /* -------------------------------------------------------------------------- */
+/* QDEFF / DataMashup writing (EXPERIMENTAL)                                   */
+/*                                                                             */
+/* The reverse of the parser below: build a binary DataMashup blob per        */
+/* MS-QDEFF and embed it in a fresh .xlsx so Excel's Power Query editor       */
+/* shows the queries natively (as connection-only queries; the user picks     */
+/* "Load To…" per query). Excel is strict about these parts — treat output    */
+/* as experimental and keep the paste-into-Advanced-Editor fallback in mind.  */
+/* -------------------------------------------------------------------------- */
+
+const QDEFF_PACKAGE_XML =
+  '<?xml version="1.0" encoding="utf-8"?>' +
+  '<Package xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ' +
+  'xmlns="http://schemas.microsoft.com/DataMashup">' +
+  "<Version>2.72.5556.181</Version><MinVersion>2.21.0.0</MinVersion>" +
+  "<Culture>en-US</Culture><SafeCombine>true</SafeCombine></Package>";
+
+const QDEFF_PERMISSIONS_XML =
+  '<?xml version="1.0" encoding="utf-8"?>' +
+  '<PermissionList xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
+  "<CanEvaluateFuturePackages>false</CanEvaluateFuturePackages>" +
+  "<FirewallEnabled>true</FirewallEnabled>" +
+  '<WorkbookGroupType xsi:nil="true" /></PermissionList>';
+
+const QDEFF_PACKAGE_CONTENT_TYPES =
+  '<?xml version="1.0" encoding="utf-8"?>' +
+  '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+  '<Default Extension="xml" ContentType="text/xml" />' +
+  '<Default Extension="m" ContentType="application/x-ms-m" /></Types>';
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function u32le(n: number): Uint8Array {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n, true);
+  return b;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.byteLength, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.byteLength;
+  }
+  return out;
+}
+
+const utf8 = {
+  encode: (s: string): Uint8Array => new TextEncoder().encode(s),
+};
+
+/** Build the LocalPackageMetadataFile XML: one AllFormulas item + one per query. */
+function buildMetadataXml(queryNames: string[]): string {
+  const items: string[] = [
+    "<Item><ItemLocation><ItemType>AllFormulas</ItemType><ItemPath /></ItemLocation><StableEntries /></Item>",
+  ];
+  for (const name of queryNames) {
+    const itemPath = xmlEscape("Section1/" + encodeURIComponent(name));
+    items.push(
+      "<Item><ItemLocation><ItemType>Formula</ItemType>" +
+        `<ItemPath>${itemPath}</ItemPath></ItemLocation>` +
+        "<StableEntries>" +
+        '<Entry Type="IsPrivate" Value="l0" />' +
+        '<Entry Type="FillEnabled" Value="l0" />' +
+        '<Entry Type="ResultType" Value="sTable" />' +
+        "</StableEntries></Item>"
+    );
+  }
+  return (
+    '<?xml version="1.0" encoding="utf-8"?>' +
+    '<LocalPackageMetadataFile xmlns:xsd="http://www.w3.org/2001/XMLSchema" ' +
+    'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
+    `<Items>${items.join("")}</Items></LocalPackageMetadataFile>`
+  );
+}
+
+/**
+ * Serialize a PqtArchive into a binary DataMashup (QDEFF) blob:
+ *   version | packageLen | package(zip) | permissionsLen | permissions |
+ *   metadataLen | metadata | bindingsLen | bindings
+ * Metadata itself is: version | xmlLen | xml | contentLen | content(zip).
+ */
+export async function writeDataMashup(archive: PqtArchive): Promise<Uint8Array> {
+  // Inner OPC package with the M document.
+  const pkg = new JSZip();
+  pkg.file("[Content_Types].xml", QDEFF_PACKAGE_CONTENT_TYPES);
+  pkg.file("Config/Package.xml", QDEFF_PACKAGE_XML);
+  pkg.file("Formulas/Section1.m", archive.mashupDocument);
+  const pkgBytes = await pkg.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+
+  const permissions = utf8.encode(QDEFF_PERMISSIONS_XML);
+
+  const queryNames = Object.keys(archive.mashupMetadata.QueriesMetadata);
+  const namesForMetadata =
+    queryNames.length > 0 ? queryNames : parseQueryNames(archive.mashupDocument);
+  const metadataXml = utf8.encode(buildMetadataXml(namesForMetadata));
+  const emptyContent = await new JSZip().generateAsync({ type: "uint8array" });
+  const metadata = concatBytes([
+    u32le(0), // metadata version
+    u32le(metadataXml.byteLength),
+    metadataXml,
+    u32le(emptyContent.byteLength),
+    emptyContent,
+  ]);
+
+  return concatBytes([
+    u32le(0), // QDEFF version
+    u32le(pkgBytes.byteLength),
+    pkgBytes,
+    u32le(permissions.byteLength),
+    permissions,
+    u32le(metadata.byteLength),
+    metadata,
+    u32le(0), // no permission bindings
+  ]);
+}
+
+/* ----- Minimal .xlsx scaffolding with the DataMashup custom XML part ------ */
+
+const XLSX_RELS_ROOT =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml" />' +
+  "</Relationships>";
+
+const XLSX_CONTENT_TYPES =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+  '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />' +
+  '<Default Extension="xml" ContentType="application/xml" />' +
+  '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml" />' +
+  '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml" />' +
+  '<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml" />' +
+  "</Types>";
+
+const XLSX_WORKBOOK =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
+  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+  '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1" /></sheets></workbook>';
+
+const XLSX_WORKBOOK_RELS =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml" />' +
+  '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml" Target="../customXml/item1.xml" />' +
+  "</Relationships>";
+
+const XLSX_SHEET1 =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData /></worksheet>';
+
+const CUSTOMXML_ITEM_RELS =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml" />' +
+  "</Relationships>";
+
+function customXmlItemProps(): string {
+  return (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    `<ds:datastoreItem ds:itemID="{${cryptoUuid().toUpperCase()}}" ` +
+    'xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml">' +
+    '<ds:schemaRefs><ds:schemaRef ds:uri="http://schemas.microsoft.com/DataMashup" /></ds:schemaRefs>' +
+    "</ds:datastoreItem>"
+  );
+}
+
+function base64Encode(bytes: Uint8Array): string {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64");
+  }
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
+ * EXPERIMENTAL: build a fresh .xlsx whose Power Query editor contains all
+ * queries from the .pqt (connection-only; use "Load To…" in Excel to land
+ * them on sheets). Returns the workbook bytes.
+ */
+export async function buildWorkbookWithQueries(archive: PqtArchive): Promise<Uint8Array> {
+  const mashup = await writeDataMashup(archive);
+  const item1 =
+    '<?xml version="1.0" encoding="utf-8"?>' +
+    '<DataMashup xmlns="http://schemas.microsoft.com/DataMashup">' +
+    base64Encode(mashup) +
+    "</DataMashup>";
+
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", XLSX_CONTENT_TYPES);
+  zip.file("_rels/.rels", XLSX_RELS_ROOT);
+  zip.file("xl/workbook.xml", XLSX_WORKBOOK);
+  zip.file("xl/_rels/workbook.xml.rels", XLSX_WORKBOOK_RELS);
+  zip.file("xl/worksheets/sheet1.xml", XLSX_SHEET1);
+  zip.file("customXml/item1.xml", item1);
+  zip.file("customXml/itemProps1.xml", customXmlItemProps());
+  zip.file("customXml/_rels/item1.xml.rels", CUSTOMXML_ITEM_RELS);
+  return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+}
+
+/**
+ * Build one Mapping per query in the .pqt (queries without FieldsMetadata
+ * yield mappings with empty columns). Keyed by query name.
+ */
+export function mappingsFromPqtAll(
+  archive: PqtArchive,
+  opts: { environmentUrl: string }
+): Record<string, Mapping> {
+  const out: Record<string, Mapping> = {};
+  const names = Object.keys(archive.mashupMetadata.QueriesMetadata);
+  const all = names.length > 0 ? names : parseQueryNames(archive.mashupDocument);
+  for (const name of all) {
+    try {
+      out[name] = mappingFromPqt(archive, name, { environmentUrl: opts.environmentUrl });
+    } catch {
+      // query listed in M but absent from metadata — skip
+    }
+  }
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
 /* QDEFF / DataMashup parsing                                                  */
 /* -------------------------------------------------------------------------- */
 
