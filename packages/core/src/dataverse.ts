@@ -263,10 +263,12 @@ export class DataverseClient {
     return (await res.json()) as Record<string, unknown>;
   }
 
-  /** List entity definitions, returning [{ LogicalName, EntitySetName, DisplayName }, ...]. */
-  async listEntities(): Promise<Array<{ LogicalName: string; EntitySetName: string; DisplayName: string }>> {
+  /** List entity definitions, returning [{ LogicalName, EntitySetName, DisplayName, MetadataId }, ...]. */
+  async listEntities(): Promise<
+    Array<{ LogicalName: string; EntitySetName: string; DisplayName: string; MetadataId: string }>
+  > {
     const res = await this.fetchWithRetry(
-      this.url("EntityDefinitions?$select=LogicalName,EntitySetName,DisplayName"),
+      this.url("EntityDefinitions?$select=LogicalName,EntitySetName,DisplayName,MetadataId"),
       { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
     );
     if (!res.ok) await throwForResponse(res);
@@ -275,7 +277,39 @@ export class DataverseClient {
       LogicalName: String(e.LogicalName),
       EntitySetName: String(e.EntitySetName),
       DisplayName: extractLocalizedLabel(e.DisplayName),
+      MetadataId: String(e.MetadataId ?? ""),
     }));
+  }
+
+  /**
+   * List visible solutions (for filtering the entity picker in the UI).
+   * Sorted by friendly name.
+   */
+  async listSolutions(): Promise<Array<{ id: string; uniqueName: string; friendlyName: string }>> {
+    const rows = await this.queryAll(
+      "solutions?$select=solutionid,uniquename,friendlyname&$filter=isvisible eq true&$orderby=friendlyname"
+    );
+    return rows
+      .map((s) => ({
+        id: String(s.solutionid ?? "").toLowerCase(),
+        uniqueName: String(s.uniquename ?? ""),
+        friendlyName: String(s.friendlyname ?? ""),
+      }))
+      .filter((s) => GUID_RE.test(s.id));
+  }
+
+  /**
+   * MetadataIds of the entities that are components of a solution
+   * (solutioncomponent componenttype 1 = Entity). Lowercased GUIDs.
+   */
+  async getSolutionEntityIds(solutionId: string): Promise<Set<string>> {
+    assertGuid(solutionId, "Solution id");
+    const rows = await this.queryAll(
+      `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${solutionId} and componenttype eq 1`
+    );
+    return new Set(
+      rows.map((r) => String(r.objectid ?? "").toLowerCase()).filter((id) => GUID_RE.test(id))
+    );
   }
 
   /**

@@ -42,6 +42,7 @@
 - MSAL popup sign-in (delegated flow)
 - Lists Excel tables in the open workbook
 - Fetches Dataverse entities and their attributes from the live environment
+- Solution picker: defaults to all entities (Default solution); selecting a solution filters the target-entity list to that solution's tables (via `solutioncomponents`, componenttype 1)
 - Column mapping UI (source column → target attribute + field kind)
 - Auto-suggest column mappings based on column name similarity
 - Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows

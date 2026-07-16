@@ -76,7 +76,7 @@ interface AppState {
   entitySet: string;
   entityLogicalName: string;
   entityAttributes: EntityAttribute[];
-  entities: Array<{ logicalName: string; entitySetName: string; displayName: string }>;
+  entities: Array<{ logicalName: string; entitySetName: string; displayName: string; metadataId: string }>;
   mappings: ColumnMapping[];
 }
 
@@ -94,6 +94,7 @@ const state: AppState = {
 
 const lookupTargetsCache = new Map<string, string[]>();
 const optionLabelsCache = new Map<string, Record<string, number>>();
+const solutionEntityIdsCache = new Map<string, Set<string>>();
 
 const CHOICE_KINDS: readonly DataverseFieldKind[] = ["choice", "multichoice", "status", "state"];
 
@@ -190,6 +191,7 @@ Office.onReady(async () => {
 
   el<HTMLButtonElement>("signin").addEventListener("click", onSignIn);
   el<HTMLSelectElement>("table").addEventListener("change", onPickTable);
+  el<HTMLSelectElement>("solution").addEventListener("change", onPickSolution);
   el<HTMLSelectElement>("entity").addEventListener("change", onPickEntity);
   el<HTMLButtonElement>("addMap").addEventListener("click", () => addMapping());
   el<HTMLButtonElement>("suggest").addEventListener("click", onSuggest);
@@ -408,28 +410,96 @@ async function onSignIn(): Promise<void> {
   }
 }
 
-async function loadEntities(): Promise<void> {
-  const client = new DataverseClient({
+function dvClient(): DataverseClient {
+  return new DataverseClient({
     environmentUrl: state.environmentUrl,
     getToken: makeTokenProvider(state.environmentUrl),
   });
+}
+
+async function loadEntities(): Promise<void> {
+  const client = dvClient();
   const entities = await client.listEntities();
   const sorted = entities.sort((a, b) => a.LogicalName.localeCompare(b.LogicalName));
   state.entities = sorted.map(e => ({
     logicalName: e.LogicalName,
     entitySetName: e.EntitySetName,
     displayName: e.DisplayName,
+    metadataId: (e.MetadataId ?? "").toLowerCase(),
   }));
+  renderEntityOptions(null);
+  el<HTMLSelectElement>("entity").disabled = false;
+  await loadSolutions(client);
+}
+
+/** Populate the entity select, optionally restricted to a set of MetadataIds. */
+function renderEntityOptions(filter: Set<string> | null): void {
   const sel = el<HTMLSelectElement>("entity");
+  const current = sel.value;
   sel.innerHTML = `<option value="">Select an entity…</option>`;
-  for (const e of sorted) {
+  let shown = 0;
+  for (const e of state.entities) {
+    if (filter && !filter.has(e.metadataId)) continue;
     const opt = document.createElement("option");
-    opt.value = e.EntitySetName;
-    opt.textContent = `${e.DisplayName || e.LogicalName} (${e.EntitySetName})`;
-    opt.dataset.logical = e.LogicalName;
+    opt.value = e.entitySetName;
+    opt.textContent = `${e.displayName || e.logicalName} (${e.entitySetName})`;
+    opt.dataset.logical = e.logicalName;
     sel.appendChild(opt);
+    shown++;
   }
-  sel.disabled = false;
+  if (filter && shown === 0) {
+    sel.innerHTML = `<option value="">No entities in this solution</option>`;
+    return;
+  }
+  // Keep the current selection when it survives the filter.
+  if (current && [...sel.options].some((o) => o.value === current)) {
+    sel.value = current;
+  }
+}
+
+/**
+ * Fill the solution picker. Defaults to "All entities" (equivalent to the
+ * Default solution, which contains every entity); picking a solution
+ * filters the entity list to that solution's tables.
+ */
+async function loadSolutions(client: DataverseClient): Promise<void> {
+  const sel = el<HTMLSelectElement>("solution");
+  try {
+    const solutions = await client.listSolutions();
+    sel.innerHTML = "";
+    sel.appendChild(new Option("All entities (Default solution)", ""));
+    for (const s of solutions) {
+      // The Default solution contains everything — same as "All entities".
+      if (s.uniqueName.toLowerCase() === "default") continue;
+      sel.appendChild(new Option(s.friendlyName || s.uniqueName, s.id));
+    }
+    sel.disabled = false;
+  } catch {
+    // Solution filtering is a nicety; a user without read privilege on the
+    // solution table still gets the full entity list.
+    sel.innerHTML = `<option value="">All entities (solution list unavailable)</option>`;
+    sel.disabled = true;
+  }
+}
+
+async function onPickSolution(e: Event): Promise<void> {
+  const sel = e.target as HTMLSelectElement;
+  const solutionId = sel.value;
+  if (!solutionId) {
+    renderEntityOptions(null);
+    return;
+  }
+  try {
+    let ids = solutionEntityIdsCache.get(solutionId);
+    if (!ids) {
+      ids = await dvClient().getSolutionEntityIds(solutionId);
+      solutionEntityIdsCache.set(solutionId, ids);
+    }
+    renderEntityOptions(ids);
+  } catch (err) {
+    setStatus("error", `Could not load solution components: ${(err as Error).message}`);
+    renderEntityOptions(null);
+  }
 }
 
 async function onPickEntity(e: Event): Promise<void> {
@@ -552,7 +622,12 @@ function matchesKind(kind: DataverseFieldKind): (a: EntityAttribute) => boolean 
   }
 }
 
-type EntityRecord = { logicalName: string; entitySetName: string; displayName: string };
+type EntityRecord = {
+  logicalName: string;
+  entitySetName: string;
+  displayName: string;
+  metadataId: string;
+};
 
 async function applyLookupTargets(
   entitySetSel: HTMLSelectElement,
