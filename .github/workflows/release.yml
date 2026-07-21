@@ -28,7 +28,7 @@ jobs:
       - run: npm run build
 
       - name: Bundle CLI to a single CJS file
-        run: npm run bundle --workspace=@dvload/cli
+        run: npm run bundle --workspace=dvload
 
       - name: Build SEA blob and inject into node.exe
         shell: pwsh

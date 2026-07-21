@@ -51,7 +51,10 @@ function ensure(): PublicClientApplication {
     auth: {
       clientId: CLIENT_ID,
       authority: "https://login.microsoftonline.com/organizations",
-      redirectUri: window.location.origin + "/taskpane.html",
+      // origin + pathname (not a hardcoded "/taskpane.html") so this works
+      // both at https://localhost:3000/taskpane.html and when hosted under a
+      // subpath, e.g. https://<user>.github.io/dvload/taskpane.html.
+      redirectUri: window.location.origin + window.location.pathname,
     },
     cache: {
       cacheLocation: "localStorage",

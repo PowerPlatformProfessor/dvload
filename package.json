@@ -1,5 +1,5 @@
 {
-  "name": "dvload",
+  "name": "dvload-monorepo",
   "private": true,
   "version": "0.1.0",
   "description": "Map Excel/Power Query output to Dataverse tables and load via the OData Web API. Excel add-in + CLI.",
@@ -9,7 +9,7 @@
   "scripts": {
     "build": "npm run build --workspace=@dvload/core && npm run build --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
-    "dev:cli": "npm run dev --workspace=@dvload/cli",
+    "dev:cli": "npm run dev --workspace=dvload",
     "dev:addin": "npm run dev --workspace=@dvload/addin",
     "lint": "eslint \"packages/*/src/**/*.ts\"",
     "test": "npm run test --workspaces --if-present"

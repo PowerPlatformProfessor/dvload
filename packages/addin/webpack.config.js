@@ -71,10 +71,9 @@ module.exports = async (env, argv) => {
         chunks: ["commands"],
       }),
       new webpack.DefinePlugin({
-        // Fallback MUST be one of the WELL_KNOWN_DEV_CLIENT_IDS in src/auth.ts
-        // so the dev-mode banner fires. A private app id here would silently
-        // bypass the entire pre-release safety net. Production builds with a
-        // well-known id are rejected above.
+        // Defaults to the registered "dataverse-load" multi-tenant app.
+        // Override with DATAVERSE_LOAD_CLIENT_ID at build time to ship
+        // against a different registration.
         ADDIN_CLIENT_ID: JSON.stringify(clientId),
       }),
       new CopyWebpackPlugin({
