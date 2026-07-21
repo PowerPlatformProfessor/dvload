@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "Load test — insert",
+  "description": "Insert-mode mapping for generated contacts_*.xlsx files (see make-load-data.js). Edit environmentUrl before use.",
+  "environmentUrl": "https://YOURORG.crm.dynamics.com",
+  "targetEntitySet": "contacts",
+  "sourceTable": "tblContacts",
+  "conflictMode": "insert",
+  "batchSize": 500,
+  "maxErrors": 100,
+  "logDir": "./logs",
+  "columns": [
+    { "source": "First Name",   "target": "firstname",     "kind": "string",   "treatEmptyAsNull": true },
+    { "source": "Last Name",    "target": "lastname",      "kind": "string",   "treatEmptyAsNull": true },
+    { "source": "Email",        "target": "emailaddress1", "kind": "string",   "treatEmptyAsNull": true },
+    { "source": "Job Title",    "target": "jobtitle",      "kind": "string",   "treatEmptyAsNull": true },
+    { "source": "Birthday",     "target": "birthdate",     "kind": "dateonly", "treatEmptyAsNull": true },
+    { "source": "Credit Limit", "target": "creditlimit",   "kind": "money",    "treatEmptyAsNull": true },
+    { "source": "Do Not Email", "target": "donotemail",    "kind": "boolean",  "treatEmptyAsNull": true },
+    { "source": "Notes",        "target": "description",   "kind": "memo",     "treatEmptyAsNull": true }
+  ]
+}
