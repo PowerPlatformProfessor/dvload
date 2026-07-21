@@ -14,7 +14,7 @@ module.exports = async (env, argv) => {
   const isProd = argv.mode === "production";
   const httpsOptions = isProd ? undefined : await devCerts.getHttpsServerOptions();
 
-  const clientId = process.env.DATAVERSE_LOAD_CLIENT_ID || "2ad88395-b77d-4561-9441-d0e40824f9bc";
+  const clientId = process.env.DATAVERSE_LOAD_CLIENT_ID || "e6828b0f-9fde-43f8-85d0-602660d498bb";
 
   // A production bundle must never ship with a borrowed Microsoft client id
   // (the consent screen would show "Microsoft PowerApps", and it's against

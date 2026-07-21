@@ -59,6 +59,7 @@
 | Feature | Notes |
 |---|---|
 | **macOS / Linux scheduling** | `schedule` uses Windows Task Scheduler. Cross-platform support is v2 scope. |
+| **Schedule cadences beyond daily** | `schedule` only supports a fixed daily `--time`. Add `--every` (weekly/weekdays/monthly/hourly, specific days via `schtasks /sc weekly /d MON,WED`, N-hour intervals via `/sc hourly /mo N`). |
 | **Headless / server-side Power Query refresh** | Currently requires Excel desktop installed on the machine; server scenarios unsupported. |
 | ~~**Certificate auth for app-only**~~ | Done: `dvload app-login --cert <pem>` stores the cert in the secure store. |
 | ~~**Single-file executable distribution**~~ | Scaffolded: `npm run bundle` (esbuild) + Node SEA in `.github/workflows/release.yml`. Code signing still to wire up (see `packaging/README.md`). |

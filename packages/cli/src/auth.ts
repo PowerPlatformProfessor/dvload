@@ -59,12 +59,11 @@ const WELL_KNOWN_DEV_CLIENT_IDS: Record<string, string> = {
 
 /**
  * Default public-client app id used by `dvload login`. Pulled from
- * env var first; otherwise falls back to the PowerApps client id so
- * everything works out of the box for development without an Entra
- * registration. Replace with your own app id before shipping.
+ * env var first; otherwise falls back to the registered "dataverse-load"
+ * multi-tenant public client.
  */
 const DEFAULT_PUBLIC_CLIENT_ID =
-  process.env.DATAVERSE_LOAD_CLIENT_ID ?? "2ad88395-b77d-4561-9441-d0e40824f9bc";
+  process.env.DATAVERSE_LOAD_CLIENT_ID ?? "e6828b0f-9fde-43f8-85d0-602660d498bb";
 
 export function isWellKnownDevClient(clientId: string): boolean {
   return clientId in WELL_KNOWN_DEV_CLIENT_IDS;

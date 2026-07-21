@@ -30,7 +30,10 @@ dvload/
 - Node.js 20+
 - Windows 10/11 (CLI scheduling and Power Query refresh are Windows-only in v1)
 - Excel desktop, signed in to the same Microsoft 365 tenant as your Dataverse environment
-- An Azure AD app registration (see below)
+
+No Entra ID app registration is needed for interactive use — dvload
+ships with a registered multi-tenant app. Unattended scheduled runs need
+a per-org registration; see [docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md).
 
 ## Auth model
 
@@ -49,54 +52,48 @@ You can have both configured for the same environment. The CLI prefers
 app-only when it's set; pass `--user` to force delegated (handy when
 you're iterating in a shell where a schedule has stored a secret).
 
-### Quick start (dev mode, no Entra app registration)
+### Quick start (delegated)
 
-For local testing you can skip the Entra ID app registration entirely.
-The CLI and add-in default to Microsoft's **PowerApps** public client id
-(`2ad88395-b77d-4561-9441-d0e40824f9bc`), which is multi-tenant and has
-Dataverse access pre-consented. The consent screen will say "Microsoft
-PowerApps" the first time you sign in — that's expected in dev mode.
+No Entra setup needed. dvload ships with its own registered multi-tenant
+public client (`dataverse-load`, `e6828b0f-9fde-43f8-85d0-602660d498bb`),
+so signing in just works:
 
 ```bash
 dvload login --env https://yourorg.crm.dynamics.com
 ```
 
-When dev mode is active you'll see warnings on every auth command and a
-yellow banner in the add-in. Both are deliberate — see
-[PRE-RELEASE-CHECKLIST.md](./PRE-RELEASE-CHECKLIST.md) for everything
-that has to change before you share this with anyone outside your own
-machine.
+The first sign-in asks for consent to access Dataverse on your behalf.
+If your tenant restricts user consent, an admin will need to approve the
+app once (they'll get an admin-approval prompt, or can pre-consent it
+from Entra → Enterprise applications).
 
-### Delegated setup (replaces dev mode; required before shipping)
+### Using your own app registration (optional)
 
-You need a **public client** app registration.
+Orgs that prefer their own registration — for conditional-access
+policies, consent branding, or auditability — can override the built-in
+client id. Register a **public client** app:
 
 1. Open **Microsoft Entra admin center** → Applications → App registrations → New registration.
-2. Name: `dvload`.
-3. Supported account types: *Accounts in any organizational directory (multi-tenant)*.
-4. Redirect URIs:
-   - Single-page application: `https://localhost:3000/taskpane.html` (dev) and your prod URL.
-   - Public client / native: leave the default `http://localhost` so device-code flow works.
-5. Authentication → Allow public client flows: **Yes**.
-6. API permissions → Add → Dynamics CRM → user_impersonation (delegated).
-7. Copy the **Application (client) ID**.
-
-Pin the client id:
+2. Supported account types: single-tenant is fine for internal use.
+3. Redirect URIs:
+   - Single-page application: the URL your copy of the add-in is hosted at (only if you self-host the add-in).
+   - Public client / native: leave the default `http://localhost`.
+4. Authentication → Allow public client flows: **Yes**.
+5. API permissions → Add → Dynamics CRM → user_impersonation (delegated).
+6. Copy the **Application (client) ID** and pin it:
 
 ```bash
-setx DATAVERSE_LOAD_CLIENT_ID "<your-public-client-id>"
+setx DATAVERSE_LOAD_CLIENT_ID "<your-client-id>"
 ```
 
-Or edit `DEFAULT_PUBLIC_CLIENT_ID` in `packages/cli/src/auth.ts` and
-`CLIENT_ID` in `packages/addin/src/auth.ts`.
-
-Then sign in:
-
-```bash
-dvload login --env https://contoso.crm.dynamics.com
-```
+The CLI picks up the env var on the next run. For the add-in, the id is
+baked in at build time (`DATAVERSE_LOAD_CLIENT_ID` at webpack build), so
+overriding it means self-hosting a rebuild.
 
 ### App-only setup (recommended for scheduled runs)
+
+> **End users:** there's a standalone, step-by-step version of this in
+> [docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md) — share that one.
 
 You need a separate **confidential client** app registration *and* an
 Application User inside Dataverse so it has somewhere to map to.
@@ -211,11 +208,11 @@ file. Suppress with `--no-failed-rows` if the data is sensitive.
 
 ### Add-in (development)
 
-**Entra app setup (one-time):** Register a public-client, multi-tenant app in Entra ID.
-Add `https://localhost:3000/taskpane.html` as a **Single-page application** redirect URI and grant
-`Dynamics CRM → user_impersonation` (delegated). Set the client ID in
-`packages/addin/webpack.config.js` (the `DefinePlugin` default) or pass it at build time
-via the `DATAVERSE_LOAD_CLIENT_ID` env var.
+Dev builds use the built-in `dataverse-load` app, which already has
+`https://localhost:3000/taskpane.html` as an SPA redirect URI — no Entra
+setup needed. To build against a different registration, pass
+`DATAVERSE_LOAD_CLIENT_ID` at build time (its app needs that same SPA
+redirect URI and `Dynamics CRM → user_impersonation` delegated permission).
 
 ```powershell
 # Terminal 1 — webpack dev server (hot-reload, HTTPS on port 3000)
@@ -239,6 +236,9 @@ npm --workspace=@dvload/addin run stop
 ```
 
 ## Daily scheduled import
+
+Full end-user setup guide (Entra app, Application User, credentials,
+troubleshooting): [docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md).
 
 ```bash
 node packages/cli/dist/index.js schedule ./contacts.dvmap.json \
