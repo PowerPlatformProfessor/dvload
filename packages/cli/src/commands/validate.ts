@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import kleur from "kleur";
-import { parseMapping, validateMapping, DataverseClient } from "@dvload/core";
+import { parseMapping, validateMapping, mappingWarnings, DataverseClient } from "@dvload/core";
 import { getTokenProvider } from "../auth.js";
 
 interface ValidateOpts {
@@ -21,6 +21,12 @@ export async function validateCommand(mappingPath: string, opts: ValidateOpts): 
     return;
   }
   console.log(kleur.green("Schema OK."));
+
+  const warnings = mappingWarnings(mapping);
+  if (warnings.length > 0) {
+    console.log(kleur.yellow(`Warnings (${warnings.length}):`));
+    for (const w of warnings) console.log(kleur.yellow("  ! " + w));
+  }
 
   if (!opts.remote) return;
 

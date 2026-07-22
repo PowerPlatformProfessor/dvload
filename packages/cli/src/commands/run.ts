@@ -4,6 +4,7 @@ import kleur from "kleur";
 import {
   parseMapping,
   validateMapping,
+  mappingWarnings,
   DataverseClient,
   loadRows,
   readTableFromFile,
@@ -63,6 +64,8 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     process.exitCode = 2;
     return null;
   }
+
+  for (const w of mappingWarnings(mapping)) log(kleur.yellow("! " + w));
 
   if (typeof opts.maxErrors === "number") mapping.maxErrors = opts.maxErrors;
   if (typeof opts.concurrency === "number") mapping.concurrency = opts.concurrency;

@@ -8,6 +8,7 @@ import {
   parseMapping,
   serializeMapping,
   validateMapping,
+  mappingWarnings,
   type Mapping,
   type ColumnMapping,
   type DataverseFieldKind,
@@ -22,6 +23,7 @@ import {
 import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "../auth.js";
 import { listTables, readTable, type TableInfo } from "../excel.js";
 import { suggestMappings, suggestionsToMappings } from "../suggest.js";
+import { enhanceSelect } from "../combobox.js";
 
 const SETTINGS_KEY = "dvload:lastMapping";
 const PROFILES_KEY = "dvload:profiles";
@@ -194,6 +196,7 @@ Office.onReady(async () => {
   el<HTMLSelectElement>("solution").addEventListener("change", onPickSolution);
   el<HTMLSelectElement>("entity").addEventListener("change", onPickEntity);
   el<HTMLButtonElement>("addMap").addEventListener("click", () => addMapping());
+  el<HTMLButtonElement>("addConst").addEventListener("click", () => addConstant());
   el<HTMLButtonElement>("suggest").addEventListener("click", onSuggest);
   el<HTMLButtonElement>("run").addEventListener("click", onRun);
   el<HTMLButtonElement>("save").addEventListener("click", onSave);
@@ -203,6 +206,11 @@ Office.onReady(async () => {
   el<HTMLButtonElement>("pqtCopyM").addEventListener("click", onCopyPqtM);
   el<HTMLSelectElement>("conflictMode").addEventListener("change", updateOptionsVisibility);
   updateOptionsVisibility();
+
+  // Type-to-filter on the big pickers. The native selects stay in the DOM as
+  // the source of truth; the combobox is a UI layer over them.
+  enhanceSelect(el<HTMLSelectElement>("solution"));
+  enhanceSelect(el<HTMLSelectElement>("entity"));
 });
 
 /* -------------------------------------------------------------------------- */
@@ -558,7 +566,7 @@ function onSuggest(): void {
     return;
   }
   const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes.map(a => a.logicalName), {
-    excludeSources: state.mappings.map((m) => m.source).filter(Boolean),
+    excludeSources: state.mappings.map((m) => m.source).filter((s): s is string => !!s),
     excludeTargets: state.mappings.map((m) => m.target).filter(Boolean),
   });
   if (suggestions.length === 0) {
@@ -598,6 +606,17 @@ function addMapping(seed?: ColumnMapping): void {
     seed ?? { source: "", target: "", kind: "string", treatEmptyAsNull: true }
   );
   rerenderMappings();
+}
+
+/** A fixed-value row: no source column; `constant` is applied to every record. */
+function addConstant(): void {
+  state.mappings.push({ constant: "", target: "", kind: "string", treatEmptyAsNull: true });
+  rerenderMappings();
+}
+
+/** Constant rows are the ones without a source column. */
+function isConstantRow(m: ColumnMapping): boolean {
+  return m.source === undefined;
 }
 
 function matchesKind(kind: DataverseFieldKind): (a: EntityAttribute) => boolean {
@@ -678,6 +697,128 @@ function populateTargetSelect(sel: HTMLSelectElement, kind: DataverseFieldKind, 
   }
 }
 
+/**
+ * Editor for a fixed-value row's value cell. Non-lookup kinds get a plain
+ * input (coerced by the engine exactly like a cell value). Lookup kinds get
+ * a record search: type ≥2 characters, matching records from the bound
+ * entity set (e.g. Users or Teams for ownerid) are fetched and picking one
+ * stores its GUID as the constant.
+ */
+function makeConstantEditor(
+  m: ColumnMapping,
+  i: number,
+  getBindEntitySet: () => string | undefined
+): HTMLElement {
+  const wrap = document.createElement("span");
+  wrap.style.cssText = "position:relative;display:inline-block;width:100%;";
+  wrap.title = "Fixed value applied to every record";
+
+  const input = document.createElement("input");
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.style.background = "#f3f9f1"; // subtle tint: this cell is not a source column
+  wrap.appendChild(input);
+
+  if (m.kind !== "lookup") {
+    input.placeholder = "fixed value";
+    input.value = m.constant === undefined ? "" : String(m.constant);
+    input.addEventListener("change", () => {
+      state.mappings[i].constant = input.value;
+    });
+    return wrap;
+  }
+
+  // Lookup: async record search against the bound entity set.
+  input.placeholder = "search record… (pick entity set below)";
+  // Redisplay the picked record's name (kept in notes), else the raw GUID.
+  input.value = m.notes ?? (m.constant === undefined ? "" : String(m.constant));
+
+  const list = document.createElement("div");
+  list.style.cssText =
+    "position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;" +
+    "max-height:180px;overflow-y:auto;background:#fff;border:1px solid #8a8886;" +
+    "box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;";
+  wrap.appendChild(list);
+
+  const close = (): void => {
+    list.style.display = "none";
+  };
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let seq = 0;
+
+  const search = async (term: string): Promise<void> => {
+    const entitySet = getBindEntitySet();
+    if (!entitySet) {
+      list.innerHTML = `<div style="padding:4px 8px;color:#605e5c;">Pick the entity set first (below)</div>`;
+      list.style.display = "";
+      return;
+    }
+    const mySeq = ++seq;
+    try {
+      const client = dvClient();
+      const info = await client.getEntitySetInfo(entitySet);
+      const name = info.primaryNameAttribute ?? "name";
+      const safe = term.replace(/'/g, "''");
+      const rows = await client.queryAll(
+        `${entitySet}?$select=${info.primaryIdAttribute},${name}` +
+          `&$filter=contains(${name},'${safe}')&$orderby=${name}&$top=10`
+      );
+      if (mySeq !== seq) return; // stale response
+      list.innerHTML = "";
+      if (rows.length === 0) {
+        list.innerHTML = `<div style="padding:4px 8px;color:#605e5c;">No matches</div>`;
+      }
+      for (const r of rows) {
+        const guid = String(r[info.primaryIdAttribute] ?? "");
+        const label = String(r[name] ?? guid);
+        const item = document.createElement("div");
+        item.textContent = label;
+        item.style.cssText = "padding:4px 8px;cursor:pointer;";
+        item.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          state.mappings[i].constant = guid;
+          state.mappings[i].lookupResolution = "guid";
+          state.mappings[i].notes = label;
+          input.value = label;
+          close();
+        });
+        list.appendChild(item);
+      }
+      list.style.display = "";
+    } catch (err) {
+      if (mySeq !== seq) return;
+      list.innerHTML = `<div style="padding:4px 8px;color:#a4262c;">${(err as Error).message}</div>`;
+      list.style.display = "";
+    }
+  };
+
+  input.addEventListener("input", () => {
+    const term = input.value.trim();
+    // A pasted GUID is accepted directly — no search round-trip needed.
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(term)) {
+      state.mappings[i].constant = term.toLowerCase();
+      state.mappings[i].lookupResolution = "guid";
+      state.mappings[i].notes = undefined;
+      close();
+      return;
+    }
+    if (timer) clearTimeout(timer);
+    if (term.length < 2) {
+      close();
+      return;
+    }
+    timer = setTimeout(() => void search(term), 300);
+  });
+  input.addEventListener("blur", () => {
+    close();
+    // Revert half-typed searches to the last picked record.
+    input.value = state.mappings[i].notes ?? String(state.mappings[i].constant ?? "");
+  });
+
+  return wrap;
+}
+
 function rerenderMappings(): void {
   const root = el<HTMLDivElement>("mappings");
   root.innerHTML = "";
@@ -686,14 +827,22 @@ function rerenderMappings(): void {
     const row = document.createElement("div");
     row.className = "mapping-row";
 
-    const src = document.createElement("select");
-    src.appendChild(new Option("(source)…", ""));
-    const cols = state.selectedTable?.columns ?? [];
-    for (const c of cols) src.appendChild(new Option(c, c, m.source === c, m.source === c));
-    src.value = m.source;
-    src.addEventListener("change", () => {
-      state.mappings[i].source = src.value;
-    });
+    // First cell: source column picker, or — for fixed-value rows — the
+    // constant editor (a plain input, or a record search for lookups).
+    let src: HTMLElement;
+    if (isConstantRow(m)) {
+      src = makeConstantEditor(m, i, () => entitySetSel.value || m.bindEntitySet);
+    } else {
+      const srcSel = document.createElement("select");
+      srcSel.appendChild(new Option("(source)…", ""));
+      const cols = state.selectedTable?.columns ?? [];
+      for (const c of cols) srcSel.appendChild(new Option(c, c, m.source === c, m.source === c));
+      srcSel.value = m.source ?? "";
+      srcSel.addEventListener("change", () => {
+        state.mappings[i].source = srcSel.value;
+      });
+      src = srcSel;
+    }
 
     const kind = document.createElement("select");
     const kinds: DataverseFieldKind[] = [
@@ -705,6 +854,7 @@ function rerenderMappings(): void {
 
     const tgt = document.createElement("select");
     populateTargetSelect(tgt, m.kind, m.target);
+    const tgtCell = enhanceSelect(tgt);
     tgt.addEventListener("change", () => {
       state.mappings[i].target = tgt.value;
       if (state.mappings[i].kind === "lookup" && tgt.value) {
@@ -728,6 +878,7 @@ function rerenderMappings(): void {
       ));
     }
     if (m.bindEntitySet) entitySetSel.value = m.bindEntitySet;
+    const entitySetCell = enhanceSelect(entitySetSel);
     entitySetSel.addEventListener("change", () => {
       state.mappings[i].bindEntitySet = entitySetSel.value || undefined;
     });
@@ -750,10 +901,18 @@ function rerenderMappings(): void {
       keyAttrInput.style.display = resSel.value === "alternateKey" ? "" : "none";
     });
 
-    lookupCfg.append(entitySetSel, resSel, keyAttrInput);
+    lookupCfg.append(entitySetCell, resSel, keyAttrInput);
 
     kind.addEventListener("change", () => {
       state.mappings[i].kind = kind.value as DataverseFieldKind;
+      // A fixed-value row's value editor depends on the kind (plain input vs
+      // record search), so rebuild the grid.
+      if (isConstantRow(state.mappings[i])) {
+        state.mappings[i].constant = "";
+        state.mappings[i].notes = undefined;
+        rerenderMappings();
+        return;
+      }
       populateTargetSelect(tgt, kind.value as DataverseFieldKind, state.mappings[i].target);
       state.mappings[i].target = tgt.value;
       lookupCfg.style.display = kind.value === "lookup" ? "" : "none";
@@ -773,7 +932,7 @@ function rerenderMappings(): void {
       rerenderMappings();
     });
 
-    row.append(src, kind, tgt, remove);
+    row.append(src, kind, tgtCell, remove);
     root.appendChild(row);
     root.appendChild(lookupCfg);
 
@@ -815,6 +974,12 @@ async function onRun(): Promise<void> {
     const errs = validateMapping(mapping);
     if (errs.length > 0) {
       setStatus("error", "Mapping has errors: " + errs.join("; "));
+      return;
+    }
+    // Advisories (e.g. overriddencreatedon with upsert) — confirm, don't block.
+    const warnings = mappingWarnings(mapping);
+    if (warnings.length > 0 && !window.confirm("Heads up:\n\n" + warnings.join("\n\n") + "\n\nRun anyway?")) {
+      setStatus("info", "Run cancelled.");
       return;
     }
     setStatus("info", "Reading table…");

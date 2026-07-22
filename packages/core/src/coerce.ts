@@ -2,7 +2,7 @@
 // booleans, strings, or nulls; this module converts them into the JSON
 // shape Dataverse expects on the wire.
 
-import type { ColumnMapping } from "./mapping.js";
+import { sourceValue, type ColumnMapping } from "./mapping.js";
 
 export class CoerceError extends Error {
   constructor(message: string, public column: string, public value: unknown) {
@@ -234,7 +234,7 @@ export function coerceRow(
       lookups.push(col);
       continue;
     }
-    const coerced = coerceValue(row[col.source], col);
+    const coerced = coerceValue(sourceValue(row, col), col);
     if (coerced !== undefined) payload[col.target] = coerced;
   }
 

@@ -227,6 +227,8 @@ export function injectMappingIntoPqt(archive: PqtArchive, mapping: Mapping): voi
   q.EntityName = q.EntityName ?? mapping.targetEntitySet;
   q.FieldsMetadata = q.FieldsMetadata ?? {};
   for (const col of mapping.columns) {
+    // Constant columns have no Power Query source column to map.
+    if (col.source === undefined) continue;
     q.FieldsMetadata[col.target] = {
       SourceColumnName: col.source,
       DestinationFieldType: dataverseKindToDataflowType(col.kind),

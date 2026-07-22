@@ -11,8 +11,18 @@ import type { DataverseFieldKind, ConflictMode, SyncAction } from "./types.js";
 export const SCHEMA_VERSION = 1 as const;
 
 export interface ColumnMapping {
-  /** Source column header in the Excel table. */
-  source: string;
+  /**
+   * Source column header in the Excel table. Exactly one of `source` or
+   * `constant` must be set.
+   */
+  source?: string;
+  /**
+   * Fixed value applied to every record instead of reading a source column
+   * (e.g. a fixed owner, a hardcoded choice value). Coerced through the same
+   * pipeline as cell values: for lookups this is typically the record GUID
+   * (lookupResolution "guid") or a key value (alternateKey/text).
+   */
+  constant?: string | number | boolean;
   /** Target Dataverse logical name (for lookups, the navigation property). */
   target: string;
   /** Dataverse type to coerce into. */
@@ -305,8 +315,25 @@ function parseColumnMapping(input: unknown, path: string): ColumnMapping {
     }
   }
 
+  const hasSource = input.source !== undefined && input.source !== null;
+  const hasConstant = input.constant !== undefined && input.constant !== null;
+  if (hasSource === hasConstant) {
+    throw new MappingParseError(
+      `${path} must have exactly one of "source" (a column header) or "constant" (a fixed value)`
+    );
+  }
+  if (
+    hasConstant &&
+    typeof input.constant !== "string" &&
+    typeof input.constant !== "number" &&
+    typeof input.constant !== "boolean"
+  ) {
+    throw new MappingParseError(`${path}.constant must be a string, number, or boolean`);
+  }
+
   return {
-    source: requireString(input.source, `${path}.source`),
+    source: hasSource ? requireString(input.source, `${path}.source`) : undefined,
+    constant: hasConstant ? (input.constant as string | number | boolean) : undefined,
     target: requireString(input.target, `${path}.target`),
     kind: kind as DataverseFieldKind,
     bindEntitySet: optionalString(input.bindEntitySet, `${path}.bindEntitySet`),
@@ -321,6 +348,41 @@ function parseColumnMapping(input: unknown, path: string): ColumnMapping {
   };
 }
 
+/**
+ * Non-blocking advisories: configurations that are valid but will produce
+ * surprising results on some rows. Shown by the CLI's `validate` and the
+ * add-in before a run; they do NOT stop execution.
+ */
+export function mappingWarnings(m: Mapping): string[] {
+  const warnings: string[] = [];
+  const hasOverride = m.columns.some((c) => c.target === "overriddencreatedon");
+  if (hasOverride && (m.conflictMode === "upsert" || m.conflictMode === "sync")) {
+    warnings.push(
+      `overriddencreatedon is honored on CREATE only. conflictMode=${m.conflictMode} ` +
+        `updates existing records via PATCH, and Dataverse rejects the attribute on ` +
+        `update — those rows will fail. Use conflictMode=insert for the backdating ` +
+        `migration, or remove the overriddencreatedon column from the ongoing mapping.`
+    );
+  }
+  if (hasOverride) {
+    warnings.push(
+      `overriddencreatedon requires the "Override Created On" privilege ` +
+        `(prvOverrideCreatedOnCreatedBy) on the loading user or Application User, ` +
+        `and the value must be in the past.`
+    );
+  }
+  return warnings;
+}
+
+/**
+ * The value a column contributes for a given source row: the cell under
+ * `source`, or the fixed `constant`. Single choke point so the engine never
+ * special-cases constant columns.
+ */
+export function sourceValue(row: Record<string, unknown>, col: ColumnMapping): unknown {
+  return col.source !== undefined ? row[col.source] : col.constant;
+}
+
 /** Serialize a mapping to a stable JSON form for writing to disk. */
 export function serializeMapping(m: Mapping): string {
   return JSON.stringify({ ...m, updatedAt: new Date().toISOString() }, null, 2) + "\n";
@@ -333,6 +395,18 @@ export function validateMapping(m: Mapping): string[] {
   for (const col of m.columns) {
     if (seen.has(col.target)) errors.push(`Duplicate target attribute: ${col.target}`);
     seen.add(col.target);
+
+    if (col.source === undefined && col.constant === undefined) {
+      errors.push(`Column ${col.target}: needs either a source column or a constant value`);
+    }
+    if (
+      col.constant !== undefined &&
+      col.kind === "lookup" &&
+      col.lookupResolution === "guid" &&
+      !GUID_RE.test(String(col.constant))
+    ) {
+      errors.push(`Column ${col.target}: constant must be a GUID when lookupResolution=guid`);
+    }
 
     if (col.kind === "lookup") {
       if (!col.bindEntitySet) errors.push(`Lookup column ${col.target} missing bindEntitySet`);

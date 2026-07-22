@@ -23,6 +23,7 @@
 - **Conflict modes:** `insert`, `upsert`, `skip-if-exists`, `sync` (upsert + deactivate/delete target records missing from the source; `syncAction` picks the removal behavior, default deactivate; refuses to run on an empty source table)
 - **Field types:** `string`, `memo`, `integer`, `decimal`, `money`, `double`, `boolean`, `datetime`, `dateonly`, `uniqueidentifier`, `lookup`, `choice`, `multichoice`, `status`, `state`
 - **Lookup resolution:** by GUID, by alternate key, or by **text match** on any attribute (`lookupResolution: "text"` + `keyAttribute`), with `createIfMissing` (auto-create unmatched records) and `duplicateBehavior` (`error`/`first`) for ambiguous matches
+- **Constant-value columns** (`constant` instead of `source`): apply a fixed value to every record without a source column — e.g. a fixed owner (`ownerid` lookup bound to a user/team GUID), a hardcoded choice value, or a marker string. Coerced through the same pipeline as cell values; works in the CLI and scheduled runs since it's part of the `.dvmap.json` schema
 - **Delta detection** (`skipUnchanged`): pre-reads target records, strips attributes whose values already match, and skips no-op rows — keeps the audit log and plugins quiet
 - **Parallel batches** (`concurrency: 1-8`): multiple `$batch` requests in flight, still honoring Retry-After throttling
 - **Bypass custom logic** (`bypassCustomLogic`): sends `MSCRM.BypassCustomPluginExecution` + `MSCRM.SuppressCallbackRegistrationExpanderJob` per operation (needs the bypass privilege)
@@ -44,6 +45,8 @@
 - Fetches Dataverse entities and their attributes from the live environment
 - Solution picker: defaults to all entities (Default solution); selecting a solution filters the target-entity list to that solution's tables (via `solutioncomponents`, componenttype 1)
 - Column mapping UI (source column → target attribute + field kind)
+- Type-ahead comboboxes on the solution, entity, target-attribute, and lookup entity-set pickers (type first letters to filter)
+- Fixed-value rows ("Add fixed value"): set a field to a constant on every record; lookup targets (e.g. owner) get a live record search against the bound entity set (users/teams), storing the picked record's GUID
 - Auto-suggest column mappings based on column name similarity
 - Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows
 - Option-set labels fetched from metadata: picking a choice/multichoice/status/state target auto-fills `optionMap`, so spreadsheet cells can contain labels instead of integers

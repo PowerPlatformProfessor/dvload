@@ -166,7 +166,7 @@ export class DataverseClient {
   private readonly fetchFn: typeof fetch;
   private readonly entitySetInfoCache = new Map<
     string,
-    { logicalName: string; primaryIdAttribute: string }
+    { logicalName: string; primaryIdAttribute: string; primaryNameAttribute?: string }
   >();
 
   constructor(private readonly opts: DataverseClientOptions) {
@@ -378,25 +378,31 @@ export class DataverseClient {
    * Look up { logicalName, primaryIdAttribute } for an entity SET name
    * (e.g. "accounts" → { account, accountid }). Cached per client instance.
    */
-  async getEntitySetInfo(entitySetName: string): Promise<{ logicalName: string; primaryIdAttribute: string }> {
+  async getEntitySetInfo(
+    entitySetName: string
+  ): Promise<{ logicalName: string; primaryIdAttribute: string; primaryNameAttribute?: string }> {
     assertLogicalName(entitySetName, "Entity set");
     const cached = this.entitySetInfoCache.get(entitySetName);
     if (cached) return cached;
     const res = await this.fetchWithRetry(
       this.url(
-        `EntityDefinitions?$select=LogicalName,PrimaryIdAttribute&$filter=EntitySetName eq '${entitySetName}'`
+        `EntityDefinitions?$select=LogicalName,PrimaryIdAttribute,PrimaryNameAttribute&$filter=EntitySetName eq '${entitySetName}'`
       ),
       { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
     );
     if (!res.ok) await throwForResponse(res);
     const json = (await res.json()) as {
-      value?: Array<{ LogicalName?: string; PrimaryIdAttribute?: string }>;
+      value?: Array<{ LogicalName?: string; PrimaryIdAttribute?: string; PrimaryNameAttribute?: string }>;
     };
     const e = json.value?.[0];
     if (!e?.LogicalName || !e?.PrimaryIdAttribute) {
       throw new Error(`No entity found with EntitySetName "${entitySetName}"`);
     }
-    const info = { logicalName: e.LogicalName, primaryIdAttribute: e.PrimaryIdAttribute };
+    const info = {
+      logicalName: e.LogicalName,
+      primaryIdAttribute: e.PrimaryIdAttribute,
+      primaryNameAttribute: e.PrimaryNameAttribute || undefined,
+    };
     this.entitySetInfoCache.set(entitySetName, info);
     return info;
   }
@@ -600,14 +606,27 @@ export class DataverseClient {
           "OData-Version": "4.0",
           Accept: "application/json",
           "Content-Type": `multipart/mixed; boundary=${batchId}`,
+          // Without this, Dataverse stops at the first failed changeset and
+          // returns the REMAINING operations unexecuted with an outer 400 —
+          // even though earlier changesets already committed. With it, every
+          // changeset is attempted and per-operation statuses come back.
+          Prefer: "odata.continue-on-error",
         },
         body,
       },
       retryableOverride
     );
 
-    if (!res.ok) await throwForResponse(res);
     const text = await res.text();
+    // Even with continue-on-error, some failures (and older endpoints or
+    // proxies) surface as an outer non-2xx WITH a multipart body describing
+    // per-operation outcomes — including operations that DID succeed. Parse
+    // that body rather than throwing, or rows that were actually created
+    // would be reported failed (and a naive re-run would duplicate them).
+    // Only treat it as a whole-batch failure when there's no batch body.
+    if (!res.ok && !/^--batchresponse/m.test(text)) {
+      await throwForResponseText(res, text);
+    }
     return parseBatchResponse(text, operations);
   }
 }
@@ -640,11 +659,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function throwForResponse(res: Response): Promise<never> {
+  let text = "";
+  try {
+    text = await res.text();
+  } catch {
+    // body unreadable
+  }
+  return throwForResponseText(res, text);
+}
+
+/** Like throwForResponse, but for callers that already consumed the body. */
+function throwForResponseText(res: Response, text: string): never {
   let raw: unknown;
   let message = `${res.status} ${res.statusText}`;
   let code: string | undefined;
   try {
-    raw = await res.json();
+    raw = JSON.parse(text);
     const err = (raw as { error?: { code?: string; message?: string } }).error;
     if (err?.message) message = err.message;
     if (err?.code) code = err.code;

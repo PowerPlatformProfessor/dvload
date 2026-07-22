@@ -12,7 +12,7 @@
 //  - mapping.concurrency batches run in parallel (bounded pool).
 //  - bypassCustomLogic / impersonateUserId become per-operation headers.
 
-import type { Mapping, ColumnMapping } from "./mapping.js";
+import { sourceValue, type Mapping, type ColumnMapping } from "./mapping.js";
 import type { SourceRow, LoadResult, RowError, RowSuccess, ProgressFn } from "./types.js";
 import { coerceRow, coerceValue, CoerceError } from "./coerce.js";
 import {
@@ -292,7 +292,7 @@ async function buildLookupCache(
 
     const uniques = new Set<string>();
     for (const row of rows) {
-      const v = row[col.source];
+      const v = sourceValue(row, col);
       if (v === null || v === undefined || v === "") continue;
       uniques.add(String(v));
     }
@@ -506,7 +506,7 @@ async function syncRemoveMissing(
   for (const row of rows) {
     const tuple = keyAttrs.map((attr) => {
       const col = mapping.columns.find((c) => c.target === attr)!;
-      const coerced = coerceValue(row[col.source], col);
+      const coerced = coerceValue(sourceValue(row, col), col);
       return normalizeKeyPart(coerced);
     });
     sourceKeys.add(tuple.join(SEP));
@@ -594,7 +594,7 @@ function buildOperation(
 
   // Bind lookups: foo@odata.bind = "/accounts(<guid>)"
   for (const col of lookups) {
-    const value = row[col.source];
+    const value = sourceValue(row, col);
     if (value === null || value === undefined || value === "") {
       if (col.treatEmptyAsNull) {
         // Setting a lookup to null clears it via the navigation property
@@ -680,7 +680,7 @@ export function buildKeyExpression(
     assertLogicalName(attr, "upsertKey attribute");
     const col = columns.find((c) => c.target === attr);
     if (!col) throw new Error(`upsertKey attribute "${attr}" not present in mapping columns`);
-    const v = row[col.source];
+    const v = sourceValue(row, col);
     if (v === null || v === undefined || v === "") {
       throw new Error(`upsertKey attribute "${attr}" is blank in source row`);
     }
