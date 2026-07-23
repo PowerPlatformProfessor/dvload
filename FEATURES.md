@@ -29,6 +29,7 @@
 - **Bypass custom logic** (`bypassCustomLogic`): sends `MSCRM.BypassCustomPluginExecution` + `MSCRM.SuppressCallbackRegistrationExpanderJob` per operation (needs the bypass privilege)
 - **Impersonation** (`impersonateUserId`): `MSCRMCallerID` header so records are created as a specific user
 - **Checkpoint/resume**: `checkpoint` progress events + `startOffset`; the CLI persists checkpoints and `--resume` continues an interrupted run if the workbook is unchanged
+- **Cooperative cancellation** (`signal: AbortSignal`): stops scheduling new batches; in-flight batches complete, unattempted rows count as skipped, result flagged `cancelled`; sync-mode removal pass never runs on a cancelled run
 - **Webhook notification** (`notifyUrl` or `--notify-url`): POSTs a `{text}` summary (Teams/Slack incoming-webhook compatible) after each run
 - **Polymorphic lookup target selection:** for attributes that can point to multiple entity types (e.g. `regardingobjectid`), the add-in fetches the valid target entity sets from Dataverse metadata and lets the user pick one; the chosen `bindEntitySet` is saved in the mapping
 - **`optionMap`** for `choice`/`multichoice` columns (human label → integer option value)
@@ -44,6 +45,7 @@
 - Lists Excel tables in the open workbook
 - Fetches Dataverse entities and their attributes from the live environment
 - Solution picker: defaults to all entities (Default solution); selecting a solution filters the target-entity list to that solution's tables (via `solutioncomponents`, componenttype 1)
+- **Create new table from source** ("＋ Create new table from source…" in the entity picker): infers column types from sample rows (string/memo/integer/decimal/boolean/datetime/dateonly), lets you rename columns, pick the primary name column and an alternate key, then one button creates the table + columns + key via the metadata API and immediately runs the import against it ("Create table and run import")
 - Column mapping UI (source column → target attribute + field kind)
 - Type-ahead comboboxes on the solution, entity, target-attribute, and lookup entity-set pickers (type first letters to filter)
 - Fixed-value rows ("Add fixed value"): set a field to a constant on every record; lookup targets (e.g. owner) get a live record search against the bound entity set (users/teams), storing the picked record's GUID
@@ -51,6 +53,7 @@
 - Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows
 - Option-set labels fetched from metadata: picking a choice/multichoice/status/state target auto-fills `optionMap`, so spreadsheet cells can contain labels instead of integers
 - Import .pqt: read a Dataverse Dataflow / PQ Online export in the task pane, list its queries with field-mapping counts, populate the mapping grid from any query, and copy the M code for pasting into Excel's Advanced Editor
+- Cancel button during runs (confirm dialog; in-flight batches finish, summary shows how far it got) and a close-pane warning while an import is running
 - Persists the last mapping per workbook in Office Settings store
 - Saved environment profiles in `localStorage`
 - Dev-mode banner — warns when using the fallback Microsoft PowerApps client ID

@@ -73,6 +73,20 @@
   <label for="entity">Target Dataverse entity</label>
   <select id="entity" disabled><option value="">Sign in to load entities</option></select>
 
+  <div id="createTablePanel" style="display:none; border:1px solid #c8c6c4; border-radius:4px; padding:8px; margin-top:6px;">
+    <label>New table</label>
+    <div class="row">
+      <input id="ctPrefix" value="new" style="width:64px" title="Publisher customization prefix (letters/digits, starts with a letter)" />
+      <input id="ctDisplayName" style="flex:1" placeholder="Display name" />
+    </div>
+    <div id="ctColumns" style="margin-top:6px;"></div>
+    <div style="font-size:11px; color:#605e5c; margin-top:4px;">
+      One string column must be the table's <b>Primary name</b>. <b>Key</b> columns form an
+      alternate key (text / whole number / decimal only) — its index activates in the
+      background, so upserts against it may need a minute after creation.
+    </div>
+  </div>
+
   <label>Column mapping</label>
   <div id="mappings"></div>
   <div class="row" style="margin-top: 6px;">
@@ -130,6 +144,9 @@
     <button id="load" class="secondary" type="button">Load mapping…</button>
     <button id="importPqt" class="secondary" type="button" title="Import queries + field mappings from a Dataverse Dataflow / Power Query Online .pqt export">Import .pqt…</button>
     <button id="run" type="button" style="margin-left: auto;">Run import</button>
+    <button id="cancelRun" type="button" style="margin-left: auto; display:none; background:#a4262c; color:#fff;">
+      Cancel import
+    </button>
   </div>
   <div id="pqtRow" class="row" style="margin-top:6px; display:none;">
     <select id="pqtQuery" style="flex:1"></select>

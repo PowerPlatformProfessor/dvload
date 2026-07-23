@@ -8,6 +8,7 @@ export * from "./coerce.js";
 export * from "./dataverse.js";
 export * from "./load.js";
 export * from "./pqt.js";
+export * from "./tablegen.js";
 
 // xlsx-reader uses Node fs by default but ships a buffer-based variant
 // so the add-in (which has a Blob, not a path) can use the same engine.

@@ -176,6 +176,31 @@ describe("suggestionsToMappings", () => {
     assert.equal(mappings[0].treatEmptyAsNull, true);
   });
 
+  it("uses attribute metadata to type suggestions (boolean, money, dateonly, choice)", () => {
+    const suggestions = [
+      { source: "Do Not Email", target: "donotemail", score: 1.0 },
+      { source: "Credit Limit", target: "creditlimit", score: 1.0 },
+      { source: "Birthday", target: "birthdate", score: 0.9 },
+      { source: "Lead Source", target: "leadsourcecode", score: 0.9 },
+      { source: "Email", target: "emailaddress1", score: 0.9 },
+    ];
+    const attributes = [
+      { logicalName: "donotemail", attributeType: "boolean" },
+      { logicalName: "creditlimit", attributeType: "money" },
+      { logicalName: "birthdate", attributeType: "datetime", format: "DateOnly" },
+      { logicalName: "leadsourcecode", attributeType: "picklist" },
+      { logicalName: "emailaddress1", attributeType: "string" },
+    ];
+    const kinds = Object.fromEntries(
+      suggestionsToMappings(suggestions, attributes).map((m) => [m.target, m.kind])
+    );
+    assert.equal(kinds["donotemail"], "boolean");
+    assert.equal(kinds["creditlimit"], "money");
+    assert.equal(kinds["birthdate"], "dateonly");
+    assert.equal(kinds["leadsourcecode"], "choice");
+    assert.equal(kinds["emailaddress1"], "string");
+  });
+
   it("includes the score in the notes field", () => {
     const suggestions = [{ source: "Email", target: "emailaddress1", score: 0.95 }];
     const mappings = suggestionsToMappings(suggestions);

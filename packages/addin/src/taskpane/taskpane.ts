@@ -19,6 +19,14 @@ import {
   readPqt,
   mappingFromPqt,
   SCHEMA_VERSION,
+  suggestColumns,
+  buildEntityPayload,
+  buildAttributePayload,
+  buildKeyPayload,
+  attributeLogicalName,
+  KEYABLE_KINDS,
+  type GeneratedColumn,
+  type GeneratedKind,
 } from "@dvload/core";
 import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "../auth.js";
 import { listTables, readTable, type TableInfo } from "../excel.js";
@@ -32,6 +40,8 @@ interface EntityAttribute {
   logicalName: string;
   attributeType: string;
   format?: string;
+  /** IsValidForCreate || IsValidForUpdate — read-only attributes (e.g. contact.accountid, fullname) are not mappable. */
+  writable: boolean;
 }
 
 interface Profile {
@@ -199,6 +209,7 @@ Office.onReady(async () => {
   el<HTMLButtonElement>("addConst").addEventListener("click", () => addConstant());
   el<HTMLButtonElement>("suggest").addEventListener("click", onSuggest);
   el<HTMLButtonElement>("run").addEventListener("click", onRun);
+  el<HTMLButtonElement>("cancelRun").addEventListener("click", onCancelRun);
   el<HTMLButtonElement>("save").addEventListener("click", onSave);
   el<HTMLButtonElement>("load").addEventListener("click", onLoad);
   el<HTMLButtonElement>("importPqt").addEventListener("click", onImportPqt);
@@ -440,11 +451,15 @@ async function loadEntities(): Promise<void> {
   await loadSolutions(client);
 }
 
+/** Sentinel value for the "create a new table" entity option. */
+const CREATE_NEW = "__create_new__";
+
 /** Populate the entity select, optionally restricted to a set of MetadataIds. */
 function renderEntityOptions(filter: Set<string> | null): void {
   const sel = el<HTMLSelectElement>("entity");
   const current = sel.value;
   sel.innerHTML = `<option value="">Select an entity…</option>`;
+  sel.appendChild(new Option("＋ Create new table from source…", CREATE_NEW));
   let shown = 0;
   for (const e of state.entities) {
     if (filter && !filter.has(e.metadataId)) continue;
@@ -512,10 +527,182 @@ async function onPickSolution(e: Event): Promise<void> {
 
 async function onPickEntity(e: Event): Promise<void> {
   const sel = e.target as HTMLSelectElement;
+  if (sel.value === CREATE_NEW) {
+    await enterCreateTableMode();
+    return;
+  }
+  exitCreateTableMode();
   state.entitySet = sel.value;
   if (!state.entitySet) return;
   const logical = sel.selectedOptions[0]?.dataset.logical ?? state.entitySet.replace(/s$/, "");
   await loadEntityAttributes(logical);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Create-table mode                                                           */
+/* -------------------------------------------------------------------------- */
+
+let createMode = false;
+let ctCols: GeneratedColumn[] = [];
+
+async function enterCreateTableMode(): Promise<void> {
+  if (!state.selectedTable) {
+    setStatus("error", "Pick a source table first — its columns seed the new table.");
+    el<HTMLSelectElement>("entity").value = "";
+    return;
+  }
+  createMode = true;
+  el<HTMLButtonElement>("run").textContent = "Create table and run import";
+  el<HTMLDivElement>("createTablePanel").style.display = "";
+  el<HTMLInputElement>("ctDisplayName").value = state.selectedTable.name.replace(/^tbl/i, "");
+  setStatus("info", "Reading source rows to infer column types…");
+  const { rows } = await readTable(state.selectedTable.name);
+  ctCols = suggestColumns(state.selectedTable.columns, rows.slice(0, 200));
+  renderCtColumns();
+  setStatus(
+    "info",
+    `Suggested ${ctCols.length} column(s) from ${Math.min(rows.length, 200)} sample row(s). ` +
+      `Review names/types, pick the primary name and any key columns, then click "Create table and run import".`
+  );
+}
+
+function exitCreateTableMode(): void {
+  if (!createMode) return;
+  createMode = false;
+  el<HTMLButtonElement>("run").textContent = "Run import";
+  el<HTMLDivElement>("createTablePanel").style.display = "none";
+}
+
+function renderCtColumns(): void {
+  const root = el<HTMLDivElement>("ctColumns");
+  root.innerHTML = "";
+  const KINDS: GeneratedKind[] = ["string", "memo", "integer", "decimal", "boolean", "datetime", "dateonly"];
+  const header = document.createElement("div");
+  header.style.cssText = "display:grid;grid-template-columns:24px 1fr 1fr 90px 56px 36px;gap:4px;font-size:10px;color:#605e5c;";
+  for (const t of ["", "Source", "Column name", "Type", "Primary", "Key"]) {
+    const s = document.createElement("span");
+    s.textContent = t;
+    header.appendChild(s);
+  }
+  root.appendChild(header);
+
+  ctCols.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:grid;grid-template-columns:24px 1fr 1fr 90px 56px 36px;gap:4px;align-items:center;margin-top:2px;";
+
+    const inc = document.createElement("input");
+    inc.type = "checkbox";
+    inc.checked = c.include;
+    inc.addEventListener("change", () => { ctCols[i].include = inc.checked; });
+
+    const src = document.createElement("span");
+    src.style.cssText = "font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    src.textContent = c.source;
+    src.title = c.source;
+
+    const name = document.createElement("input");
+    name.value = c.schemaSuffix;
+    name.addEventListener("change", () => {
+      ctCols[i].schemaSuffix = name.value.replace(/[^A-Za-z0-9]/g, "") || c.schemaSuffix;
+      ctCols[i].displayName = c.source;
+      name.value = ctCols[i].schemaSuffix;
+    });
+
+    const kind = document.createElement("select");
+    for (const k of KINDS) kind.appendChild(new Option(k, k, c.kind === k, c.kind === k));
+    kind.addEventListener("change", () => {
+      ctCols[i].kind = kind.value as GeneratedKind;
+      if (kind.value !== "string" && ctCols[i].isPrimaryName) ctCols[i].isPrimaryName = false;
+      if (!KEYABLE_KINDS.includes(ctCols[i].kind) && ctCols[i].inAlternateKey) ctCols[i].inAlternateKey = false;
+      renderCtColumns(); // primary/key eligibility changed
+    });
+
+    const primary = document.createElement("input");
+    primary.type = "radio";
+    primary.name = "ctPrimary";
+    primary.disabled = c.kind !== "string";
+    primary.checked = c.isPrimaryName;
+    primary.addEventListener("change", () => {
+      ctCols.forEach((x, j) => (x.isPrimaryName = j === i));
+    });
+
+    const key = document.createElement("input");
+    key.type = "checkbox";
+    key.disabled = !KEYABLE_KINDS.includes(c.kind);
+    key.checked = c.inAlternateKey;
+    key.addEventListener("change", () => { ctCols[i].inAlternateKey = key.checked; });
+
+    row.append(inc, src, name, kind, primary, key);
+    root.appendChild(row);
+  });
+}
+
+/** Create the table + columns (+ key), then hand over to the normal import. */
+async function createTableThenImport(): Promise<void> {
+  const prefix = el<HTMLInputElement>("ctPrefix").value.trim().toLowerCase();
+  if (!/^[a-z][a-z0-9]{1,7}$/.test(prefix)) {
+    setStatus("error", "Prefix must be 2-8 characters, letters/digits, starting with a letter (e.g. \"new\", \"contoso\").");
+    return;
+  }
+  const displayName = el<HTMLInputElement>("ctDisplayName").value.trim();
+  if (!displayName) { setStatus("error", "Enter a display name for the new table."); return; }
+  const included = ctCols.filter((c) => c.include);
+  if (included.length === 0) { setStatus("error", "Include at least one column."); return; }
+  const primary = included.find((c) => c.isPrimaryName);
+  if (!primary) { setStatus("error", "Pick a string column as the table's primary name."); return; }
+  const keyCols = included.filter((c) => c.inAlternateKey);
+  const entitySuffix = sanitize(displayName);
+  const entityLogical = `${prefix}_${entitySuffix}`.toLowerCase();
+
+  const client = dvClient();
+  setStatus("info", `Creating table ${prefix}_${entitySuffix}…`);
+  await client.createEntity(
+    buildEntityPayload({ prefix, schemaSuffix: entitySuffix, displayName, primaryNameColumn: primary })
+  );
+
+  const rest = included.filter((c) => !c.isPrimaryName);
+  for (let i = 0; i < rest.length; i++) {
+    setStatus("info", `Creating column ${i + 1}/${rest.length}: ${rest[i].displayName}…`);
+    await client.createAttribute(entityLogical, buildAttributePayload(prefix, rest[i]));
+  }
+
+  if (keyCols.length > 0) {
+    setStatus("info", "Creating alternate key…");
+    await client.createEntityKey(entityLogical, buildKeyPayload(prefix, entitySuffix, keyCols));
+  }
+
+  // Resolve the server-assigned entity set name and refresh state.
+  const def = await client.getEntityDefinition(entityLogical);
+  const entitySetName = String(def["EntitySetName"] ?? `${entityLogical}s`);
+  state.entities.push({
+    logicalName: entityLogical,
+    entitySetName,
+    displayName,
+    metadataId: String(def["MetadataId"] ?? "").toLowerCase(),
+  });
+  exitCreateTableMode();
+  renderEntityOptions(null);
+  el<HTMLSelectElement>("entity").value = entitySetName;
+  state.entitySet = entitySetName;
+  await loadEntityAttributes(entityLogical);
+
+  // Mapping: source column → generated attribute, 1:1 kinds.
+  state.mappings = included.map((c) => ({
+    source: c.source,
+    target: attributeLogicalName(prefix, c),
+    kind: c.kind,
+    treatEmptyAsNull: true,
+  }));
+  if (keyCols.length > 0) {
+    el<HTMLInputElement>("upsertKey").value = keyCols.map((c) => attributeLogicalName(prefix, c)).join(", ");
+  }
+  rerenderMappings();
+  setStatus("success", `Table ${displayName} created (${entitySetName}). Starting import…`);
+}
+
+function sanitize(s: string): string {
+  const words = s.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  return (words.map((w) => w[0].toUpperCase() + w.slice(1)).join("").replace(/^[^A-Za-z]+/, "") || "Table");
 }
 
 async function loadEntityAttributes(logical: string): Promise<void> {
@@ -536,15 +723,17 @@ async function loadEntityAttributes(logical: string): Promise<void> {
       logicalName: String(a["LogicalName"] ?? ""),
       attributeType: String(a["AttributeType"] ?? "").toLowerCase(),
       format: a["Format"] != null ? String(a["Format"]) : undefined,
+      writable: a["IsValidForCreate"] === true || a["IsValidForUpdate"] === true,
     }))
     .filter(a => a.logicalName);
 
   // If the user hasn't started mapping yet, auto-suggest. Otherwise leave
   // existing mappings alone — they can click "Suggest" to fill in the rest.
   if (state.mappings.length === 0 && state.selectedTable) {
-    const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes.map(a => a.logicalName));
+    const writable = state.entityAttributes.filter((a) => a.writable);
+    const suggestions = suggestMappings(state.selectedTable.columns, writable.map(a => a.logicalName));
     if (suggestions.length > 0) {
-      state.mappings = suggestionsToMappings(suggestions);
+      state.mappings = suggestionsToMappings(suggestions, writable);
       setStatus(
         "info",
         `Auto-filled ${suggestions.length} mapping${suggestions.length === 1 ? "" : "s"} ` +
@@ -565,7 +754,8 @@ function onSuggest(): void {
     setStatus("error", "Pick a target entity first.");
     return;
   }
-  const suggestions = suggestMappings(state.selectedTable.columns, state.entityAttributes.map(a => a.logicalName), {
+  const writable = state.entityAttributes.filter((a) => a.writable);
+  const suggestions = suggestMappings(state.selectedTable.columns, writable.map(a => a.logicalName), {
     excludeSources: state.mappings.map((m) => m.source).filter((s): s is string => !!s),
     excludeTargets: state.mappings.map((m) => m.target).filter(Boolean),
   });
@@ -573,7 +763,7 @@ function onSuggest(): void {
     setStatus("info", "No additional confident suggestions.");
     return;
   }
-  state.mappings.push(...suggestionsToMappings(suggestions));
+  state.mappings.push(...suggestionsToMappings(suggestions, writable));
   rerenderMappings();
   setStatus("success", `Added ${suggestions.length} suggestion${suggestions.length === 1 ? "" : "s"}.`);
 }
@@ -598,6 +788,12 @@ function populateTablePicker(): void {
 function onPickTable(e: Event): void {
   const name = (e.target as HTMLSelectElement).value;
   state.selectedTable = state.tables.find((t) => t.name === name) ?? null;
+  // The create-table panel is seeded from the source table — a stale panel
+  // for a different table would create the wrong columns.
+  if (createMode) {
+    exitCreateTableMode();
+    el<HTMLSelectElement>("entity").value = "";
+  }
   rerenderMappings();
 }
 
@@ -679,9 +875,13 @@ async function applyLookupTargets(
   }
   if (validEntities.length === 1) {
     entitySetSel.value = validEntities[0].entitySetName;
-    if (state.mappings[i]) state.mappings[i].bindEntitySet = validEntities[0].entitySetName;
+    if (state.mappings[i]) {
+      state.mappings[i].bindEntitySet = validEntities[0].entitySetName;
+      await resolveLookupNavProp(i, attrLogical, validEntities[0].entitySetName);
+    }
   } else if (prev && [...entitySetSel.options].some(o => o.value === prev)) {
     entitySetSel.value = prev;
+    await resolveLookupNavProp(i, attrLogical, prev);
   }
 }
 
@@ -690,10 +890,58 @@ function populateTargetSelect(sel: HTMLSelectElement, kind: DataverseFieldKind, 
   sel.appendChild(new Option("(target)…", ""));
   const filtered = state.entityAttributes
     .filter(matchesKind(kind))
+    // Read-only attributes (contact.accountid, fullname, createdon, …) can't
+    // be loaded — offering them produces payloads Dataverse rejects.
+    .filter((a) => a.writable)
     .sort((x, y) => x.logicalName.localeCompare(y.logicalName));
   for (const a of filtered) sel.appendChild(new Option(a.logicalName, a.logicalName));
-  if (currentValue && [...sel.options].some(o => o.value === currentValue)) {
-    sel.value = currentValue;
+  if (currentValue) {
+    // Exact match, or — for lookups whose stored target is a resolved
+    // navigation property like "parentcustomerid_account" — match the
+    // attribute it was derived from ("parentcustomerid").
+    const opt = [...sel.options].find(
+      (o) => o.value === currentValue || (o.value && currentValue.startsWith(o.value + "_"))
+    );
+    if (opt) sel.value = opt.value;
+  }
+}
+
+const navPropCache = new Map<string, string | undefined>();
+
+/**
+ * Swap a lookup row's target from the picked attribute logical name to the
+ * writable navigation property for the chosen entity set. For most lookups
+ * they're identical; for polymorphic ones (customer, regarding) the nav
+ * property is suffixed ("parentcustomerid_account"), and binding the bare
+ * attribute name fails the whole payload.
+ */
+async function resolveLookupNavProp(i: number, attrLogical: string, entitySetName: string): Promise<void> {
+  const ref = state.entities.find((e) => e.entitySetName === entitySetName);
+  if (!ref || !attrLogical || !state.entityLogicalName) return;
+  const cacheKey = `${state.entityLogicalName}/${attrLogical}/${ref.logicalName}`;
+  if (!navPropCache.has(cacheKey)) {
+    try {
+      navPropCache.set(
+        cacheKey,
+        await dvClient().getLookupNavigationProperty(state.entityLogicalName, attrLogical, ref.logicalName)
+      );
+    } catch {
+      return; // metadata unavailable — leave the target as picked
+    }
+  }
+  const navProp = navPropCache.get(cacheKey);
+  const m = state.mappings[i];
+  // Re-check the row still points at this attribute (async race).
+  if (!m || m.kind !== "lookup" || m.bindEntitySet !== entitySetName) return;
+  if (navProp && navProp !== m.target) {
+    m.target = navProp;
+    setStatus("info", `Using navigation property "${navProp}" for ${attrLogical} → ${ref.logicalName}.`);
+  } else if (!navProp) {
+    setStatus(
+      "error",
+      `${attrLogical} has no writable relationship to ${ref.logicalName} — ` +
+        `this column would fail. Pick a different target field or entity set.`
+    );
   }
 }
 
@@ -881,6 +1129,11 @@ function rerenderMappings(): void {
     const entitySetCell = enhanceSelect(entitySetSel);
     entitySetSel.addEventListener("change", () => {
       state.mappings[i].bindEntitySet = entitySetSel.value || undefined;
+      // The bound entity determines the writable navigation property name.
+      const attr = tgt.value || state.mappings[i].target;
+      if (entitySetSel.value && attr) {
+        resolveLookupNavProp(i, attr, entitySetSel.value).catch(() => {});
+      }
     });
 
     const resSel = document.createElement("select");
@@ -939,6 +1192,10 @@ function rerenderMappings(): void {
     // Pre-resolve targets for already-configured lookup rows
     if (m.kind === "lookup" && m.target) {
       applyLookupTargets(entitySetSel, m.target, i).catch(() => {});
+    } else if (CHOICE_KINDS.includes(m.kind) && m.target && !m.optionMap) {
+      // Auto-suggested choice rows arrive without an optionMap — fetch the
+      // labels so spreadsheet cells can contain "Warm" instead of 2.
+      applyOptionLabels(m.target, i).catch(() => {});
     }
   });
 }
@@ -968,8 +1225,102 @@ function buildMapping(): Mapping {
   return m;
 }
 
+/**
+ * In-pane replacement for window.confirm, which Office task pane webviews
+ * don't support (it throws a script error). Renders a modal overlay with
+ * OK/Cancel and resolves with the choice.
+ */
+function confirmDialog(message: string, okLabel = "OK"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:2000;" +
+      "display:flex;align-items:center;justify-content:center;padding:16px;";
+    const box = document.createElement("div");
+    box.style.cssText =
+      "background:#fff;border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.3);" +
+      "max-width:320px;width:100%;padding:14px;font-size:12px;";
+    const text = document.createElement("div");
+    text.style.cssText = "white-space:pre-wrap;margin-bottom:12px;";
+    text.textContent = message;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end;";
+    const done = (v: boolean): void => {
+      overlay.remove();
+      resolve(v);
+    };
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "secondary";
+    cancelBtn.style.width = "auto";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => done(false));
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.style.width = "auto";
+    okBtn.textContent = okLabel;
+    okBtn.addEventListener("click", () => done(true));
+    row.append(cancelBtn, okBtn);
+    box.append(text, row);
+    overlay.appendChild(box);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) done(false);
+    });
+    document.body.appendChild(overlay);
+    okBtn.focus();
+  });
+}
+
+/** Non-null while an import is running; aborting it cancels the run. */
+let runController: AbortController | null = null;
+
+/**
+ * Closing the pane mid-run kills the JS context: batches in flight complete
+ * server-side, but nothing further is sent and no summary is shown — the
+ * import is effectively aborted without accounting. Warn before unload.
+ * (Best effort: browsers/webviews show their own generic dialog, and Office
+ * can close the pane without firing it. The Cancel button is the clean path.)
+ */
+function onBeforeUnload(e: BeforeUnloadEvent): void {
+  e.preventDefault();
+  e.returnValue = "An import is still running — closing now abandons it mid-way.";
+}
+
+function setRunning(running: boolean): void {
+  el<HTMLButtonElement>("run").disabled = running;
+  el<HTMLButtonElement>("run").style.display = running ? "none" : "";
+  el<HTMLButtonElement>("cancelRun").style.display = running ? "" : "none";
+  el<HTMLButtonElement>("cancelRun").disabled = false;
+  el<HTMLButtonElement>("cancelRun").textContent = "Cancel import";
+  if (running) window.addEventListener("beforeunload", onBeforeUnload);
+  else window.removeEventListener("beforeunload", onBeforeUnload);
+}
+
+async function onCancelRun(): Promise<void> {
+  if (!runController) return;
+  const ok = await confirmDialog(
+    "Really cancel this import?\n\n" +
+      "Rows already sent to Dataverse stay there — cancelling only stops the remaining rows. " +
+      "The summary will show how far it got.",
+    "Cancel import"
+  );
+  // The run may have finished while the dialog was open.
+  if (!ok || !runController) return;
+  runController.abort();
+  const btn = el<HTMLButtonElement>("cancelRun");
+  btn.disabled = true;
+  btn.textContent = "Cancelling…"; // in-flight batches are finishing
+  setStatus("info", "Cancelling — waiting for in-flight batches to finish…");
+}
+
 async function onRun(): Promise<void> {
+  if (runController) return; // already running
   try {
+    if (createMode) {
+      await createTableThenImport();
+      // Still in create mode → validation failed inside the panel; stay put.
+      if (createMode) return;
+    }
     const mapping = buildMapping();
     const errs = validateMapping(mapping);
     if (errs.length > 0) {
@@ -978,14 +1329,22 @@ async function onRun(): Promise<void> {
     }
     // Advisories (e.g. overriddencreatedon with upsert) — confirm, don't block.
     const warnings = mappingWarnings(mapping);
-    if (warnings.length > 0 && !window.confirm("Heads up:\n\n" + warnings.join("\n\n") + "\n\nRun anyway?")) {
-      setStatus("info", "Run cancelled.");
-      return;
+    if (warnings.length > 0) {
+      const proceed = await confirmDialog(
+        "Heads up:\n\n" + warnings.join("\n\n"),
+        "Run anyway"
+      );
+      if (!proceed) {
+        setStatus("info", "Run cancelled.");
+        return;
+      }
     }
     setStatus("info", "Reading table…");
     const { rows } = await readTable(mapping.sourceTable);
 
     setStatus("info", `Loading ${rows.length} rows…`);
+    runController = new AbortController();
+    setRunning(true);
     const requestLog: RequestLogEntry[] = [];
     const successLog: RowSuccess[] = [];
     const client = new DataverseClient({
@@ -997,6 +1356,7 @@ async function onRun(): Promise<void> {
       mapping,
       rows,
       client,
+      signal: runController.signal,
       onProgress: (e) => {
         if (e.type === "row-success") successLog.push(e.success);
         if (e.type === "batch") {
@@ -1016,7 +1376,9 @@ async function onRun(): Promise<void> {
       (result.unchanged > 0 ? ` (${result.unchanged} unchanged)` : "") +
       (result.removed > 0 ? `, ${result.removed} removed` : "") +
       `, ${result.failed} failed`;
-    if (result.failed === 0) {
+    if (result.cancelled) {
+      setStatus("info", `Cancelled. ${summary} — skipped rows were not attempted.`);
+    } else if (result.failed === 0) {
       setStatus("success", `Done. ${summary}.`);
     } else {
       setStatus(
@@ -1029,6 +1391,9 @@ async function onRun(): Promise<void> {
     showRunLog(requestLog, successLog, result, mapping);
   } catch (e) {
     setStatus("error", (e as Error).message);
+  } finally {
+    runController = null;
+    setRunning(false);
   }
 }
 

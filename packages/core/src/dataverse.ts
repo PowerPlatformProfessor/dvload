@@ -332,6 +332,86 @@ export class DataverseClient {
     return json.value?.[0]?.Targets ?? [];
   }
 
+  /**
+   * The writable single-valued navigation property for a lookup attribute
+   * bound to a specific referenced entity. Usually equal to the attribute
+   * logical name, but NOT for polymorphic lookups (parentcustomerid →
+   * "parentcustomerid_account") — and some lookup-typed attributes (e.g.
+   * contact.accountid) have no writable navigation property at all, in which
+   * case this returns undefined. Binding `attr@odata.bind` with the wrong
+   * name fails the whole payload with an "undeclared property" error.
+   */
+  async getLookupNavigationProperty(
+    entityLogicalName: string,
+    attrLogicalName: string,
+    referencedEntityLogicalName: string
+  ): Promise<string | undefined> {
+    assertLogicalName(entityLogicalName, "Entity logical name");
+    assertLogicalName(attrLogicalName, "Attribute logical name");
+    assertLogicalName(referencedEntityLogicalName, "Referenced entity logical name");
+    const res = await this.fetchWithRetry(
+      this.url(
+        `EntityDefinitions(LogicalName='${entityLogicalName}')/ManyToOneRelationships` +
+          `?$select=ReferencingAttribute,ReferencedEntity,ReferencingEntityNavigationPropertyName` +
+          `&$filter=ReferencingAttribute eq '${attrLogicalName}' and ReferencedEntity eq '${referencedEntityLogicalName}'`
+      ),
+      { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+    );
+    if (!res.ok) await throwForResponse(res);
+    const json = (await res.json()) as {
+      value?: Array<{ ReferencingEntityNavigationPropertyName?: string }>;
+    };
+    return json.value?.[0]?.ReferencingEntityNavigationPropertyName || undefined;
+  }
+
+  /** Create a new table (entity). Payload from tablegen's buildEntityPayload. */
+  async createEntity(payload: Record<string, unknown>): Promise<void> {
+    const res = await this.fetchWithRetry(this.url("EntityDefinitions"), {
+      method: "POST",
+      headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) await throwForResponse(res);
+  }
+
+  /** Add an attribute to an existing table. Payload from buildAttributePayload. */
+  async createAttribute(
+    entityLogicalName: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    assertLogicalName(entityLogicalName, "Entity logical name");
+    const res = await this.fetchWithRetry(
+      this.url(`EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes`),
+      {
+        method: "POST",
+        headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) },
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!res.ok) await throwForResponse(res);
+  }
+
+  /**
+   * Create an alternate key. Payload from buildKeyPayload. Note the backing
+   * index activates asynchronously — upserts against the key may not work
+   * for a short while after creation; plain inserts are unaffected.
+   */
+  async createEntityKey(
+    entityLogicalName: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    assertLogicalName(entityLogicalName, "Entity logical name");
+    const res = await this.fetchWithRetry(
+      this.url(`EntityDefinitions(LogicalName='${entityLogicalName}')/Keys`),
+      {
+        method: "POST",
+        headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) },
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!res.ok) await throwForResponse(res);
+  }
+
   /** Create a single record. Slow for many rows — prefer batch(). */
   async create(
     entitySet: string,

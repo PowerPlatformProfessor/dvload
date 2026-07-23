@@ -35,6 +35,13 @@ export interface LoadOptions {
   dryRun?: boolean;
   /** Resume: skip rows before this offset (they count as skipped). */
   startOffset?: number;
+  /**
+   * Cooperative cancellation. Batches already in flight complete (their rows
+   * were sent and will exist in Dataverse); no further batches are scheduled.
+   * Unattempted rows are counted as skipped and the result is flagged
+   * `cancelled`. In sync mode the removal pass is also skipped.
+   */
+  signal?: AbortSignal;
 }
 
 export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
@@ -196,6 +203,7 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
   const poolSize = Math.max(1, Math.min(mapping.concurrency ?? 1, batches.length || 1));
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (opts.signal?.aborted) return;
       if (mapping.maxErrors > 0 && errors.length >= mapping.maxErrors) return;
       const idx = nextBatch++;
       if (idx >= batches.length) return;
@@ -214,8 +222,10 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
   };
   await Promise.all(Array.from({ length: poolSize }, worker));
 
-  // Batches never started because maxErrors tripped: count their rows skipped.
-  if (mapping.maxErrors > 0 && errors.length >= mapping.maxErrors) {
+  // Batches never started (maxErrors tripped or cancelled): count their rows
+  // skipped rather than letting the totals silently not add up.
+  const cancelled = opts.signal?.aborted ?? false;
+  if (cancelled || (mapping.maxErrors > 0 && errors.length >= mapping.maxErrors)) {
     const attempted = batches
       .filter((_, i) => completedThrough[i])
       .reduce((n, b) => n + b.slice.length, 0);
@@ -224,11 +234,14 @@ export async function loadRows(opts: LoadOptions): Promise<LoadResult> {
   }
 
   // Sync pass: remove target records whose keys are absent from the source.
-  if (mapping.conflictMode === "sync" && !dryRun) {
+  // Never on a cancelled run — deleting/deactivating based on a partially
+  // loaded source would remove records that simply weren't reached.
+  if (mapping.conflictMode === "sync" && !dryRun && !cancelled) {
     await syncRemoveMissing(client, mapping, rows, extraHeaders, counters, errors, onProgress);
   }
 
   const result: LoadResult = {
+    ...(cancelled ? { cancelled: true } : {}),
     total: rows.length,
     succeeded: counters.succeeded,
     created: counters.created,
@@ -597,8 +610,15 @@ function buildOperation(
     const value = sourceValue(row, col);
     if (value === null || value === undefined || value === "") {
       if (col.treatEmptyAsNull) {
-        // Setting a lookup to null clears it via the navigation property
-        payload[`${col.target}@odata.bind`] = null;
+        // A null `@odata.bind` annotation is REJECTED by the OData
+        // deserializer ("undeclared property ... only has property
+        // annotations but no property value"). Clearing a lookup uses the
+        // plain single-valued navigation property with a null value, which
+        // is only meaningful when the operation can update an existing
+        // record. Plain creates have nothing to clear — omit the attribute.
+        const canUpdate =
+          mapping.conflictMode === "upsert" || mapping.conflictMode === "sync";
+        if (canUpdate) payload[col.target] = null;
       }
       continue;
     }

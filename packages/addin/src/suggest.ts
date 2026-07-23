@@ -19,7 +19,7 @@
 // This catches the common cases ("Email" → "emailaddress1", "First Name" →
 // "firstname") without trying to be clever about semantics.
 
-import type { ColumnMapping } from "@dvload/core";
+import type { ColumnMapping, DataverseFieldKind } from "@dvload/core";
 
 export interface Suggestion {
   source: string;
@@ -144,16 +144,57 @@ export function suggestMappings(
   return out;
 }
 
+/** The slice of attribute metadata needed to type a suggestion. */
+export interface TargetAttributeInfo {
+  logicalName: string;
+  /** Dataverse AttributeType, lowercased (e.g. "boolean", "money", "picklist"). */
+  attributeType: string;
+  format?: string;
+}
+
+/** Map a Dataverse AttributeType to the mapping's field kind. */
+export function attributeKind(a: TargetAttributeInfo): DataverseFieldKind {
+  switch (a.attributeType.toLowerCase()) {
+    case "memo":                 return "memo";
+    case "integer":
+    case "bigint":               return "integer";
+    case "decimal":              return "decimal";
+    case "money":                return "money";
+    case "double":               return "double";
+    case "boolean":              return "boolean";
+    case "datetime":             return a.format?.toLowerCase() === "dateonly" ? "dateonly" : "datetime";
+    case "uniqueidentifier":     return "uniqueidentifier";
+    case "picklist":             return "choice";
+    case "multiselectpicklist":  return "multichoice";
+    case "status":               return "status";
+    case "state":                return "state";
+    case "lookup":
+    case "owner":
+    case "customer":             return "lookup";
+    default:                     return "string";
+  }
+}
+
 /**
- * Convenience: given suggestions, build ColumnMapping skeletons. Type
- * defaults to "string"; the user can refine in the UI.
+ * Convenience: given suggestions, build ColumnMapping skeletons. When the
+ * target entity's attribute metadata is provided, each suggestion gets the
+ * matching field kind (boolean, money, dateonly, …) instead of defaulting
+ * to "string" — a string-kinded row can't even display a boolean target in
+ * the kind-filtered picker.
  */
-export function suggestionsToMappings(suggestions: Suggestion[]): ColumnMapping[] {
-  return suggestions.map((s) => ({
-    source: s.source,
-    target: s.target,
-    kind: "string",
-    treatEmptyAsNull: true,
-    notes: `Auto-suggested (score ${s.score.toFixed(2)})`,
-  }));
+export function suggestionsToMappings(
+  suggestions: Suggestion[],
+  attributes?: TargetAttributeInfo[]
+): ColumnMapping[] {
+  const byName = new Map((attributes ?? []).map((a) => [a.logicalName, a]));
+  return suggestions.map((s) => {
+    const attr = byName.get(s.target);
+    return {
+      source: s.source,
+      target: s.target,
+      kind: attr ? attributeKind(attr) : "string",
+      treatEmptyAsNull: true,
+      notes: `Auto-suggested (score ${s.score.toFixed(2)})`,
+    };
+  });
 }

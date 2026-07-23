@@ -54,6 +54,8 @@ export interface RowError {
 
 /** Result of a load run. */
 export interface LoadResult {
+  /** Present (true) when the run was cancelled via LoadOptions.signal. */
+  cancelled?: boolean;
   total: number;
   succeeded: number;
   /** Subset of `succeeded` — rows the server returned 201 Created for. */
