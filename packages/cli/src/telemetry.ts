@@ -8,14 +8,16 @@
 //   - Fire-and-forget: a 2s cap at exit; telemetry can never slow or fail
 //     an import, and offline machines just drop events.
 //   - No customer data. Events carry ONLY what TELEMETRY.md documents:
-//     tool version, OS, a random install id, command options (mode,
-//     flags), bucketed row counts, and error CODES. Never environment
-//     URLs, mapping contents, column names, cell values, or messages.
+//     tool version, OS, command options (mode, flags), bucketed row
+//     counts, and error CODES. Never environment URLs, mapping contents,
+//     column names, cell values, or messages.
+//   - No persistent identifier. Launches are counted in aggregate — there
+//     is no per-install id, so events cannot be linked back to a machine
+//     or user (GDPR: nothing here is an online identifier).
 //
 // Full event reference: TELEMETRY.md in the repo root.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import kleur from "kleur";
@@ -29,7 +31,6 @@ const TOOL_VERSION = "0.1.0"; // keep in sync with package.json
 const CONFIG_PATH = path.join(os.homedir(), ".dvload", "telemetry.json");
 
 interface TelemetryConfig {
-  installId: string;
   enabled: boolean;
   /** First-run notice already shown. */
   notified: boolean;
@@ -59,7 +60,7 @@ async function loadConfig(): Promise<TelemetryConfig> {
   try {
     config = JSON.parse(await readFile(CONFIG_PATH, "utf8")) as TelemetryConfig;
   } catch {
-    config = { installId: randomUUID(), enabled: true, notified: false };
+    config = { enabled: true, notified: false };
     await saveConfig().catch(() => {});
   }
   return config;
@@ -114,7 +115,6 @@ export function track(name: string, properties: Record<string, string> = {}): vo
   const p = (async () => {
     if (noticeJustShown) return; // first run is notice-only
     if (!(await telemetryEnabled())) return;
-    const cfg = await loadConfig();
     const conn = parseConnectionString(CONNECTION_STRING);
     if (!conn) return;
     const envelope = {
@@ -131,7 +131,6 @@ export function track(name: string, properties: Record<string, string> = {}): vo
             ...properties,
             toolVersion: TOOL_VERSION,
             os: process.platform,
-            installId: cfg.installId,
           },
         },
       },
@@ -175,7 +174,7 @@ export async function telemetryCommand(action?: string): Promise<void> {
       if (!CONNECTION_STRING) console.log(kleur.gray("  (no connection string baked into this build — nothing can be sent)"));
       if (envOptedOut()) console.log(kleur.gray("  (disabled via DVLOAD_TELEMETRY=0 / DO_NOT_TRACK)"));
       console.log(kleur.gray(`  Config: ${CONFIG_PATH}`));
-      console.log(kleur.gray(`  Install id: ${cfg.installId} (random, not linked to you)`));
+      console.log(kleur.gray("  No install id: launches are counted in aggregate, not linked to you."));
       console.log(kleur.gray("  Events and fields are documented in TELEMETRY.md."));
       console.log(kleur.gray("  Example event: {\"name\":\"cli_run\",\"mode\":\"insert\",\"rows\":\"101-10k\",\"outcome\":\"ok\"}"));
     }

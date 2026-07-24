@@ -3,11 +3,14 @@
 // build time, a visible checkbox controls it, events carry only what
 // TELEMETRY.md documents (never environment URLs, mapping contents,
 // column names, or cell values), and sending is fire-and-forget.
+//
+// No persistent identifier is stored: launches are counted in aggregate,
+// so no localStorage id or cookie is written and events can't be linked
+// across sessions (GDPR: nothing here is an online identifier).
 
 declare const ADDIN_AI_CONNECTION: string; // injected by webpack DefinePlugin
 
 const ENABLED_KEY = "dvload:telemetry-enabled";
-const INSTALL_KEY = "dvload:telemetry-install-id";
 const NOTIFIED_KEY = "dvload:telemetry-notified";
 const TOOL_VERSION = "0.1.0";
 
@@ -47,15 +50,6 @@ export function setTelemetryEnabled(on: boolean): void {
   localStorage.setItem(ENABLED_KEY, on ? "1" : "0");
 }
 
-function installId(): string {
-  let id = localStorage.getItem(INSTALL_KEY);
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem(INSTALL_KEY, id);
-  }
-  return id;
-}
-
 /** Fire-and-forget event. Never throws, never blocks the UI. */
 export function track(name: string, properties: Record<string, string> = {}): void {
   try {
@@ -73,7 +67,7 @@ export function track(name: string, properties: Record<string, string> = {}): vo
         baseData: {
           ver: 2,
           name,
-          properties: { ...properties, toolVersion: TOOL_VERSION, installId: installId() },
+          properties: { ...properties, toolVersion: TOOL_VERSION },
         },
       },
     };

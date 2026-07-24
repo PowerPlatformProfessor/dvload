@@ -8,8 +8,10 @@ audit it in `packages/cli/src/telemetry.ts` and
 
 ## The short version
 
-- **Anonymous.** A random install id (UUID) counts installs; it is not
-  linked to you, your tenant, or your Microsoft account.
+- **Anonymous, no identifier.** Launches are counted in aggregate. There
+  is no install id, cookie, or any other persistent identifier, so events
+  can't be linked to you, your machine, your tenant, or your Microsoft
+  account — and can't be counted as "unique users" either, by design.
 - **No customer data, ever.** See the "Never collected" list below.
 - **Announced, and notice-first.** The CLI prints a one-time notice — and
   that first run sends *nothing*, so you can opt out before any data ever
@@ -32,11 +34,14 @@ audit it in `packages/cli/src/telemetry.ts` and
 - Record GUIDs, usernames, email addresses, tenant or user ids
 - Error *messages* (they can embed data) — only short error *codes*
 - Exact row counts — only coarse buckets (`1-100`, `101-10k`, …)
+- Any persistent identifier — no install id, device id, or cookie; and IP
+  addresses are not retained (Application Insights stores `0.0.0.0`)
 
 ## Events
 
-Every event carries: `toolVersion`, `os` (CLI only, e.g. `win32`),
-`installId` (random UUID).
+Every event carries: `toolVersion` and `os` (CLI only, e.g. `win32`).
+Nothing that identifies the machine or user — no install id. The count of
+events *is* the launch count.
 
 ### CLI
 
@@ -59,7 +64,7 @@ Row-count buckets: `0`, `1-100`, `101-10k`, `10k-100k`, `>100k`.
 **CLI**
 
 ```bash
-dvload telemetry          # status: on/off, config path, install id, example event
+dvload telemetry          # status: on/off, config path, example event
 dvload telemetry off      # persist opt-out (~/.dvload/telemetry.json)
 dvload telemetry on       # re-enable
 ```
