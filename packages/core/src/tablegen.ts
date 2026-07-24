@@ -29,6 +29,15 @@ export interface GeneratedColumn {
   include: boolean;
   /** For strings: MaxLength to create the attribute with. */
   maxLength?: number;
+  /**
+   * Map this source column to an EXISTING system attribute instead of
+   * creating a new one (e.g. "overriddencreatedon" to backdate createdon
+   * during the initial load, or "ownerid" for per-row owners). Excluded
+   * from attribute creation, primary name, and alternate keys.
+   */
+  systemAttribute?: string;
+  /** For systemAttribute="ownerid": which entity set the GUIDs point at ("systemusers" or "teams"). */
+  systemBindEntitySet?: string;
 }
 
 /** Kinds Dataverse supports as alternate-key members. */

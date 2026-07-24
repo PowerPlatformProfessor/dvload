@@ -16,6 +16,7 @@ import {
 } from "@dvload/core";
 import { getTokenProvider } from "../auth.js";
 import { refreshWorkbook } from "../refresh.js";
+import { track, flushTelemetry, telemetryNotice, bucket } from "../telemetry.js";
 
 export interface RunOpts {
   workbook: string;
@@ -66,6 +67,9 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
   }
 
   for (const w of mappingWarnings(mapping)) log(kleur.yellow("! " + w));
+
+  await telemetryNotice(log);
+  const runStarted = Date.now();
 
   if (typeof opts.maxErrors === "number") mapping.maxErrors = opts.maxErrors;
   if (typeof opts.concurrency === "number") mapping.concurrency = opts.concurrency;
@@ -139,6 +143,11 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
   const wbStat = await stat(workbookPath);
   let checkpointChain: Promise<void> = Promise.resolve();
 
+  log(
+    kleur.gray("While you wait — give feedback to the author: ") +
+      kleur.cyan().underline("https://www.linkedin.com/in/danijel-buljat/")
+  );
+
   const result = await loadRows({
     mapping,
     rows,
@@ -207,6 +216,25 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
   if (notifyUrl && !opts.dryRun) {
     await notify(notifyUrl, mapping, result);
   }
+
+  // Anonymous usage event — fields documented in TELEMETRY.md. Coarse
+  // buckets and error CODES only; no data, URLs, or mapping contents.
+  track("cli_run", {
+    mode: mapping.conflictMode,
+    dryRun: String(opts.dryRun === true),
+    refresh: String(opts.refresh === true),
+    resume: String(startOffset > 0),
+    concurrency: String(mapping.concurrency ?? 1),
+    rows: bucket(result.total),
+    failed: bucket(result.failed),
+    outcome: result.cancelled ? "cancelled" : result.failed > 0 ? "partial" : "ok",
+    errorCodes: [...new Set(result.errors.map((e) => e.code ?? String(e.httpStatus ?? "")))]
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(","),
+    durationSec: String(Math.round((Date.now() - runStarted) / 1000)),
+  });
+  await flushTelemetry();
 
   return result;
 }

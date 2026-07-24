@@ -73,4 +73,5 @@
 | ~~**CI build**~~ | Done: `.github/workflows/ci.yml` (build + test + lint on windows-latest). |
 | **Production add-in host** | Replace all `localhost:3000` URLs in `manifest.xml` with a real hosted URL. Production webpack builds now refuse the borrowed dev client id. |
 | **AppSource listing** | Finalise manifest (real GUID, icons, metadata), test on Win/Mac/Web/iPad, submit via Partner Center. Centralized Deployment (M365 admin center) is the better route for known orgs. |
+| **Public telemetry dashboard (Power BI)** | À la FetchXML Builder ([jonasr.app/xtb-stats](https://jonasr.app/xtb-stats/)): Power BI report over the Application Insights events, published publicly and linked from TELEMETRY.md. Doubles as transparency (users see exactly what granularity exists) and marketing. Requires: create the App Insights resource, bake the connection string into CLI + add-in builds, build the report, publish-to-web. |
 | **`dvload init` wizard** | Guided first-run: env URL → profile → auth choice → login. Collapses the Entra-registration onboarding cliff. |

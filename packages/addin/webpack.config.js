@@ -75,6 +75,8 @@ module.exports = async (env, argv) => {
         // Override with DATAVERSE_LOAD_CLIENT_ID at build time to ship
         // against a different registration.
         ADDIN_CLIENT_ID: JSON.stringify(clientId),
+        // Application Insights connection string; empty = telemetry fully off.
+        ADDIN_AI_CONNECTION: JSON.stringify(process.env.DVLOAD_AI_CONNECTION_STRING || ""),
       }),
       new CopyWebpackPlugin({
         patterns: [

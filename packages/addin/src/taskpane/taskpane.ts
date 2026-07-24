@@ -32,6 +32,13 @@ import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "
 import { listTables, readTable, type TableInfo } from "../excel.js";
 import { suggestMappings, suggestionsToMappings } from "../suggest.js";
 import { enhanceSelect } from "../combobox.js";
+import {
+  track as trackTelemetry,
+  bucket as telemetryBucket,
+  telemetryAvailable,
+  telemetryEnabled,
+  setTelemetryEnabled,
+} from "../telemetry.js";
 
 const SETTINGS_KEY = "dvload:lastMapping";
 const PROFILES_KEY = "dvload:profiles";
@@ -210,6 +217,7 @@ Office.onReady(async () => {
   el<HTMLButtonElement>("suggest").addEventListener("click", onSuggest);
   el<HTMLButtonElement>("run").addEventListener("click", onRun);
   el<HTMLButtonElement>("cancelRun").addEventListener("click", onCancelRun);
+  el<HTMLButtonElement>("resetAll").addEventListener("click", onResetAll);
   el<HTMLButtonElement>("save").addEventListener("click", onSave);
   el<HTMLButtonElement>("load").addEventListener("click", onLoad);
   el<HTMLButtonElement>("importPqt").addEventListener("click", onImportPqt);
@@ -222,6 +230,29 @@ Office.onReady(async () => {
   // the source of truth; the combobox is a UI layer over them.
   enhanceSelect(el<HTMLSelectElement>("solution"));
   enhanceSelect(el<HTMLSelectElement>("entity"));
+
+  initCtOwnerSearch();
+
+  // Telemetry checkbox — only shown when this build can actually send
+  // (a connection string was baked in). See TELEMETRY.md.
+  if (telemetryAvailable()) {
+    el<HTMLLabelElement>("telemetryRow").style.display = "";
+    const box = el<HTMLInputElement>("telemetryOptIn");
+    box.checked = telemetryEnabled();
+    box.addEventListener("change", () => setTelemetryEnabled(box.checked));
+    trackTelemetry("addin_open");
+  }
+
+  // External links: prefer Office's openBrowserWindow (guaranteed system
+  // browser) over the anchor's target=_blank, which some hosts ignore.
+  document.body.addEventListener("click", (e) => {
+    const a = (e.target as HTMLElement).closest?.("a[target=_blank]") as HTMLAnchorElement | null;
+    if (!a?.href) return;
+    if (Office.context.ui && "openBrowserWindow" in Office.context.ui) {
+      e.preventDefault();
+      (Office.context.ui as unknown as { openBrowserWindow: (url: string) => void }).openBrowserWindow(a.href);
+    }
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -544,6 +575,63 @@ async function onPickEntity(e: Event): Promise<void> {
 
 let createMode = false;
 let ctCols: GeneratedColumn[] = [];
+let ctFixedOwner: { guid: string; label: string } | null = null;
+
+/** Wire the panel's fixed-owner search (systemusers by fullname, or a pasted GUID). */
+function initCtOwnerSearch(): void {
+  const input = el<HTMLInputElement>("ctOwner");
+  const list = el<HTMLDivElement>("ctOwnerList");
+  const close = (): void => { list.style.display = "none"; };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let seq = 0;
+
+  input.addEventListener("input", () => {
+    const term = input.value.trim();
+    if (!term) { ctFixedOwner = null; close(); return; }
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(term)) {
+      ctFixedOwner = { guid: term.toLowerCase(), label: term.toLowerCase() };
+      close();
+      return;
+    }
+    if (timer) clearTimeout(timer);
+    if (term.length < 2) { close(); return; }
+    timer = setTimeout(async () => {
+      const mySeq = ++seq;
+      try {
+        const safe = term.replace(/'/g, "''");
+        const rows = await dvClient().queryAll(
+          `systemusers?$select=systemuserid,fullname&$filter=contains(fullname,'${safe}')&$orderby=fullname&$top=10`
+        );
+        if (mySeq !== seq) return;
+        list.innerHTML = "";
+        if (rows.length === 0) {
+          list.innerHTML = `<div style="padding:4px 8px;color:#605e5c;">No matching users</div>`;
+        }
+        for (const r of rows) {
+          const guid = String(r["systemuserid"] ?? "");
+          const label = String(r["fullname"] ?? guid);
+          const item = document.createElement("div");
+          item.textContent = label;
+          item.style.cssText = "padding:4px 8px;cursor:pointer;";
+          item.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            ctFixedOwner = { guid, label };
+            input.value = label;
+            close();
+          });
+          list.appendChild(item);
+        }
+        list.style.display = "";
+      } catch {
+        if (mySeq === seq) close();
+      }
+    }, 300);
+  });
+  input.addEventListener("blur", () => {
+    close();
+    input.value = ctFixedOwner?.label ?? "";
+  });
+}
 
 async function enterCreateTableMode(): Promise<void> {
   if (!state.selectedTable) {
@@ -554,7 +642,12 @@ async function enterCreateTableMode(): Promise<void> {
   createMode = true;
   el<HTMLButtonElement>("run").textContent = "Create table and run import";
   el<HTMLDivElement>("createTablePanel").style.display = "";
+  // The regular mapping grid doesn't apply here — the mapping is generated
+  // from the panel when the table is created.
+  el<HTMLDivElement>("mappingSection").style.display = "none";
   el<HTMLInputElement>("ctDisplayName").value = state.selectedTable.name.replace(/^tbl/i, "");
+  ctFixedOwner = null;
+  el<HTMLInputElement>("ctOwner").value = "";
   setStatus("info", "Reading source rows to infer column types…");
   const { rows } = await readTable(state.selectedTable.name);
   ctCols = suggestColumns(state.selectedTable.columns, rows.slice(0, 200));
@@ -571,6 +664,7 @@ function exitCreateTableMode(): void {
   createMode = false;
   el<HTMLButtonElement>("run").textContent = "Run import";
   el<HTMLDivElement>("createTablePanel").style.display = "none";
+  el<HTMLDivElement>("mappingSection").style.display = "";
 }
 
 function renderCtColumns(): void {
@@ -601,19 +695,52 @@ function renderCtColumns(): void {
     src.title = c.source;
 
     const name = document.createElement("input");
-    name.value = c.schemaSuffix;
+    name.value = c.systemAttribute ?? c.schemaSuffix;
+    name.disabled = !!c.systemAttribute; // fixed system attribute, not a new column
     name.addEventListener("change", () => {
       ctCols[i].schemaSuffix = name.value.replace(/[^A-Za-z0-9]/g, "") || c.schemaSuffix;
       ctCols[i].displayName = c.source;
       name.value = ctCols[i].schemaSuffix;
     });
 
+    const OVERRIDE_CREATEDON = "__overriddencreatedon__";
+    const OWNER_USER = "__ownerid_user__";
+    const OWNER_TEAM = "__ownerid_team__";
     const kind = document.createElement("select");
-    for (const k of KINDS) kind.appendChild(new Option(k, k, c.kind === k, c.kind === k));
+    const isSys = (attr: string, bind?: string): boolean =>
+      c.systemAttribute === attr && (bind === undefined || c.systemBindEntitySet === bind);
+    for (const k of KINDS) {
+      const sel = !c.systemAttribute && c.kind === k;
+      kind.appendChild(new Option(k, k, sel, sel));
+    }
+    // System-attribute targets: these don't create a column, they map the
+    // source onto an attribute every table already has.
+    kind.appendChild(new Option("Created On (backdate)", OVERRIDE_CREATEDON, isSys("overriddencreatedon"), isSys("overriddencreatedon")));
+    kind.appendChild(new Option("Owner (user GUIDs)", OWNER_USER, isSys("ownerid", "systemusers"), isSys("ownerid", "systemusers")));
+    kind.appendChild(new Option("Owner (team GUIDs)", OWNER_TEAM, isSys("ownerid", "teams"), isSys("ownerid", "teams")));
+    kind.title =
+      "System targets don't create a column: \"Created On (backdate)\" maps this " +
+      "source column to the record's Created On via overriddencreatedon (needs the " +
+      "Override Created On privilege); \"Owner\" maps per-row user/team GUIDs to ownerid.";
     kind.addEventListener("change", () => {
-      ctCols[i].kind = kind.value as GeneratedKind;
-      if (kind.value !== "string" && ctCols[i].isPrimaryName) ctCols[i].isPrimaryName = false;
-      if (!KEYABLE_KINDS.includes(ctCols[i].kind) && ctCols[i].inAlternateKey) ctCols[i].inAlternateKey = false;
+      if (kind.value === OVERRIDE_CREATEDON) {
+        ctCols[i].systemAttribute = "overriddencreatedon";
+        ctCols[i].systemBindEntitySet = undefined;
+        ctCols[i].kind = "datetime";
+        ctCols[i].isPrimaryName = false;
+        ctCols[i].inAlternateKey = false;
+      } else if (kind.value === OWNER_USER || kind.value === OWNER_TEAM) {
+        ctCols[i].systemAttribute = "ownerid";
+        ctCols[i].systemBindEntitySet = kind.value === OWNER_USER ? "systemusers" : "teams";
+        ctCols[i].isPrimaryName = false;
+        ctCols[i].inAlternateKey = false;
+      } else {
+        ctCols[i].systemAttribute = undefined;
+        ctCols[i].systemBindEntitySet = undefined;
+        ctCols[i].kind = kind.value as GeneratedKind;
+        if (kind.value !== "string" && ctCols[i].isPrimaryName) ctCols[i].isPrimaryName = false;
+        if (!KEYABLE_KINDS.includes(ctCols[i].kind) && ctCols[i].inAlternateKey) ctCols[i].inAlternateKey = false;
+      }
       renderCtColumns(); // primary/key eligibility changed
     });
 
@@ -660,7 +787,9 @@ async function createTableThenImport(): Promise<void> {
     buildEntityPayload({ prefix, schemaSuffix: entitySuffix, displayName, primaryNameColumn: primary })
   );
 
-  const rest = included.filter((c) => !c.isPrimaryName);
+  // System-attribute rows (e.g. overriddencreatedon) map to attributes every
+  // table already has — nothing to create for them.
+  const rest = included.filter((c) => !c.isPrimaryName && !c.systemAttribute);
   for (let i = 0; i < rest.length; i++) {
     setStatus("info", `Creating column ${i + 1}/${rest.length}: ${rest[i].displayName}…`);
     await client.createAttribute(entityLogical, buildAttributePayload(prefix, rest[i]));
@@ -686,17 +815,45 @@ async function createTableThenImport(): Promise<void> {
   state.entitySet = entitySetName;
   await loadEntityAttributes(entityLogical);
 
-  // Mapping: source column → generated attribute, 1:1 kinds.
-  state.mappings = included.map((c) => ({
-    source: c.source,
-    target: attributeLogicalName(prefix, c),
-    kind: c.kind,
-    treatEmptyAsNull: true,
-  }));
+  // Mapping: source column → generated attribute (or system attribute), 1:1 kinds.
+  state.mappings = included.map((c): ColumnMapping => {
+    if (c.systemAttribute === "ownerid") {
+      return {
+        source: c.source,
+        target: "ownerid",
+        kind: "lookup",
+        bindEntitySet: c.systemBindEntitySet ?? "systemusers",
+        lookupResolution: "guid",
+        treatEmptyAsNull: true,
+      };
+    }
+    return {
+      source: c.source,
+      target: c.systemAttribute ?? attributeLogicalName(prefix, c),
+      kind: c.kind,
+      treatEmptyAsNull: true,
+    };
+  });
+  // Fixed owner for every record, picked in the panel's owner search.
+  if (ctFixedOwner) {
+    state.mappings.push({
+      constant: ctFixedOwner.guid,
+      target: "ownerid",
+      kind: "lookup",
+      bindEntitySet: "systemusers",
+      lookupResolution: "guid",
+      treatEmptyAsNull: true,
+      notes: ctFixedOwner.label,
+    });
+  }
   if (keyCols.length > 0) {
     el<HTMLInputElement>("upsertKey").value = keyCols.map((c) => attributeLogicalName(prefix, c)).join(", ");
   }
   rerenderMappings();
+  trackTelemetry("addin_create_table", {
+    columns: telemetryBucket(included.length),
+    hasKey: String(keyCols.length > 0),
+  });
   setStatus("success", `Table ${displayName} created (${entitySetName}). Starting import…`);
 }
 
@@ -1313,6 +1470,62 @@ async function onCancelRun(): Promise<void> {
   setStatus("info", "Cancelling — waiting for in-flight batches to finish…");
 }
 
+/** Start over: clear source, target, mappings, options, and panel state. Keeps sign-in, environment, and profiles. */
+async function onResetAll(): Promise<void> {
+  if (runController) {
+    setStatus("error", "An import is running — cancel it before resetting.");
+    return;
+  }
+  const ok = await confirmDialog(
+    "Start over?\n\n" +
+      "This clears the source table, target entity, all column mappings, import options, " +
+      "and the mapping remembered for this workbook. Your sign-in, environment URL, and " +
+      "saved profiles are kept.",
+    "Reset"
+  );
+  if (!ok) return;
+
+  exitCreateTableMode();
+  ctCols = [];
+  ctFixedOwner = null;
+  el<HTMLInputElement>("ctOwner").value = "";
+
+  state.selectedTable = null;
+  el<HTMLSelectElement>("table").value = "";
+  state.entitySet = "";
+  state.entityLogicalName = "";
+  state.entityAttributes = [];
+  state.mappings = [];
+  lookupTargetsCache.clear();
+  optionLabelsCache.clear();
+  navPropCache.clear();
+
+  el<HTMLSelectElement>("solution").value = "";
+  if (state.entities.length > 0) {
+    // Signed in: keep the loaded entity list, just drop the selection.
+    renderEntityOptions(null);
+  }
+  el<HTMLSelectElement>("entity").value = "";
+
+  el<HTMLSelectElement>("conflictMode").value = "insert";
+  el<HTMLInputElement>("upsertKey").value = "";
+  el<HTMLSelectElement>("syncAction").value = "deactivate";
+  el<HTMLInputElement>("batchSize").value = "100";
+  el<HTMLInputElement>("concurrency").value = "1";
+  el<HTMLInputElement>("bypassCustomLogic").checked = false;
+  el<HTMLInputElement>("skipUnchanged").checked = false;
+  updateOptionsVisibility();
+
+  // Forget the per-workbook remembered mapping so it doesn't restore on reload.
+  Office.context.document.settings.remove(SETTINGS_KEY);
+  Office.context.document.settings.saveAsync();
+
+  el<HTMLDivElement>("progressWrap").style.display = "none";
+  el<HTMLDivElement>("logWrap").style.display = "none";
+  rerenderMappings();
+  setStatus("info", "Reset. Pick a source table and target entity to start again.");
+}
+
 async function onRun(): Promise<void> {
   if (runController) return; // already running
   try {
@@ -1389,6 +1602,13 @@ async function onRun(): Promise<void> {
 
     persistMapping(mapping);
     showRunLog(requestLog, successLog, result, mapping);
+    // Anonymous usage event — fields documented in TELEMETRY.md.
+    trackTelemetry("addin_run", {
+      mode: mapping.conflictMode,
+      rows: telemetryBucket(result.total),
+      failed: telemetryBucket(result.failed),
+      outcome: result.cancelled ? "cancelled" : result.failed > 0 ? "partial" : "ok",
+    });
   } catch (e) {
     setStatus("error", (e as Error).message);
   } finally {

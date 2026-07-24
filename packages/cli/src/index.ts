@@ -15,6 +15,7 @@ import { validateCommand } from "./commands/validate.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { extractPqtCommand, importPqtCommand, pqtToXlsxCommand } from "./commands/pqt.js";
 import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
+import { telemetryCommand } from "./telemetry.js";
 
 const program = new Command();
 
@@ -153,6 +154,12 @@ program
   .argument("<pqt>", "Path to a .pqt file (e.g. exported from Dataverse Dataflows)")
   .option("-o, --out <path>", "Output .xlsx path (default: <pqt-name>.xlsx next to the .pqt)")
   .action(pqtToXlsxCommand);
+
+program
+  .command("telemetry")
+  .description("Show or change anonymous usage telemetry (see TELEMETRY.md).")
+  .argument("[action]", '"on", "off", or omit for status')
+  .action(telemetryCommand);
 
 // Scheduling ---------------------------------------------------------------
 program
