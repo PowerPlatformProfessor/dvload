@@ -1467,7 +1467,7 @@ function rerenderRunPlan(): void {
     refresh.style.width = "auto";
     refresh.checked = step.refresh === true;
     refresh.addEventListener("change", () => {
-      state.planSteps[i].refresh = refresh.checked || undefined;
+      state.planSteps[i].refresh = refresh.checked ? true : undefined;
       persistRunPlan();
     });
     const refreshText = document.createElement("span");
