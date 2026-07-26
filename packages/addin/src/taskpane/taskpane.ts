@@ -6,6 +6,8 @@ import {
   DataverseClient,
   loadRows,
   parseMapping,
+  parseRunPlan,
+  serializeRunPlan,
   serializeMapping,
   validateMapping,
   mappingWarnings,
@@ -27,6 +29,9 @@ import {
   KEYABLE_KINDS,
   type GeneratedColumn,
   type GeneratedKind,
+  type RunPlan,
+  type RunPlanStep,
+  RUN_PLAN_SCHEMA_VERSION,
 } from "@dvload/core";
 import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "../auth.js";
 import { listTables, readTable, type TableInfo } from "../excel.js";
@@ -41,6 +46,7 @@ import {
 } from "../telemetry.js";
 
 const SETTINGS_KEY = "dvload:lastMapping";
+const PLAN_SETTINGS_KEY = "dvload:lastRunPlan";
 const PROFILES_KEY = "dvload:profiles";
 
 interface EntityAttribute {
@@ -97,6 +103,7 @@ interface AppState {
   entityAttributes: EntityAttribute[];
   entities: Array<{ logicalName: string; entitySetName: string; displayName: string; metadataId: string }>;
   mappings: ColumnMapping[];
+  planSteps: RunPlanStep[];
 }
 
 const state: AppState = {
@@ -109,6 +116,7 @@ const state: AppState = {
   entityAttributes: [],
   entities: [],
   mappings: [],
+  planSteps: [],
 };
 
 const lookupTargetsCache = new Map<string, string[]>();
@@ -157,6 +165,7 @@ Office.onReady(async () => {
   state.tables = await listTables();
   populateTablePicker();
   restoreMapping();
+  restoreRunPlan();
 
   // If there is a cached MSAL account and a saved environment URL, auto-load
   // entities and restore the entity selection without requiring a Sign-in click.
@@ -223,8 +232,13 @@ Office.onReady(async () => {
   el<HTMLButtonElement>("importPqt").addEventListener("click", onImportPqt);
   el<HTMLButtonElement>("pqtUse").addEventListener("click", onUsePqtMapping);
   el<HTMLButtonElement>("pqtCopyM").addEventListener("click", onCopyPqtM);
+  el<HTMLButtonElement>("planAddStep").addEventListener("click", onPlanAddStep);
+  el<HTMLButtonElement>("planFromCurrent").addEventListener("click", onPlanAddFromCurrent);
+  el<HTMLButtonElement>("planSave").addEventListener("click", onPlanSave);
+  el<HTMLButtonElement>("planLoad").addEventListener("click", onPlanLoad);
   el<HTMLSelectElement>("conflictMode").addEventListener("change", updateOptionsVisibility);
   updateOptionsVisibility();
+  rerenderRunPlan();
 
   // Type-to-filter on the big pickers. The native selects stay in the DOM as
   // the source of truth; the combobox is a UI layer over them.
@@ -1361,6 +1375,191 @@ function rerenderMappings(): void {
 /* Run / save / load                                                           */
 /* -------------------------------------------------------------------------- */
 
+function rerenderRunPlan(): void {
+  const root = el<HTMLDivElement>("planSteps");
+  root.innerHTML = "";
+  if (state.planSteps.length === 0) {
+    root.textContent = "No steps yet.";
+    root.style.fontSize = "11px";
+    root.style.color = "#605e5c";
+    return;
+  }
+  root.style.fontSize = "";
+  root.style.color = "";
+  for (let i = 0; i < state.planSteps.length; i++) {
+    const step = state.planSteps[i];
+    const row = document.createElement("div");
+    row.className = "plan-row";
+
+    const id = document.createElement("input");
+    id.placeholder = "step id";
+    id.value = step.id;
+    id.title = "Unique step id";
+    id.addEventListener("change", () => {
+      state.planSteps[i].id = id.value.trim();
+      persistRunPlan();
+    });
+
+    const mapping = document.createElement("input");
+    mapping.placeholder = "./contacts.dvmap.json";
+    mapping.value = step.mapping;
+    mapping.title = "Mapping path";
+    mapping.addEventListener("change", () => {
+      state.planSteps[i].mapping = mapping.value.trim();
+      persistRunPlan();
+    });
+
+    const workbook = document.createElement("input");
+    workbook.placeholder = "./customers.xlsx";
+    workbook.value = step.workbook;
+    workbook.title = "Workbook path";
+    workbook.addEventListener("change", () => {
+      state.planSteps[i].workbook = workbook.value.trim();
+      persistRunPlan();
+    });
+
+    const stage = document.createElement("input");
+    stage.type = "number";
+    stage.min = "1";
+    stage.value = String(step.stage ?? 1);
+    stage.title = "Stage (same stage runs in parallel)";
+    stage.addEventListener("change", () => {
+      const n = Number(stage.value);
+      state.planSteps[i].stage = Number.isInteger(n) && n > 0 ? n : 1;
+      persistRunPlan();
+    });
+
+    const dependsOn = document.createElement("input");
+    dependsOn.placeholder = "step-a,step-b";
+    dependsOn.value = (step.dependsOn ?? []).join(",");
+    dependsOn.title = "Optional explicit dependencies";
+    dependsOn.addEventListener("change", () => {
+      const parts = dependsOn.value
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      state.planSteps[i].dependsOn = parts.length > 0 ? parts : undefined;
+      persistRunPlan();
+    });
+
+    const links = document.createElement("input");
+    links.placeholder = "step1:parentcustomerid_account:accountnumber";
+    links.value = formatAlternateKeyLinks(step.alternateKeyLinks);
+    links.title =
+      "Alternate-key links (comma-separated fromStep:lookupTarget:keyAttribute)";
+    links.addEventListener("change", () => {
+      try {
+        state.planSteps[i].alternateKeyLinks = parseAlternateKeyLinksText(links.value);
+        persistRunPlan();
+      } catch (e) {
+        setStatus("error", (e as Error).message);
+        links.focus();
+      }
+    });
+
+    const refreshWrap = document.createElement("label");
+    refreshWrap.style.display = "flex";
+    refreshWrap.style.alignItems = "center";
+    refreshWrap.style.gap = "4px";
+    refreshWrap.style.fontSize = "11px";
+    const refresh = document.createElement("input");
+    refresh.type = "checkbox";
+    refresh.style.width = "auto";
+    refresh.checked = step.refresh === true;
+    refresh.addEventListener("change", () => {
+      state.planSteps[i].refresh = refresh.checked || undefined;
+      persistRunPlan();
+    });
+    const refreshText = document.createElement("span");
+    refreshText.textContent = "refresh";
+    refreshWrap.append(refresh, refreshText);
+
+    const remove = document.createElement("button");
+    remove.className = "secondary";
+    remove.textContent = "✕";
+    remove.title = "Remove step";
+    remove.addEventListener("click", () => {
+      state.planSteps.splice(i, 1);
+      persistRunPlan();
+      rerenderRunPlan();
+    });
+
+    row.append(id, mapping, workbook, stage, dependsOn, links, refreshWrap, remove);
+    root.appendChild(row);
+  }
+}
+
+function formatAlternateKeyLinks(links: RunPlanStep["alternateKeyLinks"]): string {
+  if (!links || links.length === 0) return "";
+  return links.map((x) => `${x.fromStep}:${x.lookupTarget}:${x.keyAttribute}`).join(",");
+}
+
+function parseAlternateKeyLinksText(text: string): RunPlanStep["alternateKeyLinks"] {
+  const raw = text.trim();
+  if (!raw) return undefined;
+  return raw.split(",").map((item) => {
+    const [fromStep, lookupTarget, keyAttribute] = item.split(":").map((x) => x.trim());
+    if (!fromStep || !lookupTarget || !keyAttribute) {
+      throw new Error(
+        `Invalid alternate-key link "${item}". Use fromStep:lookupTarget:keyAttribute`
+      );
+    }
+    return { fromStep, lookupTarget, keyAttribute };
+  });
+}
+
+function onPlanAddStep(): void {
+  const next = state.planSteps.length + 1;
+  state.planSteps.push({
+    id: `step-${next}`,
+    mapping: "",
+    workbook: "",
+    stage: next,
+  });
+  persistRunPlan();
+  rerenderRunPlan();
+}
+
+function onPlanAddFromCurrent(): void {
+  const mapping = buildMapping();
+  const next = state.planSteps.length + 1;
+  state.planSteps.push({
+    id: `step-${next}`,
+    mapping: `./${mapping.name.replace(/\W+/g, "-").toLowerCase()}.dvmap.json`,
+    workbook: "./workbook.xlsx",
+    stage: next,
+  });
+  persistRunPlan();
+  rerenderRunPlan();
+  setStatus("info", "Added a step from the current mapping. Adjust paths and dependencies.");
+}
+
+function buildRunPlan(): RunPlan {
+  return {
+    schemaVersion: RUN_PLAN_SCHEMA_VERSION,
+    name: "Run plan",
+    stopOnError: true,
+    steps: state.planSteps,
+  };
+}
+
+function persistRunPlan(): void {
+  Office.context.document.settings.set(PLAN_SETTINGS_KEY, JSON.stringify(buildRunPlan()));
+  Office.context.document.settings.saveAsync();
+}
+
+function restoreRunPlan(): void {
+  const raw = Office.context.document.settings.get(PLAN_SETTINGS_KEY);
+  if (!raw || typeof raw !== "string") return;
+  try {
+    const plan = parseRunPlan(JSON.parse(raw));
+    state.planSteps = plan.steps;
+    rerenderRunPlan();
+  } catch {
+    state.planSteps = [];
+  }
+}
+
 function buildMapping(): Mapping {
   const m: Mapping = {
     schemaVersion: SCHEMA_VERSION,
@@ -1518,7 +1717,10 @@ async function onResetAll(): Promise<void> {
 
   // Forget the per-workbook remembered mapping so it doesn't restore on reload.
   Office.context.document.settings.remove(SETTINGS_KEY);
+  Office.context.document.settings.remove(PLAN_SETTINGS_KEY);
   Office.context.document.settings.saveAsync();
+  state.planSteps = [];
+  rerenderRunPlan();
 
   el<HTMLDivElement>("progressWrap").style.display = "none";
   el<HTMLDivElement>("logWrap").style.display = "none";
@@ -1719,6 +1921,18 @@ async function onSave(): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+function onPlanSave(): void {
+  const plan = buildRunPlan();
+  const blob = new Blob([serializeRunPlan(plan)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const stem = (plan.name || "run-plan").replace(/\W+/g, "-").toLowerCase();
+  a.download = `${stem}.dvplan.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function onLoad(): void {
   const input = document.createElement("input");
   input.type = "file";
@@ -1738,6 +1952,27 @@ function onLoad(): void {
       setStatus("success", `Loaded ${m.name}.`);
     } catch (e) {
       setStatus("error", `Couldn't parse mapping: ${(e as Error).message}`);
+    }
+  };
+  input.click();
+}
+
+function onPlanLoad(): void {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,.dvplan.json,application/json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const plan = parseRunPlan(JSON.parse(text), file.name);
+      state.planSteps = plan.steps;
+      persistRunPlan();
+      rerenderRunPlan();
+      setStatus("success", `Loaded run plan (${plan.steps.length} step${plan.steps.length === 1 ? "" : "s"}).`);
+    } catch (e) {
+      setStatus("error", `Couldn't parse run plan: ${(e as Error).message}`);
     }
   };
   input.click();
