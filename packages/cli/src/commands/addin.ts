@@ -52,8 +52,10 @@ async function findRepoRoot(start: string): Promise<string | null> {
 
 function runNpm(cwd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-    const child = spawn(npmCmd, args, {
+    const npmExec = process.env.npm_execpath;
+    const command = npmExec ? process.execPath : process.platform === "win32" ? "npm.cmd" : "npm";
+    const commandArgs = npmExec ? [npmExec, ...args] : args;
+    const child = spawn(command, commandArgs, {
       cwd,
       stdio: "inherit",
     });

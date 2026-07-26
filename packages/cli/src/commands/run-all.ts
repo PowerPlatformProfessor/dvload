@@ -211,7 +211,7 @@ export function buildExecutionBatches(plan: RunPlan): RunPlanStep[][] {
       });
 
     if (ready.length === 0) {
-      throw new Error("Run plan has cyclic or unsatisfied dependencies.");
+      throw new Error("Run plan has unsatisfied dependencies.");
     }
 
     const minStage = stepStage(byId.get(ready[0])!);

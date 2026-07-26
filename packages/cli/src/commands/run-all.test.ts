@@ -27,6 +27,51 @@ describe("run-all plan orchestration", () => {
         { id: "contacts", mapping: "./c.dvmap.json", workbook: "./x.xlsx", dependsOn: ["accounts"] },
       ],
     });
+
+    it("treats alternateKeyLinks as execution dependencies", () => {
+      const plan = parseRunPlan({
+        schemaVersion: 1,
+        name: "nightly",
+        steps: [
+          { id: "accounts", mapping: "./a.dvmap.json", workbook: "./x.xlsx", stage: 1 },
+          {
+            id: "contacts",
+            mapping: "./c.dvmap.json",
+            workbook: "./x.xlsx",
+            alternateKeyLinks: [
+              {
+                fromStep: "accounts",
+                lookupTarget: "parentcustomerid_account",
+                keyAttribute: "accountnumber",
+              },
+            ],
+          },
+        ],
+      });
+      const batches = buildExecutionBatches(plan);
+      assert.equal(batches.length, 2);
+      assert.deepEqual(batches[0].map((s) => s.id), ["accounts"]);
+      assert.deepEqual(batches[1].map((s) => s.id), ["contacts"]);
+    });
+
+    it("handles mixed stage and non-stage steps", () => {
+      const plan = parseRunPlan({
+        schemaVersion: 1,
+        name: "nightly",
+        steps: [
+          { id: "accounts", mapping: "./a.dvmap.json", workbook: "./x.xlsx", stage: 1 },
+          { id: "contacts", mapping: "./c.dvmap.json", workbook: "./x.xlsx" },
+          { id: "leads", mapping: "./l.dvmap.json", workbook: "./x.xlsx", stage: 2 },
+        ],
+      });
+      const batches = buildExecutionBatches(plan);
+      assert.equal(batches.length, 2);
+      assert.deepEqual(
+        batches[0].map((s) => s.id).sort(),
+        ["accounts", "contacts"]
+      );
+      assert.deepEqual(batches[1].map((s) => s.id), ["leads"]);
+    });
     const batches = buildExecutionBatches(plan);
     assert.equal(batches.length, 2);
     assert.deepEqual(

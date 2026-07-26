@@ -1498,7 +1498,13 @@ function parseAlternateKeyLinksText(text: string): RunPlanStep["alternateKeyLink
   const raw = text.trim();
   if (!raw) return undefined;
   return raw.split(",").map((item) => {
-    const [fromStep, lookupTarget, keyAttribute] = item.split(":").map((x) => x.trim());
+    const parts = item.split(":").map((x) => x.trim());
+    if (parts.length !== 3) {
+      throw new Error(
+        `Invalid alternate-key link "${item}". Use fromStep:lookupTarget:keyAttribute`
+      );
+    }
+    const [fromStep, lookupTarget, keyAttribute] = parts;
     if (!fromStep || !lookupTarget || !keyAttribute) {
       throw new Error(
         `Invalid alternate-key link "${item}". Use fromStep:lookupTarget:keyAttribute`
@@ -1927,7 +1933,11 @@ function onPlanSave(): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  const stem = (plan.name || "run-plan").replace(/\W+/g, "-").toLowerCase();
+  const stem = (plan.name || "run-plan")
+    .replace(/\W+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
   a.download = `${stem}.dvplan.json`;
   a.click();
   URL.revokeObjectURL(url);
