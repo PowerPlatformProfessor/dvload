@@ -20,6 +20,7 @@
     button.icon { width: auto; padding: 4px 8px; }
     .row { display: flex; gap: 6px; align-items: center; }
     .mapping-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; padding: 2px 0; }
+    .plan-row { display: grid; grid-template-columns: 1fr 1fr 1fr 80px 1fr 1fr 70px auto; gap: 4px; padding: 2px 0; }
     .mapping-row select, .mapping-row input { padding: 2px 4px; }
     .lookup-cfg { display: flex; gap: 4px; padding: 0 0 4px 12px; }
     .lookup-cfg > * { flex: 1; min-width: 0; }
@@ -60,6 +61,20 @@
     <button id="signin" class="secondary" type="button">Sign in</button>
     <span id="authDot" style="font-size:16px; line-height:1;">&#9679;</span>
     <span id="who" style="font-size: 12px; color: #555;"></span>
+  </div>
+
+  <hr />
+
+  <label>Run plan (.dvplan.json)</label>
+  <div style="font-size:11px; color:#605e5c; margin-bottom:4px;">
+    Steps with the same stage run in parallel. Use dependsOn for explicit ordering.
+  </div>
+  <div id="planSteps"></div>
+  <div class="row" style="margin-top:6px;">
+    <button id="planAddStep" class="secondary" type="button">Add step</button>
+    <button id="planFromCurrent" class="secondary" type="button">Add current mapping as step</button>
+    <button id="planSave" class="secondary" type="button">Save plan…</button>
+    <button id="planLoad" class="secondary" type="button">Load plan…</button>
   </div>
 
   <hr />

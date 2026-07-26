@@ -7,7 +7,7 @@
 | Command | Description |
 |---|---|
 | `run` | Load rows from an `.xlsx` table (or `.csv`/`.tsv` file) into Dataverse via OData. Flags: `--dry-run`, `--refresh`, `--user`, `--max-errors`, `--concurrency`, `--resume`, `--notify-url`, `--no-failed-rows`, `--non-interactive`, `--json` (machine-readable result for pipelines). |
-| `run-all` | Run several mappings in declared order from a manifest `.json` (for lookup dependencies between tables). Honors `stopOnError`. |
+| `run-all` | Run several mappings from a run plan (`.dvplan.json`): stage-based parallel execution, dependency ordering, optional per-step overrides, and backward-compatible support for legacy `runs[]` manifests. Honors `stopOnError`. |
 | `validate` | Check a `.dvmap.json` against local schema and live Dataverse metadata. `--no-remote` skips the network probe. |
 | `login` / `logout` | Delegated (device-code) auth; refresh token cached DPAPI-encrypted in `~/.dvload/`. |
 | `app-login` / `app-logout` | App-only auth via client secret or certificate (`--cert <pem>`); stored in the DPAPI-protected secure store. |
@@ -17,6 +17,7 @@
 | `import-pqt` | Synthesise a `.dvmap.json` from the `MashupMetadata.json` inside an existing `.pqt`. `--all-queries` emits one mapping per query; `--emit-m` writes the M document. |
 | `pqt-to-xlsx` | **Experimental:** build an `.xlsx` with the `.pqt`'s queries embedded natively in Power Query (QDEFF/DataMashup writer). Queries arrive connection-only; use "Load To…" in Excel. |
 | `schedule` | Register a Windows Scheduled Task for nightly unattended imports (`dvload run --refresh`). |
+| `addin` | Launch/stop add-in local workflow from CLI (`dvload addin start|stop|dev`). |
 
 ### Mapping engine (`@dvload/core`)
 
@@ -53,6 +54,7 @@
 - Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows
 - Option-set labels fetched from metadata: picking a choice/multichoice/status/state target auto-fills `optionMap`, so spreadsheet cells can contain labels instead of integers
 - Import .pqt: read a Dataverse Dataflow / PQ Online export in the task pane, list its queries with field-mapping counts, populate the mapping grid from any query, and copy the M code for pasting into Excel's Advanced Editor
+- Run-plan editor: load/save/edit `.dvplan.json`, define step `stage` / `dependsOn`, and record alternate-key links (`fromStep` + lookup target + key attribute) for cross-step dependencies
 - Cancel button during runs (confirm dialog; in-flight batches finish, summary shows how far it got) and a close-pane warning while an import is running
 - Persists the last mapping per workbook in Office Settings store
 - Saved environment profiles in `localStorage`

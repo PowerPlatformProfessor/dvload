@@ -4,6 +4,7 @@
 
 export * from "./types.js";
 export * from "./mapping.js";
+export * from "./run-plan.js";
 export * from "./coerce.js";
 export * from "./dataverse.js";
 export * from "./load.js";

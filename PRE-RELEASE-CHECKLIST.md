@@ -115,5 +115,7 @@ AppSource submission:
 - Manifest GUID is not all zeros.
 - Manifest URLs do not contain `localhost`.
 - README mentions your registered app, not the PowerApps fallback.
+- `dvload run-all <plan>.dvplan.json` validates alternate-key links and executes staged dependencies as expected.
+- `dvload addin start` successfully launches the local add-in workflow in a dev clone.
 
 If all of the above are true, you're shippable.

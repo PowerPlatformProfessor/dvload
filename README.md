@@ -199,7 +199,7 @@ dvload run ./contacts.dvmap.json -w ./customers.xlsx --resume
 dvload run ./contacts.dvmap.json -w ./customers.xlsx --notify-url https://hooks.example/...
 
 # Run several mappings in dependency order (accounts before contacts).
-dvload run-all ./nightly.manifest.json
+dvload run-all ./nightly.dvplan.json
 ```
 
 Failed rows are written to `logs/failed_<workbook>_<timestamp>.xlsx` in the
@@ -220,6 +220,9 @@ npm run dev:addin
 
 # Terminal 2 — sideload the manifest into Excel desktop
 npm --workspace=@dvload/addin run start
+
+# Same from the CLI (local/dev repo clone)
+dvload addin start
 ```
 
 If you see "Failed to add loopback exemption", run this **once** in an admin PowerShell
@@ -346,6 +349,10 @@ the column grid from the selected query's `FieldsMetadata`, and *Copy M*
 puts the M document on the clipboard for pasting into Excel's Advanced
 Editor.
 
+The task pane also supports run plans: add/edit/load/save `.dvplan.json`
+steps, assign `stage`/`dependsOn`, and capture alternate-key links for
+cross-step lookup wiring.
+
 ## Mapping JSON shape
 
 See `packages/core/examples/contacts.dvmap.json` for a full example. Key
@@ -372,6 +379,48 @@ fields:
 | `bypassCustomLogic` | Send bypass headers so plugins and Power Automate flows don't fire. |
 | `impersonateUserId` | systemuser GUID to impersonate (`MSCRMCallerID`). |
 | `notifyUrl` | Webhook that receives a `{text}` summary after each run. |
+
+## Run plan JSON shape (`.dvplan.json`)
+
+Use a run plan to orchestrate multiple `.dvmap.json` files while keeping each
+single-table mapping unchanged.
+
+```json
+{
+  "schemaVersion": 1,
+  "name": "nightly load",
+  "stopOnError": true,
+  "steps": [
+    {
+      "id": "accounts",
+      "mapping": "./accounts.dvmap.json",
+      "workbook": "./data.xlsx",
+      "stage": 1
+    },
+    {
+      "id": "contacts",
+      "mapping": "./contacts.dvmap.json",
+      "workbook": "./data.xlsx",
+      "stage": 2,
+      "dependsOn": ["accounts"],
+      "alternateKeyLinks": [
+        {
+          "fromStep": "accounts",
+          "lookupTarget": "parentcustomerid_account",
+          "keyAttribute": "accountnumber"
+        }
+      ]
+    }
+  ]
+}
+```
+
+- Steps in the same `stage` run in parallel.
+- `dependsOn` forces explicit order.
+- `alternateKeyLinks` enforces lookup-by-alternate-key wiring across steps:
+  - upstream step must expose the key in `upsertKey`
+  - downstream lookup must use `lookupResolution: "alternateKey"` and matching `keyAttribute`.
+- Legacy `run-all` manifests (`runs[]`) still work; they're auto-upgraded in memory.
 
 ## Known limits in v1
 

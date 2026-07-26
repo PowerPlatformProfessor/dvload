@@ -15,6 +15,7 @@ import { validateCommand } from "./commands/validate.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { extractPqtCommand, importPqtCommand, pqtToXlsxCommand } from "./commands/pqt.js";
 import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
+import { addinCommand } from "./commands/addin.js";
 import { telemetryCommand } from "./telemetry.js";
 
 const program = new Command();
@@ -44,8 +45,8 @@ program
 
 program
   .command("run-all")
-  .description("Run several mappings in order from a manifest (dependencies between tables).")
-  .argument("<manifest>", "Path to a manifest .json with a runs[] array")
+  .description("Run several mappings from a run plan (stages/dependencies; legacy runs[] manifests still supported).")
+  .argument("<manifest>", "Path to a .dvplan.json file (or legacy manifest .json with runs[])")
   .option("--dry-run", "Coerce + plan all imports but don't call Dataverse.")
   .option("--user", "Force delegated auth for all runs.")
   .option("--notify-url <url>", "POST a {text} summary per run.")
@@ -160,6 +161,16 @@ program
   .description("Show or change anonymous usage telemetry (see TELEMETRY.md).")
   .argument("[action]", '"on", "off", or omit for status')
   .action(telemetryCommand);
+
+program
+  .command("addin")
+  .description("Launch or stop the Excel add-in workflow from the CLI (local/dev installs).")
+  .argument("<action>", "start | stop | dev")
+  .option(
+    "--with-dev-server",
+    "With action=start, run the webpack dev server (equivalent to npm run dev:addin)."
+  )
+  .action(addinCommand);
 
 // Scheduling ---------------------------------------------------------------
 program
