@@ -7,6 +7,12 @@ import {
   resolveClientIdChain,
   shouldTryNextClient,
   aadstsCode,
+  defaultLoginFlow,
+  shouldFallBackToDeviceCode,
+  isConditionalAccessBlock,
+  conditionalAccessHint,
+  assertUsableAuthorizeUrl,
+  announceLoginAttempt,
 } from "./auth.js";
 
 const SHARED = "51f81489-12ee-4a9e-aaae-a2591f45987d";
@@ -53,14 +59,16 @@ describe("isSharedMicrosoftClient", () => {
 });
 
 describe("resolveClientIdChain", () => {
-  it("defaults to the shared Microsoft client, then dvload's own app", () => {
-    withEnv({ DATAVERSE_LOAD_CLIENT_ID: undefined, DVLOAD_NO_SHARED_CLIENT: undefined }, () => {
+  const clean = { DATAVERSE_LOAD_CLIENT_ID: undefined, DVLOAD_NO_SHARED_CLIENT: undefined };
+
+  it("tries the shared Microsoft client first, then dvload's own app", () => {
+    withEnv(clean, () => {
       assert.deepEqual(resolveClientIdChain(), [SHARED, DVLOAD]);
     });
   });
 
   it("an explicit --client-id wins and disables the fallback", () => {
-    withEnv({ DATAVERSE_LOAD_CLIENT_ID: undefined, DVLOAD_NO_SHARED_CLIENT: undefined }, () => {
+    withEnv(clean, () => {
       assert.deepEqual(resolveClientIdChain("abc"), ["abc"]);
     });
   });
@@ -137,6 +145,137 @@ describe("shouldTryNextClient", () => {
   it("retries on a bare invalid_client error code", () => {
     assert.equal(shouldTryNextClient({ errorCode: "invalid_client" }), true);
   });
+
+  it("retries on a redirect-URI mismatch, so loopback support is discovered", () => {
+    assert.equal(shouldTryNextClient({ errorMessage: "AADSTS50011: redirect URI mismatch" }), true);
+  });
+});
+
+describe("assertUsableAuthorizeUrl", () => {
+  const base = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize";
+
+  it("accepts a URL carrying a redirect_uri", () => {
+    assert.doesNotThrow(() =>
+      assertUsableAuthorizeUrl(`${base}?client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A5000`)
+    );
+  });
+
+  it("rejects a URL with no redirect_uri, naming the params present", () => {
+    assert.throws(() => assertUsableAuthorizeUrl(`${base}?client_id=x&scope=y`), /AADSTS900971/);
+    assert.throws(() => assertUsableAuthorizeUrl(`${base}?client_id=x&scope=y`), /client_id, scope/);
+  });
+
+  it("rejects an empty redirect_uri", () => {
+    assert.throws(() => assertUsableAuthorizeUrl(`${base}?client_id=x&redirect_uri=`), /no redirect_uri/);
+  });
+
+  it("rejects an unparseable URL", () => {
+    assert.throws(() => assertUsableAuthorizeUrl("not a url"), /unparseable/);
+  });
+});
+
+describe("defaultLoginFlow", () => {
+  it("prefers the browser on Windows", () => {
+    assert.equal(defaultLoginFlow({ platform: "win32" }), "interactive");
+  });
+
+  it("prefers the browser on macOS", () => {
+    assert.equal(defaultLoginFlow({ platform: "darwin" }), "interactive");
+  });
+
+  it("uses device code on Linux with no display server", () => {
+    assert.equal(defaultLoginFlow({ platform: "linux" }), "deviceCode");
+  });
+
+  it("uses the browser on Linux when X11 is present", () => {
+    assert.equal(defaultLoginFlow({ platform: "linux", DISPLAY: ":0" }), "interactive");
+  });
+
+  it("uses the browser on Linux under Wayland", () => {
+    assert.equal(
+      defaultLoginFlow({ platform: "linux", WAYLAND_DISPLAY: "wayland-0" }),
+      "interactive"
+    );
+  });
+
+  it("uses device code over SSH, where the browser would open on the wrong machine", () => {
+    assert.equal(
+      defaultLoginFlow({ platform: "win32", SSH_CONNECTION: "10.0.0.1 22 10.0.0.2 22" }),
+      "deviceCode"
+    );
+  });
+
+  it("honours DVLOAD_AUTH_FLOW=device-code", () => {
+    assert.equal(
+      defaultLoginFlow({ platform: "win32", DVLOAD_AUTH_FLOW: "device-code" }),
+      "deviceCode"
+    );
+  });
+
+  it("honours DVLOAD_AUTH_FLOW=interactive even over SSH", () => {
+    assert.equal(
+      defaultLoginFlow({
+        platform: "linux",
+        DVLOAD_AUTH_FLOW: "interactive",
+        SSH_CONNECTION: "x",
+      }),
+      "interactive"
+    );
+  });
+});
+
+describe("isConditionalAccessBlock", () => {
+  it("recognises AADSTS53003", () => {
+    assert.equal(isConditionalAccessBlock({ errorMessage: "AADSTS53003: blocked" }), true);
+  });
+
+  it("does not fire on a plain consent error", () => {
+    assert.equal(isConditionalAccessBlock({ errorMessage: "AADSTS65001" }), false);
+  });
+
+  it("does not fire when there is no AADSTS code", () => {
+    assert.equal(isConditionalAccessBlock(new Error("socket hang up")), false);
+  });
+});
+
+describe("shouldFallBackToDeviceCode", () => {
+  it("falls back when no browser could be launched", () => {
+    assert.equal(shouldFallBackToDeviceCode({ errorCode: "browser_launch_failed" }), true);
+  });
+
+  it("falls back when the loopback port is taken", () => {
+    assert.equal(shouldFallBackToDeviceCode({ code: "EADDRINUSE" }), true);
+  });
+
+  it("does NOT fall back on a Conditional Access block", () => {
+    // Device code is the *more* restricted flow — retrying with it would
+    // replace a clear policy error with a confusing one.
+    assert.equal(shouldFallBackToDeviceCode({ errorMessage: "AADSTS53003" }), false);
+  });
+
+  it("does NOT fall back when the user declined consent", () => {
+    assert.equal(shouldFallBackToDeviceCode({ errorMessage: "AADSTS65004" }), false);
+  });
+});
+
+describe("conditionalAccessHint", () => {
+  it("suggests --interactive when device code was the blocked flow", () => {
+    const hint = conditionalAccessHint({ errorMessage: "AADSTS53003" }, "deviceCode");
+    assert.match(hint, /--interactive/);
+    assert.match(hint, /Authentication Flows/);
+    assert.match(hint, /Sign-in logs/);
+  });
+
+  it("omits the --interactive suggestion when already interactive", () => {
+    const hint = conditionalAccessHint({ errorMessage: "AADSTS53003" }, "interactive");
+    assert.doesNotMatch(hint, /--interactive/);
+    // Still explains the device-compliance case, which is the likely cause here.
+    assert.match(hint, /compliant device/);
+  });
+
+  it("names the actual error code", () => {
+    assert.match(conditionalAccessHint({ errorMessage: "AADSTS53001" }, "interactive"), /AADSTS53001/);
+  });
 });
 
 describe("dataverseScope", () => {
@@ -187,5 +326,43 @@ describe("noteSharedClient", () => {
       captureStderr(() => noteSharedClient("00000000-0000-0000-0000-000000000000")),
       ""
     );
+  });
+});
+
+describe("announceLoginAttempt", () => {
+  const clean = { DATAVERSE_LOAD_CLIENT_ID: undefined, DVLOAD_NO_SHARED_CLIENT: undefined };
+
+  it("always names the client id, even for an unrecognised one", () => {
+    withEnv(clean, () => {
+      const out = captureStderr(() =>
+        announceLoginAttempt("00000000-0000-0000-0000-000000000000", "interactive")
+      );
+      assert.match(out, /00000000-0000-0000-0000-000000000000/);
+      assert.match(out, /browser/);
+    });
+  });
+
+  it("reveals when DATAVERSE_LOAD_CLIENT_ID pinned the choice", () => {
+    // This is the whole point: a stray env var silently disabling the
+    // fallback chain must be visible in the output, not inferred.
+    withEnv({ DATAVERSE_LOAD_CLIENT_ID: DVLOAD, DVLOAD_NO_SHARED_CLIENT: undefined }, () => {
+      const out = captureStderr(() => announceLoginAttempt(DVLOAD, "interactive"));
+      assert.match(out, /DATAVERSE_LOAD_CLIENT_ID/);
+    });
+  });
+
+  it("reveals when DVLOAD_NO_SHARED_CLIENT disabled the shared client", () => {
+    withEnv({ DATAVERSE_LOAD_CLIENT_ID: undefined, DVLOAD_NO_SHARED_CLIENT: "1" }, () => {
+      const out = captureStderr(() => announceLoginAttempt(DVLOAD, "deviceCode"));
+      assert.match(out, /DVLOAD_NO_SHARED_CLIENT/);
+      assert.match(out, /device code/);
+    });
+  });
+
+  it("names the Microsoft app when using the shared client", () => {
+    withEnv(clean, () => {
+      const out = captureStderr(() => announceLoginAttempt(SHARED, "interactive"));
+      assert.match(out, /Microsoft Dynamics CRM/);
+    });
   });
 });

@@ -42,7 +42,7 @@ The CLI supports two flows; the add-in supports the first.
 | | Delegated (user signs in) | App-only (client credentials) |
 |---|---|---|
 | Used by | add-in always; CLI by default | CLI when configured |
-| Flow | device-code (CLI) or popup (add-in) | client_id + secret |
+| Flow | browser (CLI, default), device-code (CLI, headless), popup (add-in) | client_id + secret |
 | Identity in Dataverse | the signed-in user | an "Application User" you create |
 | Refresh expiry | ~90 days idle | none |
 | Survives MFA / conditional access changes | sometimes | yes |
@@ -88,6 +88,51 @@ setx DVLOAD_NO_SHARED_CLIENT 1
 `dvload whoami --env <url>` reports which client id the stored session
 actually used.
 
+#### Sign-in flow
+
+By default `dvload login` opens your system browser (authorization code +
+PKCE, with a loopback listener on `127.0.0.1`). It switches to device code
+automatically when there's no local browser to open — over SSH, or on Linux
+with no display server. Override with `--interactive` / `--device-code`, or
+`DVLOAD_AUTH_FLOW=interactive|device-code`.
+
+Because the shared Microsoft client is both pre-consented *and* accepts
+`http://localhost` redirects, browser sign-in through it needs neither admin
+consent nor device code flow. That's the combination that lets tools like
+XrmToolBox connect in locked-down tenants.
+
+If you see `AADSTS900971` ("No reply address provided") on the Entra page,
+suspect the URL rather than the app registration — a mangled authorize
+request arrives missing its `redirect_uri` and produces exactly this error.
+dvload prints the sign-in URL before opening it; paste that into your browser
+by hand. If the manual paste works, the launcher is at fault. See
+[docs/AUTH-NOTES.md](./docs/AUTH-NOTES.md).
+
+Note that Entra validates redirect URIs only *after* authentication and shows
+the result as a browser page, so dvload can't observe these failures or retry
+them — it times out after three minutes (`DVLOAD_AUTH_TIMEOUT_MS`).
+
+**If you get `AADSTS53003` — "your sign-in was successful but does not meet
+the criteria to access this resource"** — Conditional Access refused to
+issue the token. The most common cause for a CLI is the **Authentication
+Flows** condition blocking device code flow; Microsoft recommends getting
+"as close as possible to a unilateral block" on it, because an attacker can
+generate a code and phish someone into entering it. Retry with:
+
+```bash
+dvload login --env <url> --interactive
+```
+
+That isn't a way around the policy — it's the flow the policy steers you
+to. A real browser can present device state (primary refresh token,
+compliant-device claim) that device code structurally cannot.
+
+If the blocking condition is device compliance or location instead, no
+dvload setting will help. Check **Entra admin center → Monitoring →
+Sign-in logs → the failed attempt → Conditional Access tab** to see which
+policy and condition actually fired. dvload prints this guidance itself
+when it detects a CA block.
+
 > **Add-in note:** none of this applies to the Excel add-in, which always
 > uses a real app registration. Browser flows need a `spa`-type redirect
 > URI on the app — both for the redirect itself and for the token
@@ -113,6 +158,14 @@ client** app:
 ```bash
 setx DATAVERSE_LOAD_CLIENT_ID "<your-client-id>"
 ```
+
+> **This disables the shared-client fallback.** Once pinned, dvload uses only
+> your app, so it must have `http://localhost` registered under Authentication
+> -> Mobile and desktop applications or browser sign-in fails with
+> `AADSTS900971`. To go back to the pre-consented shared client, clear it:
+> `setx DATAVERSE_LOAD_CLIENT_ID ""` (new shell required). `dvload login`
+> prints which client id it's using and what pinned it, so check that first
+> when sign-in misbehaves.
 
 The CLI picks up the env var on the next run. For the add-in, the id is
 baked in at build time (`DATAVERSE_LOAD_CLIENT_ID` at webpack build), so

@@ -17,7 +17,7 @@ Requires Node 20+. Windows 10/11 for scheduling and Power Query refresh.
 ## Quick start
 
 ```bash
-# one-time sign-in (device code; no Entra setup needed)
+# one-time sign-in (opens your browser; no Entra setup, no admin consent)
 dvload login --env https://yourorg.crm.dynamics.com
 
 # sanity-check a mapping against live Dataverse metadata

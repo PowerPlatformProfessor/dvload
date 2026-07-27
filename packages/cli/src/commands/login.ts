@@ -14,6 +14,7 @@ import {
   isSharedMicrosoftClient,
   getStoredClientId,
   parseClientCertificate,
+  type LoginFlow,
 } from "../auth.js";
 import { promptSecret } from "../prompt.js";
 import { resolveEnv } from "../profiles.js";
@@ -23,15 +24,26 @@ interface LoginOpts {
   profile?: string;
   tenant?: string;
   clientId?: string;
+  interactive?: boolean;
+  deviceCode?: boolean;
 }
 
 export async function loginCommand(opts: LoginOpts): Promise<void> {
   const envUrl = await resolveEnv(opts);
+  if (opts.interactive && opts.deviceCode) {
+    throw new Error("Pass either --interactive or --device-code, not both.");
+  }
+  const flow: LoginFlow | undefined = opts.interactive
+    ? "interactive"
+    : opts.deviceCode
+      ? "deviceCode"
+      : undefined; // let defaultLoginFlow() decide
   // loginDelegated walks the client-id chain and reports which one it used.
   const account = await loginDelegated({
     environmentUrl: envUrl,
     tenantId: opts.tenant,
     clientId: opts.clientId,
+    flow,
   });
   console.log(kleur.green(`Signed in as ${account.username} (${envUrl}).`));
   const used = await getStoredClientId(envUrl);

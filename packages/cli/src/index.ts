@@ -68,6 +68,12 @@ program
   .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
   .option("--tenant <id>", "Azure AD tenant id (default: 'organizations')")
   .option("--client-id <id>", "Override the public-client app id")
+  .option("--interactive", "Sign in via the system browser (default when one is available)")
+  .option(
+    "--device-code",
+    "Sign in by entering a code on another device. Needed on headless machines; " +
+      "often blocked by Conditional Access."
+  )
   .action(loginCommand);
 
 program

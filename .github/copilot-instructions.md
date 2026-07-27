@@ -62,7 +62,7 @@ CheckNetIsolation LoopbackExempt -a -n="microsoft.win32webviewhost_cw5n1h2txyewy
 ## CLI auth
 
 ```powershell
-dvload login --env https://yourorg.crm.dynamics.com        # delegated (device-code)
+dvload login --env https://yourorg.crm.dynamics.com        # delegated (browser; --device-code for headless)
 dvload app-login --env <url> --client-id <id> --tenant-id <id>  # app-only
 dvload whoami --env <url>                                   # check what's configured
 ```

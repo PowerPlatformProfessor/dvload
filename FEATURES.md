@@ -9,7 +9,7 @@
 | `run` | Load rows from an `.xlsx` table (or `.csv`/`.tsv` file) into Dataverse via OData. Flags: `--dry-run`, `--refresh`, `--user`, `--max-errors`, `--concurrency`, `--resume`, `--notify-url`, `--no-failed-rows`, `--non-interactive`, `--json` (machine-readable result for pipelines). |
 | `run-all` | Run several mappings from a run plan (`.dvplan.json`): stage-based parallel execution, dependency ordering, optional per-step overrides, and backward-compatible support for legacy `runs[]` manifests. Honors `stopOnError`. |
 | `validate` | Check a `.dvmap.json` against local schema and live Dataverse metadata. `--no-remote` skips the network probe. |
-| `login` / `logout` | Delegated (device-code) auth; refresh token cached DPAPI-encrypted in `~/.dvload/`. |
+| `login` / `logout` | Delegated auth via system browser (auth code + PKCE), falling back to device code on headless machines; refresh token cached DPAPI-encrypted in `~/.dvload/`. |
 | `app-login` / `app-logout` | App-only auth via client secret or certificate (`--cert <pem>`); stored in the DPAPI-protected secure store. |
 | `whoami` | Show which auth mode is configured for an environment and probe a live token. |
 | `profile add/remove/list` | Named environment shortcuts stored in `~/.dvload/profiles.json`. |

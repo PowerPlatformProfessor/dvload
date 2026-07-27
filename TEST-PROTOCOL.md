@@ -52,9 +52,11 @@ Data is deterministic (seeded): re-running a command reproduces identical files;
 
 | # | Test | Steps | Expected | Result |
 |---|---|---|---|---|
-| 4.1 | Delegated login | `dvload login --env <url>` | Device-code prompt; success; token cached in `~/.dvload/` (DPAPI-encrypted, not plaintext — open the file and confirm) | |
-| 4.2 | whoami (delegated) | `dvload whoami --env <url>` | Shows delegated mode, correct user, live token probe succeeds | |
-| 4.3 | Token reuse | Re-run a command without logging in again | No new device-code prompt | |
+| 4.1 | Delegated login (browser) | `dvload login --env <url>` | System browser opens; success page; token cached in `~/.dvload/` (DPAPI-encrypted, not plaintext — open the file and confirm) | |
+| 4.1b | Delegated login (device code) | `dvload login --env <url> --device-code` | Device-code prompt; succeeds, or fails with the Conditional Access explanation if the tenant blocks the flow | |
+| 4.1c | Client fallback | `DVLOAD_NO_SHARED_CLIENT=1 dvload login --env <url>` | Signs in as dvload's own app (may need one-time admin consent); `whoami` reports that client id | |
+| 4.2 | whoami (delegated) | `dvload whoami --env <url>` | Shows delegated mode, correct user, which client id was used, live token probe succeeds | |
+| 4.3 | Token reuse | Re-run a command without logging in again | No new prompt of any kind — confirms the stored client id matched the MSAL cache | |
 | 4.4 | Logout | `dvload logout` then `whoami` | Cache cleared; whoami reports not signed in | |
 | 4.5 | App-only (secret) | `dvload app-login --env <url>` with client id + secret | Stored in secure store; `whoami` shows app-only; run works as the Application User | |
 | 4.6 | App-only (certificate) | `dvload app-login --cert <pem>` | Same as 4.5 via cert | |
