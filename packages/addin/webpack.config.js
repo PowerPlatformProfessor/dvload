@@ -5,9 +5,14 @@ const CopyWebpackPlugin = require("copy-webpack-plugin");
 const devCerts = require("office-addin-dev-certs");
 
 // Keep in sync with WELL_KNOWN_DEV_CLIENT_IDS in src/auth.ts.
+// Note: unlike the CLI, the add-in cannot actually authenticate with these
+// — a browser flow needs a `spa` redirect URI on the app registration for
+// both the redirect and the token endpoint's CORS header, and you can't
+// add one to a Microsoft-owned app. They're listed to catch a misconfigured
+// build, not as a usable fallback.
 const WELL_KNOWN_DEV_CLIENT_IDS = [
   "2ad88395-b77d-4561-9441-d0e40824f9bc", // Microsoft PowerApps
-  "51f81489-12ee-4a9e-aaae-a2591f45987d", // Microsoft Power Query
+  "51f81489-12ee-4a9e-aaae-a2591f45987d", // Microsoft Dynamics CRM (XRM Tooling)
 ];
 
 module.exports = async (env, argv) => {

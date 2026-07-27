@@ -10,15 +10,13 @@ import {
   detectAuthMode,
   getTokenProvider,
   dataverseScope,
-  warnIfWellKnown,
-  isWellKnownDevClient,
+  describeClient,
+  isSharedMicrosoftClient,
+  getStoredClientId,
   parseClientCertificate,
 } from "../auth.js";
 import { promptSecret } from "../prompt.js";
 import { resolveEnv } from "../profiles.js";
-
-const DEFAULT_PUBLIC_CLIENT_ID =
-  process.env.DATAVERSE_LOAD_CLIENT_ID ?? "e6828b0f-9fde-43f8-85d0-602660d498bb";
 
 interface LoginOpts {
   env?: string;
@@ -29,13 +27,15 @@ interface LoginOpts {
 
 export async function loginCommand(opts: LoginOpts): Promise<void> {
   const envUrl = await resolveEnv(opts);
-  warnIfWellKnown(opts.clientId ?? DEFAULT_PUBLIC_CLIENT_ID);
+  // loginDelegated walks the client-id chain and reports which one it used.
   const account = await loginDelegated({
     environmentUrl: envUrl,
     tenantId: opts.tenant,
     clientId: opts.clientId,
   });
   console.log(kleur.green(`Signed in as ${account.username} (${envUrl}).`));
+  const used = await getStoredClientId(envUrl);
+  if (used) console.log(kleur.gray(`Signed in via ${describeClient(used)}.`));
   console.log(
     kleur.gray(
       "Account reference stored in the dvload secure store; encrypted MSAL token cache written to ~/.dvload/."
@@ -122,13 +122,19 @@ export async function whoamiCommand(opts: WhoamiOpts): Promise<void> {
   const mode = await detectAuthMode(envUrl);
   console.log(kleur.bold(`Auth mode for ${envUrl}: ${mode}`));
 
-  if (mode === "delegated" && isWellKnownDevClient(DEFAULT_PUBLIC_CLIENT_ID)) {
-    console.log(
-      kleur.yellow(
-        `  [dev mode] borrowed public client (${DEFAULT_PUBLIC_CLIENT_ID})`
-      )
-    );
-    console.log(kleur.gray("  Register your own app and set DATAVERSE_LOAD_CLIENT_ID before shipping."));
+  if (mode === "delegated") {
+    const used = await getStoredClientId(envUrl);
+    if (used) {
+      console.log(`  client id: ${describeClient(used)}`);
+      if (isSharedMicrosoftClient(used)) {
+        console.log(
+          kleur.gray(
+            "  Shared Microsoft client — no admin consent required, but sign-in\n" +
+              "  logs attribute this to Microsoft rather than dvload."
+          )
+        );
+      }
+    }
   }
 
   if (mode === "appOnly") {

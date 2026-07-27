@@ -13,14 +13,29 @@ import {
 } from "@azure/msal-browser";
 
 /**
- * Microsoft-published multi-tenant public clients with Dataverse access
- * pre-consented. Used as a dev-mode fallback. NEVER ship a tool with one
- * of these as the default — the consent screen would say "Microsoft
- * PowerApps" instead of your tool's name. See PRE-RELEASE-CHECKLIST.md.
+ * Microsoft-owned public clients with Dataverse access pre-consented in
+ * every tenant. The CLI can borrow these to skip admin consent (see
+ * packages/cli/src/auth.ts), but the add-in CANNOT, and it isn't a matter
+ * of swapping out MSAL.js:
+ *
+ *   1. A browser auth-code flow needs a redirect URI registered on the app
+ *      registration, and you can't add one to a Microsoft-owned app.
+ *   2. Entra only returns Access-Control-Allow-Origin from the token
+ *      endpoint when the caller's origin matches a redirect URI of type
+ *      `spa`. Without that, the POST response is unreadable from the
+ *      WebView regardless of which HTTP client makes it.
+ *
+ * Device code looks like the way out (no redirect URI at all) but hits
+ * problem 2 as well, and Entra explicitly rejects `spa` redirect URIs in
+ * non-SPA flows — so there's no configuration that makes it work.
+ *
+ * The add-in therefore requires a real app registration. These ids are
+ * listed only so a dev-mode build is recognised and flagged.
  */
 const WELL_KNOWN_DEV_CLIENT_IDS: Record<string, string> = {
   "2ad88395-b77d-4561-9441-d0e40824f9bc": "Microsoft PowerApps",
-  "51f81489-12ee-4a9e-aaae-a2591f45987d": "Microsoft Power Query",
+  // The Dataverse / XRM Tooling sample client — the one XrmToolBox uses.
+  "51f81489-12ee-4a9e-aaae-a2591f45987d": "Microsoft Dynamics CRM",
 };
 
 declare const ADDIN_CLIENT_ID: string; // injected by webpack DefinePlugin at build time

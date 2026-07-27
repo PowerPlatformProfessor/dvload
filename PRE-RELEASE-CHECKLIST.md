@@ -6,24 +6,37 @@ items are non-negotiable.
 
 ## How to know you're not ready yet
 
-You'll see one or more of these:
-
-- CLI prints `[dev mode] Using "Microsoft PowerApps" public client …` when
-  you run `login` or `whoami`.
 - Add-in shows a yellow banner at the top: `Dev mode — signing in as
-  "Microsoft PowerApps"`.
+  "Microsoft Dynamics CRM"`.
 - Browser dev console logs `[dvload dev mode]` on add-in start.
 
-All three are the same signal: you're still using a borrowed Microsoft
-public client id. Fix that first.
+Either one means the add-in build is pointed at a borrowed Microsoft
+client id, which cannot work in a browser (see below). Fix that first.
+
+**The CLI is a different case and is not a blocker.** By design it signs
+in through the shared Microsoft Dataverse client
+(`51f81489-12ee-4a9e-aaae-a2591f45987d`) so users never hit an admin
+consent wall and falls back to dvload's own
+app if that client is blocked. `dvload login` prints a one-line note
+saying which identity the consent screen will show. That's informational,
+not a warning.
 
 ## 1. Register your own Entra ID app(s)
 
 You need at least one app registration, possibly two depending on whether
 the CLI will support unattended (app-only) auth out of the box for users.
 
-**Public client (delegated flow) — required.** Used by the add-in and by
-`dvload login`.
+**Public client (delegated flow) — required for the add-in, fallback for
+the CLI.**
+
+The add-in has no alternative here. A browser auth-code flow needs a
+redirect URI registered on the app registration, and Entra only returns
+`Access-Control-Allow-Origin` from the token endpoint when the caller's
+origin matches a redirect URI of type `spa`. You can't add either to a
+Microsoft-owned app, and Entra explicitly rejects `spa` redirect URIs in
+non-SPA flows — so device code from the taskpane doesn't rescue you
+either. The only way around it would be to stop authenticating in the
+browser entirely and broker tokens through a local dvload process.
 
 - Microsoft Entra admin center → App registrations → New registration
 - Name: `<your tool name>` (whatever appears on the consent screen)
@@ -41,12 +54,12 @@ the CLI will support unattended (app-only) auth out of the box for users.
 
 Then:
 
-- Replace the well-known fallback in `packages/cli/src/auth.ts`
-  (`DEFAULT_PUBLIC_CLIENT_ID`) with your new app id.
-- Replace the same constant in `packages/addin/src/auth.ts` (`CLIENT_ID`).
-- Or: keep the env-var override and ship the app id via build-time
-  injection (`process.env.DATAVERSE_LOAD_CLIENT_ID`) so it's not hardcoded
-  in source.
+- Set `DATAVERSE_LOAD_CLIENT_ID` at webpack build time so the add-in
+  bundle carries your app id (`packages/addin/webpack.config.js` fails a
+  production build if it doesn't).
+- Optionally update `DVLOAD_CLIENT_ID` in `packages/cli/src/auth.ts` — this
+  is only the CLI's *fallback*, used when the shared Microsoft client is
+  blocked. Leaving it alone is fine.
 
 **Confidential client (app-only flow) — optional.** Only needed if you
 want `app-login` to work without users having to register their own
@@ -100,21 +113,21 @@ AppSource submission:
 
 ## 6. Documentation
 
-- Update `README.md` to remove the "if you don't want to register your own
-  app, use this well-known client id" shortcut. That paragraph is the
-  thing telling people they're allowed to do something this checklist
-  forbids.
+- Check that README's "Quick start (delegated)" section still matches
+  reality: shared Microsoft client by default, own-app fallback,
+  `DVLOAD_NO_SHARED_CLIENT=1` to opt out.
 - Add a CHANGELOG.md with at least the v0.1.0 entry.
 - Add a LICENSE file. MIT is the path of least resistance.
 
 ## 7. Sanity checks before tagging v1
 
-- `dvload whoami --env <prod-env>` does NOT print `[dev mode]`.
+- `dvload whoami --env <prod-env>` names a client id you recognise.
+- `DVLOAD_NO_SHARED_CLIENT=1 dvload login` succeeds against a real tenant,
+  proving the own-app fallback path actually works and isn't just dead code.
 - Add-in does NOT show the yellow `Dev mode` banner.
 - Browser console on add-in load does NOT log `[dvload dev mode]`.
 - Manifest GUID is not all zeros.
 - Manifest URLs do not contain `localhost`.
-- README mentions your registered app, not the PowerApps fallback.
 - `dvload run-all <plan>.dvplan.json` validates alternate-key links and executes staged dependencies as expected.
 - `dvload addin start` successfully launches the local add-in workflow in a dev clone.
 

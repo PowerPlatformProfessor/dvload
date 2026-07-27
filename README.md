@@ -54,24 +54,52 @@ you're iterating in a shell where a schedule has stored a secret).
 
 ### Quick start (delegated)
 
-No Entra setup needed. dvload ships with its own registered multi-tenant
-public client (`dataverse-load`, `e6828b0f-9fde-43f8-85d0-602660d498bb`),
-so signing in just works:
+No Entra setup needed, and no admin approval:
 
 ```bash
 dvload login --env https://yourorg.crm.dynamics.com
 ```
 
-The first sign-in asks for consent to access Dataverse on your behalf.
-If your tenant restricts user consent, an admin will need to approve the
-app once (they'll get an admin-approval prompt, or can pre-consent it
-from Entra → Enterprise applications).
+The CLI signs in through the shared Microsoft Dataverse client
+(`51f81489-12ee-4a9e-aaae-a2591f45987d`) — the same one XrmToolBox and the
+XRM Tooling SDK use. It's a Microsoft-owned app whose Dataverse delegated
+permission is already consented in every tenant, so you never hit the
+"Need admin approval" wall.
+
+This is not a privilege bypass. You still sign in as yourself, and
+Dataverse still enforces your security roles. What you give up is
+attribution: the consent screen and your tenant's sign-in logs will say
+*Microsoft Dynamics CRM*, not dvload.
+
+If that client is unavailable — some tenants block it via Conditional
+Access or Power Platform's *allowed client apps* control — dvload
+automatically retries with its own registered multi-tenant public client
+(`dataverse-load`, `e6828b0f-9fde-43f8-85d0-602660d498bb`), which may then
+need a one-time admin approval. Sign-ins that fail for reasons about *you*
+rather than the app (Conditional Access, MFA, declined consent) are not
+retried.
+
+To skip the shared client and always sign in as dvload:
+
+```bash
+setx DVLOAD_NO_SHARED_CLIENT 1
+```
+
+`dvload whoami --env <url>` reports which client id the stored session
+actually used.
+
+> **Add-in note:** none of this applies to the Excel add-in, which always
+> uses a real app registration. Browser flows need a `spa`-type redirect
+> URI on the app — both for the redirect itself and for the token
+> endpoint's CORS header — and you cannot add one to a Microsoft-owned
+> app. Swapping MSAL.js for another library doesn't change that.
 
 ### Using your own app registration (optional)
 
 Orgs that prefer their own registration — for conditional-access
-policies, consent branding, or auditability — can override the built-in
-client id. Register a **public client** app:
+policies, consent branding, or auditability — can override the client id.
+Setting it also disables the shared-client default. Register a **public
+client** app:
 
 1. Open **Microsoft Entra admin center** → Applications → App registrations → New registration.
 2. Supported account types: single-tenant is fine for internal use.

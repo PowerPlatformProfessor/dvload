@@ -42,48 +42,143 @@ import {
 } from "./secure-store.js";
 
 /**
- * Microsoft-published multi-tenant public clients with Dataverse access
- * pre-consented. Convenient for local development — any work/school
- * account can sign in to them without anyone having to register a new
- * Entra ID app first.
+ * Microsoft-owned multi-tenant public clients that already have Dataverse
+ * delegated access consented in every tenant. Because the consent record
+ * exists tenant-wide out of the box, signing in through one of these never
+ * hits the "Need admin approval" wall — which is how XrmToolBox, the XRM
+ * Tooling SDK and the Power Platform CLI all connect without asking the
+ * tenant admin for anything.
  *
- * !!! DO NOT SHIP A TOOL WITH ONE OF THESE AS THE DEFAULT.  See
- * PRE-RELEASE-CHECKLIST.md at the repo root. Users would be signing in
- * to "Microsoft PowerApps" on the consent screen rather than to your
- * tool, which is confusing for them and against Microsoft's terms.
+ * This is not a privilege bypass: the flow is still delegated, the user
+ * still authenticates as themselves, and Dataverse still enforces their
+ * security roles. What you give up is branding and auditability — the
+ * consent screen and the tenant's sign-in logs show the Microsoft app
+ * name, not dvload.
  */
-const WELL_KNOWN_DEV_CLIENT_IDS: Record<string, string> = {
+const SHARED_MS_CLIENTS: Record<string, string> = {
+  // The Dataverse / XRM Tooling sample client. Same id XrmToolBox uses.
+  "51f81489-12ee-4a9e-aaae-a2591f45987d": "Microsoft Dynamics CRM",
   "2ad88395-b77d-4561-9441-d0e40824f9bc": "Microsoft PowerApps",
-  "51f81489-12ee-4a9e-aaae-a2591f45987d": "Microsoft Power Query",
 };
 
-/**
- * Default public-client app id used by `dvload login`. Pulled from
- * env var first; otherwise falls back to the registered "dataverse-load"
- * multi-tenant public client.
- */
-const DEFAULT_PUBLIC_CLIENT_ID =
-  process.env.DATAVERSE_LOAD_CLIENT_ID ?? "e6828b0f-9fde-43f8-85d0-602660d498bb";
+/** Tried first: works in any tenant with no consent prompt. */
+const SHARED_DATAVERSE_CLIENT_ID = "51f81489-12ee-4a9e-aaae-a2591f45987d";
 
-export function isWellKnownDevClient(clientId: string): boolean {
-  return clientId in WELL_KNOWN_DEV_CLIENT_IDS;
+/** Fallback: dvload's own registered multi-tenant public client. */
+const DVLOAD_CLIENT_ID = "e6828b0f-9fde-43f8-85d0-602660d498bb";
+
+/**
+ * Public-client app ids to try, in order.
+ *
+ * Default is [shared Microsoft client, dvload's own app]: the shared client
+ * needs no consent anywhere, and the own-app fallback covers tenants that
+ * have blocked the shared client (Conditional Access, or Power Platform's
+ * "allowed client apps" control).
+ *
+ * An explicit `--client-id` or `DATAVERSE_LOAD_CLIENT_ID` disables the
+ * chain entirely — if you named an app, that's the app we use. Set
+ * `DVLOAD_NO_SHARED_CLIENT=1` to keep the default app without pinning one.
+ */
+export function resolveClientIdChain(explicit?: string): string[] {
+  if (explicit) return [explicit];
+  const pinned = process.env.DATAVERSE_LOAD_CLIENT_ID;
+  if (pinned) return [pinned];
+  if (process.env.DVLOAD_NO_SHARED_CLIENT === "1") return [DVLOAD_CLIENT_ID];
+  return [SHARED_DATAVERSE_CLIENT_ID, DVLOAD_CLIENT_ID];
+}
+
+export function isSharedMicrosoftClient(clientId: string): boolean {
+  return clientId in SHARED_MS_CLIENTS;
+}
+
+/** Human-readable name for log lines: the Microsoft app name, or the raw id. */
+export function describeClient(clientId: string): string {
+  const name = SHARED_MS_CLIENTS[clientId];
+  if (name) return `"${name}" (${clientId})`;
+  if (clientId === DVLOAD_CLIENT_ID) return `dvload's own app (${clientId})`;
+  return clientId;
 }
 
 /**
- * Print a one-time warning to stderr if `clientId` is a borrowed public
- * client (PowerApps, Power Query, etc.). Call this from any command that
- * takes a user-facing action with the auth client (login, whoami, …).
+ * Note on stderr which identity the user is actually signing in as. Not a
+ * blocker — borrowing the shared client is a supported mode for the CLI —
+ * but the consent screen will name Microsoft rather than dvload, and that
+ * should never be a surprise.
  */
-export function warnIfWellKnown(clientId: string): void {
-  if (!isWellKnownDevClient(clientId)) return;
-  const name = WELL_KNOWN_DEV_CLIENT_IDS[clientId];
+export function noteSharedClient(clientId: string): void {
+  const name = SHARED_MS_CLIENTS[clientId];
+  if (!name) return;
   process.stderr.write(
-    `\n[dev mode] Using "${name}" public client (${clientId}).\n` +
-      `  This works for local testing but the consent screen shows "${name}",\n` +
-      `  not your tool. Register your own Entra ID app and set\n` +
-      `  DATAVERSE_LOAD_CLIENT_ID before sharing this with anyone.\n` +
-      `  See PRE-RELEASE-CHECKLIST.md.\n\n`
+    `\nSigning in via the shared Microsoft Dataverse client (${clientId}).\n` +
+      `  No admin consent needed, but the consent screen and your tenant's\n` +
+      `  sign-in logs will show "${name}", not dvload. To sign in as dvload\n` +
+      `  instead, set DVLOAD_NO_SHARED_CLIENT=1 (an admin may then need to\n` +
+      `  approve the app once).\n\n`
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Fallback classification                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** Pull the AADSTS error code out of whatever MSAL threw. */
+export function aadstsCode(err: unknown): string | null {
+  const text = [
+    (err as { errorMessage?: string })?.errorMessage,
+    (err as { errorCode?: string })?.errorCode,
+    (err as Error)?.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /AADSTS\d+/.exec(text)?.[0] ?? null;
+}
+
+/**
+ * Client-level failures: this app registration cannot work in this tenant,
+ * so a different one is worth trying.
+ */
+const RETRY_WITH_NEXT_CLIENT = new Set([
+  "AADSTS65001", // no consent recorded for this client
+  "AADSTS90094", // grant requires admin permission
+  "AADSTS700016", // app not found in this directory
+  "AADSTS7000218", // "Allow public client flows" is disabled
+  "AADSTS7000112", // app disabled in this tenant
+  "AADSTS50194", // single-tenant app reached via /organizations
+  "AADSTS500011", // resource principal not found in tenant
+  "AADSTS650057", // invalid resource for this client
+  "AADSTS900971", // no reply address / client misconfiguration
+]);
+
+/**
+ * Failures about the *user* or an explicit policy decision. Retrying with a
+ * different client id would just make the person do the device-code dance
+ * again for nothing — or, worse, re-prompt someone who already said no.
+ */
+const DO_NOT_RETRY = new Set([
+  "AADSTS65004", // user declined consent
+  "AADSTS50105", // user not assigned to the app
+  "AADSTS53000",
+  "AADSTS53001",
+  "AADSTS53002",
+  "AADSTS53003", // blocked by Conditional Access
+  "AADSTS50076",
+  "AADSTS50079", // MFA required
+  "AADSTS50158", // external security challenge not satisfied
+]);
+
+/** True when the next client id in the chain is worth attempting. */
+export function shouldTryNextClient(err: unknown): boolean {
+  const code = aadstsCode(err);
+  if (code) {
+    if (DO_NOT_RETRY.has(code)) return false;
+    if (RETRY_WITH_NEXT_CLIENT.has(code)) return true;
+  }
+  const errorCode = (err as { errorCode?: string })?.errorCode ?? "";
+  // The user walked away or cancelled — a second prompt helps nobody.
+  if (/user_timeout_reached|device_code_expired|user_cancelled/.test(errorCode)) {
+    return false;
+  }
+  return /invalid_client|unauthorized_client/.test(errorCode);
 }
 
 export interface DelegatedAuthOptions {
@@ -123,8 +218,17 @@ function host(envUrl: string): string {
 const keys = {
   delegatedAccount: (env: string) => `delegated:${host(env)}`,
   delegatedTenant: (env: string) => `delegatedTenant:${host(env)}`,
+  // Which client id the successful login used. MSAL keys its cache entries
+  // by client id, so silent acquisition has to reuse the same one or it
+  // finds nothing and drops back to an interactive prompt.
+  delegatedClient: (env: string) => `delegatedClient:${host(env)}`,
   appOnly: (env: string) => `appOnly:${host(env)}`,
 };
+
+/** Client id the last successful delegated login for `env` used, if any. */
+export async function getStoredClientId(env: string): Promise<string | null> {
+  return await getSecret(keys.delegatedClient(env));
+}
 
 /* -------------------------------------------------------------------------- */
 /* Persistent MSAL cache                                                       */
@@ -248,7 +352,7 @@ export function parseClientCertificate(pem: string): {
 /* -------------------------------------------------------------------------- */
 
 function makePublicApp(opts: DelegatedAuthOptions): PublicClientApplication {
-  const clientId = opts.clientId ?? DEFAULT_PUBLIC_CLIENT_ID;
+  const clientId = opts.clientId ?? resolveClientIdChain()[0];
   if (!clientId) {
     throw new Error(
       "No public-client app id set. Either pass --client-id, set DATAVERSE_LOAD_CLIENT_ID, " +
@@ -277,8 +381,39 @@ function makePublicApp(opts: DelegatedAuthOptions): PublicClientApplication {
   return new PublicClientApplication(config);
 }
 
-/** Interactive device-code login. Caches an account marker in the secure store. */
+/**
+ * Interactive device-code login.
+ *
+ * Walks the client-id chain from `resolveClientIdChain()`: the shared
+ * Microsoft Dataverse client first (no consent prompt in any tenant), then
+ * dvload's own app if that client is unusable here. Only client-level
+ * failures advance the chain — see `shouldTryNextClient`.
+ */
 export async function loginDelegated(opts: DelegatedAuthOptions): Promise<AccountInfo> {
+  const chain = resolveClientIdChain(opts.clientId);
+  let lastErr: unknown;
+
+  for (let i = 0; i < chain.length; i++) {
+    const clientId = chain[i];
+    const next = chain[i + 1];
+    try {
+      noteSharedClient(clientId);
+      return await loginWithClient({ ...opts, clientId });
+    } catch (e) {
+      lastErr = e;
+      if (!next || !shouldTryNextClient(e)) throw e;
+      process.stderr.write(
+        `\nSign-in with ${describeClient(clientId)} failed` +
+          `${aadstsCode(e) ? ` (${aadstsCode(e)})` : ""}.\n` +
+          `  Retrying with ${describeClient(next)}.\n\n`
+      );
+    }
+  }
+  throw lastErr;
+}
+
+/** Single device-code attempt against one specific client id. */
+async function loginWithClient(opts: DelegatedAuthOptions): Promise<AccountInfo> {
   const app = makePublicApp(opts);
   const result = await app.acquireTokenByDeviceCode({
     scopes: [dataverseScope(opts.environmentUrl)],
@@ -305,6 +440,10 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
     keys.delegatedTenant(opts.environmentUrl),
     opts.tenantId ?? result.account.tenantId ?? "organizations"
   );
+  // Remember the winning client id too — acquireTokenSilent must use it.
+  if (opts.clientId) {
+    await setSecret(keys.delegatedClient(opts.environmentUrl), opts.clientId);
+  }
   return result.account;
 }
 
@@ -312,6 +451,7 @@ export async function logoutDelegated(env?: string): Promise<void> {
   if (env) {
     await deleteSecret(keys.delegatedAccount(env));
     await deleteSecret(keys.delegatedTenant(env));
+    await deleteSecret(keys.delegatedClient(env));
     await fs.unlink(msalCachePath(env)).catch(() => {});
     await fs.unlink(legacyMsalCachePath(env)).catch(() => {});
     return;
@@ -340,13 +480,21 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
     const scopes = [dataverseScope(opts.environmentUrl)];
 
     if (!warmedUp) {
-      // Reconstruct the app with the same tenant the login used, unless
-      // the caller passed one explicitly. Without this, silent acquisition
-      // fails because MSAL keys cache entries by authority.
+      // Reconstruct the app with the same tenant AND client id the login
+      // used, unless the caller passed them explicitly. Without this,
+      // silent acquisition fails because MSAL keys cache entries by both
+      // authority and client id — a mismatch looks like an empty cache and
+      // silently escalates to a fresh device-code prompt.
+      const overrides: Partial<DelegatedAuthOptions> = {};
       if (!opts.tenantId) {
         const storedTenant = await getSecret(keys.delegatedTenant(opts.environmentUrl));
-        if (storedTenant) effectiveOpts = { ...opts, tenantId: storedTenant };
+        if (storedTenant) overrides.tenantId = storedTenant;
       }
+      if (!opts.clientId) {
+        const storedClient = await getStoredClientId(opts.environmentUrl);
+        if (storedClient) overrides.clientId = storedClient;
+      }
+      effectiveOpts = { ...opts, ...overrides };
       app = makePublicApp(effectiveOpts);
 
       const accountId = await getSecret(keys.delegatedAccount(opts.environmentUrl));
