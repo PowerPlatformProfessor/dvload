@@ -13,6 +13,11 @@ export * from "./tablegen.js";
 
 // xlsx-reader uses Node fs by default but ships a buffer-based variant
 // so the add-in (which has a Blob, not a path) can use the same engine.
-export { readTableFromBuffer, readTableFromFile, writeRowsToFile } from "./xlsx-reader.js";
+export {
+  readTableFromBuffer,
+  readTableFromFile,
+  writeRowsToFile,
+  writeRowsToBuffer,
+} from "./xlsx-reader.js";
 export { parseCsv, readTableFromCsvString } from "./csv-reader.js";
 // (CSV/TSV sources supported since v0.2)

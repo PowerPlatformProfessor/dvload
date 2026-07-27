@@ -6,12 +6,14 @@ import assert from "node:assert/strict";
 import {
   parseMapping,
   validateMapping,
+  validateColumn,
   mappingWarnings,
   sourceValue,
   MappingParseError,
 } from "./mapping.js";
 import type { Mapping, ColumnMapping } from "./mapping.js";
 import { coerceRow } from "./coerce.js";
+import { writeRowsToBuffer, readTableFromBuffer } from "./xlsx-reader.js";
 import { loadRows } from "./load.js";
 import type { DataverseClient, BatchOperation, BatchResultItem } from "./dataverse.js";
 
@@ -173,4 +175,88 @@ test("validateMapping flags a non-GUID constant on a guid-resolution lookup", ()
   ) as Mapping;
   const errors = validateMapping(m);
   assert.ok(errors.some((e) => e.includes("must be a GUID")));
+});
+
+test("writeRowsToBuffer round-trips through readTableFromBuffer", async () => {
+  // The add-in's failed-rows download must be re-importable, which means the
+  // bytes have to parse back with the same headers and values.
+  const headers = ["Name", "Email", "Age"];
+  const rows = [
+    { Name: "Ada", Email: "ada@example.com", Age: 36 },
+    { Name: "Grace", Email: "grace@example.com", Age: 45 },
+  ];
+  const buf = await writeRowsToBuffer(headers, rows, "FailedRows");
+  const back = await readTableFromBuffer(buf, { tableName: "FailedRows" });
+  assert.deepEqual(back.headers, headers);
+  assert.equal(back.rows.length, 2);
+  assert.equal(back.rows[0].Name, "Ada");
+  assert.equal(back.rows[1].Age, 45);
+});
+
+test("readTableFromBuffer without a table name falls back to the first table", async () => {
+  // A file picked by a user may not have a named table, and they shouldn't
+  // have to know its name if it does.
+  const buf = await writeRowsToBuffer(["A", "B"], [{ A: 1, B: 2 }], "SomeOtherName");
+  const back = await readTableFromBuffer(buf, {});
+  assert.deepEqual(back.headers, ["A", "B"]);
+  assert.equal(back.rows.length, 1);
+  assert.equal(back.rows[0].A, 1);
+});
+
+test("validateColumn reports the same lookup errors validateMapping does", () => {
+  // The add-in renders these per row, so the two must not drift apart.
+  const bad = {
+    constant: "",
+    target: "ownerid",
+    kind: "lookup" as const,
+    bindEntitySet: "systemusers",
+    treatEmptyAsNull: true,
+  };
+  const perColumn = validateColumn(bad);
+  assert.ok(perColumn.some((e) => e.includes("missing lookupResolution")));
+
+  const whole = validateMapping(parseMapping(baseMapping([bad])) as Mapping);
+  for (const e of perColumn) assert.ok(whole.includes(e), `validateMapping lost: ${e}`);
+});
+
+test("validateColumn accepts a text lookup and rejects its options elsewhere", () => {
+  assert.deepEqual(
+    validateColumn({
+      source: "Owner",
+      target: "ownerid",
+      kind: "lookup",
+      bindEntitySet: "systemusers",
+      lookupResolution: "text",
+      keyAttribute: "domainname",
+      createIfMissing: false,
+      duplicateBehavior: "first",
+      treatEmptyAsNull: true,
+    }),
+    []
+  );
+
+  // keyAttribute is mandatory for text/alternateKey…
+  assert.ok(
+    validateColumn({
+      source: "Owner",
+      target: "ownerid",
+      kind: "lookup",
+      bindEntitySet: "systemusers",
+      lookupResolution: "text",
+      treatEmptyAsNull: true,
+    }).some((e) => e.includes("no keyAttribute set"))
+  );
+
+  // …and duplicateBehavior is meaningless outside text resolution.
+  assert.ok(
+    validateColumn({
+      source: "Owner",
+      target: "ownerid",
+      kind: "lookup",
+      bindEntitySet: "systemusers",
+      lookupResolution: "guid",
+      duplicateBehavior: "first",
+      treatEmptyAsNull: true,
+    }).some((e) => e.includes("duplicateBehavior requires lookupResolution=text"))
+  );
 });

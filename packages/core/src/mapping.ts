@@ -388,6 +388,57 @@ export function serializeMapping(m: Mapping): string {
   return JSON.stringify({ ...m, updatedAt: new Date().toISOString() }, null, 2) + "\n";
 }
 
+/**
+ * Structural validation for a single column. Split out of `validateMapping`
+ * so the add-in can show errors against the row that caused them instead of
+ * one concatenated banner. Checks that need the whole mapping (duplicate
+ * targets, upsertKey coverage) stay in `validateMapping`.
+ */
+export function validateColumn(col: ColumnMapping): string[] {
+  const errors: string[] = [];
+
+  if (col.source === undefined && col.constant === undefined) {
+    errors.push(`Column ${col.target}: needs either a source column or a constant value`);
+  }
+  if (
+    col.constant !== undefined &&
+    col.kind === "lookup" &&
+    col.lookupResolution === "guid" &&
+    !GUID_RE.test(String(col.constant))
+  ) {
+    errors.push(`Column ${col.target}: constant must be a GUID when lookupResolution=guid`);
+  }
+
+  if (col.kind === "lookup") {
+    if (!col.bindEntitySet) errors.push(`Lookup column ${col.target} missing bindEntitySet`);
+    if (!col.lookupResolution) errors.push(`Lookup column ${col.target} missing lookupResolution`);
+    if (
+      (col.lookupResolution === "alternateKey" || col.lookupResolution === "text") &&
+      !col.keyAttribute
+    ) {
+      errors.push(
+        `Lookup column ${col.target} uses ${col.lookupResolution} but no keyAttribute set`
+      );
+    }
+  } else {
+    if (col.createIfMissing) {
+      errors.push(`Column ${col.target}: createIfMissing only applies to lookup columns`);
+    }
+    if (col.duplicateBehavior) {
+      errors.push(`Column ${col.target}: duplicateBehavior only applies to lookup columns`);
+    }
+  }
+  if (col.kind === "lookup" && col.lookupResolution !== "text") {
+    if (col.createIfMissing) {
+      errors.push(`Lookup column ${col.target}: createIfMissing requires lookupResolution=text`);
+    }
+    if (col.duplicateBehavior) {
+      errors.push(`Lookup column ${col.target}: duplicateBehavior requires lookupResolution=text`);
+    }
+  }
+  return errors;
+}
+
 /** Cheap structural validation for use in the add-in's UI before save. */
 export function validateMapping(m: Mapping): string[] {
   const errors: string[] = [];
@@ -395,46 +446,7 @@ export function validateMapping(m: Mapping): string[] {
   for (const col of m.columns) {
     if (seen.has(col.target)) errors.push(`Duplicate target attribute: ${col.target}`);
     seen.add(col.target);
-
-    if (col.source === undefined && col.constant === undefined) {
-      errors.push(`Column ${col.target}: needs either a source column or a constant value`);
-    }
-    if (
-      col.constant !== undefined &&
-      col.kind === "lookup" &&
-      col.lookupResolution === "guid" &&
-      !GUID_RE.test(String(col.constant))
-    ) {
-      errors.push(`Column ${col.target}: constant must be a GUID when lookupResolution=guid`);
-    }
-
-    if (col.kind === "lookup") {
-      if (!col.bindEntitySet) errors.push(`Lookup column ${col.target} missing bindEntitySet`);
-      if (!col.lookupResolution) errors.push(`Lookup column ${col.target} missing lookupResolution`);
-      if (
-        (col.lookupResolution === "alternateKey" || col.lookupResolution === "text") &&
-        !col.keyAttribute
-      ) {
-        errors.push(
-          `Lookup column ${col.target} uses ${col.lookupResolution} but no keyAttribute set`
-        );
-      }
-    } else {
-      if (col.createIfMissing) {
-        errors.push(`Column ${col.target}: createIfMissing only applies to lookup columns`);
-      }
-      if (col.duplicateBehavior) {
-        errors.push(`Column ${col.target}: duplicateBehavior only applies to lookup columns`);
-      }
-    }
-    if (col.kind === "lookup" && col.lookupResolution !== "text") {
-      if (col.createIfMissing) {
-        errors.push(`Lookup column ${col.target}: createIfMissing requires lookupResolution=text`);
-      }
-      if (col.duplicateBehavior) {
-        errors.push(`Lookup column ${col.target}: duplicateBehavior requires lookupResolution=text`);
-      }
-    }
+    errors.push(...validateColumn(col));
   }
   if (
     (m.conflictMode === "upsert" || m.conflictMode === "sync") &&

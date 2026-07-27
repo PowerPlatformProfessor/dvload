@@ -13,8 +13,13 @@ import ExcelJS from "exceljs";
 import type { SourceRow } from "./types.js";
 
 export interface ReadTableOptions {
-  /** The table name (Excel "ListObject" name). */
-  tableName: string;
+  /**
+   * The table name (Excel "ListObject" name). Omit to take the first table in
+   * the workbook, falling back to the used range of the first worksheet —
+   * useful when a file is picked by a human who doesn't know or care whether
+   * the sheet has a named table on it.
+   */
+  tableName?: string;
   /** Optional sheet to constrain the search to. */
   sheetName?: string;
 }
@@ -63,7 +68,9 @@ function extractTable(wb: any, opts: ReadTableOptions): ReadTableResult {
   for (const sheet of sheets) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tables = ((sheet as { tables?: Record<string, any> }).tables) ?? {};
-    const tbl = tables[opts.tableName];
+    // No name given: take whatever table this sheet has.
+    const name = opts.tableName ?? Object.keys(tables)[0];
+    const tbl = name === undefined ? undefined : tables[name];
     if (!tbl) continue;
     // ExcelJS wraps the table definition under a `table` property in some versions
     const tblDef = (tbl as { table?: unknown }).table ?? tbl;
@@ -72,11 +79,46 @@ function extractTable(wb: any, opts: ReadTableOptions): ReadTableResult {
     return readByRange(sheet, ref);
   }
 
+  // Still nothing, and the caller didn't insist on a specific table: treat the
+  // first non-empty sheet as a header row plus data.
+  if (opts.tableName === undefined) {
+    for (const sheet of sheets) {
+      const range = usedRange(sheet);
+      if (range) return readByRange(sheet, range);
+    }
+    throw new Error(
+      opts.sheetName
+        ? `Sheet "${opts.sheetName}" is empty.`
+        : "The workbook has no tables and no data to read."
+    );
+  }
+
   throw new Error(
     `Table "${opts.tableName}" not found${
       opts.sheetName ? ` on sheet "${opts.sheetName}"` : ""
     }.`
   );
+}
+
+/** "A1:D57" for a sheet's populated cells, or null when it's empty. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function usedRange(sheet: any): string | null {
+  const rowCount: number = sheet?.actualRowCount ?? sheet?.rowCount ?? 0;
+  const colCount: number = sheet?.actualColumnCount ?? sheet?.columnCount ?? 0;
+  if (!rowCount || !colCount || rowCount < 2) return null;
+  return `A1:${columnLetter(colCount)}${rowCount}`;
+}
+
+/** 1 -> "A", 27 -> "AA". */
+function columnLetter(n: number): string {
+  let out = "";
+  let rest = n;
+  while (rest > 0) {
+    const rem = (rest - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    rest = Math.floor((rest - 1) / 26);
+  }
+  return out;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -106,6 +148,21 @@ function readByRange(sheet: any, ref: string): ReadTableResult {
   return { headers, rows };
 }
 
+/** Build the failed-rows workbook in memory. Shared by both writers. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildRowsWorkbook(headers: string[], rows: SourceRow[], tableName: string): any {
+  const wb = new ExcelJS.Workbook();
+  const sheet = wb.addWorksheet("Failed rows");
+  sheet.addTable({
+    name: tableName,
+    ref: "A1",
+    headerRow: true,
+    columns: headers.map((h) => ({ name: h })),
+    rows: rows.map((r) => headers.map((h) => (r[h] === undefined ? null : r[h]))),
+  });
+  return wb;
+}
+
 /**
  * Write rows to a new .xlsx with a table named `tableName` (default the
  * same shape dvload reads). Used for the failed-rows re-run file.
@@ -116,16 +173,20 @@ export async function writeRowsToFile(
   rows: SourceRow[],
   tableName = "FailedRows"
 ): Promise<void> {
-  const wb = new ExcelJS.Workbook();
-  const sheet = wb.addWorksheet("Failed rows");
-  sheet.addTable({
-    name: tableName,
-    ref: "A1",
-    headerRow: true,
-    columns: headers.map((h) => ({ name: h })),
-    rows: rows.map((r) => headers.map((h) => (r[h] === undefined ? null : r[h]))),
-  });
-  await wb.xlsx.writeFile(path);
+  await buildRowsWorkbook(headers, rows, tableName).xlsx.writeFile(path);
+}
+
+/**
+ * Same workbook as `writeRowsToFile`, returned as bytes instead of written to
+ * disk — the add-in runs in a browser and can only hand the user a Blob.
+ */
+export async function writeRowsToBuffer(
+  headers: string[],
+  rows: SourceRow[],
+  tableName = "FailedRows"
+): Promise<ArrayBuffer> {
+  const buf = await buildRowsWorkbook(headers, rows, tableName).xlsx.writeBuffer();
+  return buf as ArrayBuffer;
 }
 
 /** "A1" -> { col: 1, row: 1 }. */

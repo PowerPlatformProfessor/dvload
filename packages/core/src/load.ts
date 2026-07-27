@@ -526,7 +526,8 @@ async function syncRemoveMissing(
   }
 
   const info = await client.getEntitySetInfo(mapping.targetEntitySet);
-  const select = [info.primaryIdAttribute, ...keyAttrs].join(",");
+  // Deduped: when the upsert key IS the primary id, both lists name it.
+  const select = [...new Set([info.primaryIdAttribute, ...keyAttrs])].join(",");
   // For deactivate, only active records are candidates.
   const filter = action === "deactivate" ? "&$filter=statecode eq 0" : "";
   const targets = await client.queryAll(
@@ -588,7 +589,11 @@ async function syncRemoveMissing(
 function normalizeKeyPart(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "number") return String(v);
-  return String(v).trim();
+  const s = String(v).trim();
+  // GUIDs are case-insensitive, and Dataverse returns them lowercase. Without
+  // this, a spreadsheet holding uppercase ids would look absent from the
+  // source and sync would deactivate/delete every row it was meant to keep.
+  return GUID_RE.test(s) ? s.toLowerCase() : s;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -670,6 +675,13 @@ function buildOperation(
         throw new Error("conflictMode requires upsertKey");
       }
       const keyExpr = buildKeyExpression(mapping.upsertKey, mapping.columns, row);
+      // The record id is already in the URL, and Dataverse rejects a write to
+      // the primary key on an existing row — which would fail every update
+      // while letting creates through. Alternate-key attributes stay in the
+      // body: they're ordinary columns and may legitimately be set on create.
+      if (isPrimaryIdKey(mapping.upsertKey, mapping.columns)) {
+        delete payload[mapping.upsertKey[0]];
+      }
       return {
         op: {
           contentId,
@@ -691,24 +703,60 @@ function buildOperation(
   }
 }
 
+/**
+ * True when the upsert key is the record's own id rather than an alternate
+ * key: a single column carrying a GUID. Dataverse addresses those with the
+ * canonical `accounts(<guid>)` form — the named `accounts(accountid=…)` form
+ * is alternate-key syntax and there is no alternate key on the primary id.
+ */
+export function isPrimaryIdKey(upsertKey: string[], columns: ColumnMapping[]): boolean {
+  if (upsertKey.length !== 1) return false;
+  const col = columns.find((c) => c.target === upsertKey[0]);
+  return col?.kind === "uniqueidentifier";
+}
+
+/**
+ * The key part of the record URL: `<guid>` for a primary-id upsert, or
+ * `attr='value',attr2=…` for an alternate key.
+ */
 export function buildKeyExpression(
   upsertKey: string[],
   columns: ColumnMapping[],
   row: SourceRow
 ): string {
-  const parts = upsertKey.map((attr) => {
+  const readKey = (attr: string): { col: ColumnMapping; value: unknown } => {
     assertLogicalName(attr, "upsertKey attribute");
     const col = columns.find((c) => c.target === attr);
     if (!col) throw new Error(`upsertKey attribute "${attr}" not present in mapping columns`);
-    const v = sourceValue(row, col);
-    if (v === null || v === undefined || v === "") {
+    const value = sourceValue(row, col);
+    if (value === null || value === undefined || value === "") {
       throw new Error(`upsertKey attribute "${attr}" is blank in source row`);
     }
-    // formatKeyLiteral percent-encodes the value so spreadsheet data cannot
-    // inject CRLF/structure into the batch request line.
-    return `${attr}=${formatKeyLiteral(v)}`;
-  });
-  return parts.join(",");
+    return { col, value };
+  };
+
+  // Upsert on the primary key: PATCH accounts(<guid>) creates the record with
+  // that id when it doesn't exist, updates it when it does. The GUID goes in
+  // bare — an Edm.Guid key rejects a quoted string literal.
+  if (isPrimaryIdKey(upsertKey, columns)) {
+    const { value } = readKey(upsertKey[0]);
+    const guid = String(value).trim().toLowerCase();
+    if (!GUID_RE.test(guid)) {
+      throw new Error(
+        `upsertKey attribute "${upsertKey[0]}" must be a GUID when upserting on the record id, got "${String(value)}"`
+      );
+    }
+    return guid;
+  }
+
+  return upsertKey
+    .map((attr) => {
+      const { value } = readKey(attr);
+      // formatKeyLiteral percent-encodes the value so spreadsheet data cannot
+      // inject CRLF/structure into the batch request line.
+      return `${attr}=${formatKeyLiteral(value)}`;
+    })
+    .join(",");
 }
 
 function clampOffset(offset: number, total: number, batchSize: number): number {

@@ -60,6 +60,50 @@ export async function readTable(name: string): Promise<{ headers: string[]; rows
 }
 
 /**
+ * The whole workbook as .xlsx bytes. Office.js only hands the file over in
+ * slices, so they're fetched in order and concatenated. Used to pull the
+ * embedded Power Query (DataMashup) out for .pqt export.
+ */
+export async function getWorkbookBytes(): Promise<Uint8Array> {
+  const file = await new Promise<Office.File>((resolve, reject) => {
+    Office.context.document.getFileAsync(
+      Office.FileType.Compressed,
+      { sliceSize: 4 * 1024 * 1024 },
+      (result) => {
+        if (result.status === Office.AsyncResultStatus.Succeeded) resolve(result.value);
+        else reject(new Error(result.error?.message ?? "Could not read the workbook."));
+      }
+    );
+  });
+
+  try {
+    const chunks: Uint8Array[] = [];
+    for (let i = 0; i < file.sliceCount; i++) {
+      const slice = await new Promise<Office.Slice>((resolve, reject) => {
+        file.getSliceAsync(i, (result) => {
+          if (result.status === Office.AsyncResultStatus.Succeeded) resolve(result.value);
+          else reject(new Error(result.error?.message ?? `Could not read slice ${i}.`));
+        });
+      });
+      // Office hands back a number[] in the browser and a byte array in
+      // desktop hosts; Uint8Array.from copes with both.
+      chunks.push(Uint8Array.from(slice.data as unknown as ArrayLike<number>));
+    }
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.length;
+    }
+    return out;
+  } finally {
+    // Office keeps the snapshot alive until it's closed.
+    file.closeAsync(() => {});
+  }
+}
+
+/**
  * Excel returns dates as serial numbers (days since 1899-12-30). We detect
  * those via valueTypes and convert to a JS Date so coerce.ts sees the right
  * shape.

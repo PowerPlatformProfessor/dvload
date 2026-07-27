@@ -20,10 +20,35 @@
     button.icon { width: auto; padding: 4px 8px; }
     .row { display: flex; gap: 6px; align-items: center; }
     .mapping-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; padding: 2px 0; }
-    .plan-row { display: grid; grid-template-columns: 1fr 1fr 1fr 80px 1fr 1fr 70px auto; gap: 4px; padding: 2px 0; }
+    .plan-row { display: grid; grid-template-columns: 1fr 1fr 1fr 80px 1fr 1fr 1fr 70px auto; gap: 4px; padding: 2px 0; }
+    .plan-row select, .plan-row input { padding: 2px 4px; }
     .mapping-row select, .mapping-row input { padding: 2px 4px; }
-    .lookup-cfg { display: flex; gap: 4px; padding: 0 0 4px 12px; }
-    .lookup-cfg > * { flex: 1; min-width: 0; }
+    /* Lookup sub-row: a labelled grid, configured top-to-bottom in the order
+       the engine needs it (entity set → resolution → key field → extras). */
+    .lookup-cfg {
+      display: grid; grid-template-columns: 74px 1fr; gap: 4px 6px;
+      padding: 4px 0 6px 10px; margin: 0 0 2px 2px; border-left: 2px solid #edebe9;
+      align-items: center;
+    }
+    .lookup-cfg select, .lookup-cfg input { padding: 2px 4px; min-width: 0; }
+    .lookup-cfg .lbl { font-size: 11px; color: #605e5c; white-space: nowrap; }
+    .lookup-cfg .check { display: flex; align-items: center; gap: 6px; }
+    .lookup-cfg .check input { width: auto; }
+    .lookup-cfg .hint { grid-column: 1 / span 2; font-size: 11px; color: #605e5c; }
+    .row-error {
+      font-size: 11px; color: #a4262c; padding: 0 0 4px 12px;
+      grid-column: 1 / span 2;
+    }
+    .const-chip {
+      display: flex; align-items: center; gap: 4px; width: 100%;
+      background: #f3f9f1; border: 1px solid #8a8886; padding: 1px 2px 1px 5px;
+      box-sizing: border-box; min-width: 0;
+    }
+    .const-chip .txt {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; font-size: 12px;
+    }
+    .const-chip button { width: auto; padding: 0 4px; line-height: 1.2; }
     .opts-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; }
     .opts-grid label { margin: 0; font-weight: 500; font-size: 12px; }
     .opts-grid .check { display: flex; align-items: center; gap: 6px; grid-column: 1 / span 2; }
@@ -69,7 +94,16 @@
   <div style="font-size:11px; color:#605e5c; margin-bottom:4px;">
     Steps with the same stage run in parallel. Use dependsOn for explicit ordering.
   </div>
+  <div class="row" style="margin-bottom:4px;">
+    <input id="planName" placeholder="Plan name" style="flex:1" title="Saved as the plan's name" />
+    <label class="check" style="font-weight:400; font-size:11px; white-space:nowrap; margin:0;">
+      <input id="planStopOnError" type="checkbox" checked style="width:auto;" />
+      Stop on error
+    </label>
+  </div>
+  <input id="planDescription" placeholder="Description (optional)" style="margin-bottom:4px;" />
   <div id="planSteps"></div>
+  <div id="planErrors" class="row-error" style="display:none; padding-left:0;"></div>
   <div class="row" style="margin-top:6px;">
     <button id="planAddStep" class="secondary" type="button">Add step</button>
     <button id="planFromCurrent" class="secondary" type="button">Add current mapping as step</button>
@@ -81,6 +115,15 @@
 
   <label for="table">Source table</label>
   <select id="table"><option value="">Loading…</option></select>
+  <div class="row" style="margin-top:4px;">
+    <button id="pickFile" class="secondary" type="button" style="font-size:11px; width:auto;"
+      title="Read rows from another .xlsx workbook or a .csv/.tsv file instead of a table in this workbook">
+      Use a file instead…
+    </button>
+    <span id="fileSourceInfo" style="font-size:11px; color:#605e5c; flex:1;"></span>
+    <button id="clearFileSource" class="secondary icon" type="button"
+      style="display:none; font-size:11px;" title="Go back to reading a table in this workbook">✕</button>
+  </div>
 
   <label for="solution">Solution</label>
   <select id="solution" disabled><option value="">All entities (Default solution)</option></select>
@@ -136,8 +179,10 @@
       <option value="sync">Sync (upsert + remove missing)</option>
     </select>
 
-    <label for="upsertKey" id="upsertKeyLabel" style="display:none">Upsert key attribute(s)</label>
-    <input id="upsertKey" placeholder="e.g. emailaddress1 (comma-separate for compound keys)" style="display:none" />
+    <label for="upsertKey" id="upsertKeyLabel" style="display:none">Match existing rows on</label>
+    <input id="upsertKey" style="display:none"
+      placeholder="e.g. emailaddress1, or accountid to match on the record's own id"
+      title="A Dataverse alternate key (comma-separate the parts of a compound key), or a single uniqueidentifier column holding the record id — dvload then creates the row with that id if it doesn't exist." />
 
     <label for="syncAction" id="syncActionLabel" style="display:none">Missing records</label>
     <select id="syncAction" style="display:none">
@@ -159,7 +204,37 @@
       <input id="skipUnchanged" type="checkbox" />
       <label for="skipUnchanged">Skip unchanged rows (upsert/sync; one extra read per row)</label>
     </div>
+    <div class="check">
+      <input id="dryRun" type="checkbox" />
+      <label for="dryRun">Dry run — coerce and plan everything, but don't write to Dataverse</label>
+    </div>
   </div>
+
+  <details id="advancedOptions" style="margin-top:8px;">
+    <summary style="font-size:12px; font-weight:600; cursor:pointer;">Advanced</summary>
+    <div class="opts-grid" style="margin-top:6px;">
+      <label for="mappingName">Mapping name</label>
+      <input id="mappingName" placeholder="Defaults to the source table name" />
+
+      <label for="mappingDescription">Description</label>
+      <input id="mappingDescription" placeholder="Optional note saved in the mapping" />
+
+      <label for="maxErrors" title="Stop the run after this many row errors. 0 = never stop early.">Stop after N errors</label>
+      <input id="maxErrors" type="number" min="0" value="0" />
+
+      <label for="notifyUrl" title="A {text: summary} JSON POST after the run — Teams and Slack incoming webhooks accept this shape.">Notify webhook</label>
+      <input id="notifyUrl" placeholder="https://… (Teams/Slack incoming webhook)" />
+
+      <label for="impersonateUser" title="Records are created as this user (MSCRMCallerID). Needs prvActOnBehalfOfAnotherUser.">Run as user</label>
+      <span style="position:relative; display:inline-block; width:100%;">
+        <input id="impersonateUser" placeholder="(optional) type to search users, or paste a user GUID"
+               autocomplete="off" spellcheck="false" />
+        <div id="impersonateUserList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;
+             max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;
+             box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
+      </span>
+    </div>
+  </details>
 
   <hr />
 
@@ -168,16 +243,28 @@
     <button id="save" class="secondary" type="button">Save mapping…</button>
     <button id="load" class="secondary" type="button">Load mapping…</button>
     <button id="importPqt" class="secondary" type="button" title="Import queries + field mappings from a Dataverse Dataflow / Power Query Online .pqt export">Import .pqt…</button>
+    <button id="extractPqt" class="secondary" type="button"
+      title="Package this workbook's Power Query queries — plus the current column mapping — as a .pqt you can import as a Dataverse Dataflow">Export workbook as .pqt…</button>
     <button id="run" type="button" style="margin-left: auto;">Run import</button>
     <button id="cancelRun" type="button" style="margin-left: auto; display:none; background:#a4262c; color:#fff;">
       Cancel import
     </button>
   </div>
+  <div id="resumeRow" class="row" style="margin-top:6px; display:none;">
+    <span id="resumeText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+    <button id="resumeRun" class="secondary" type="button" style="width:auto; font-size:11px;">Resume</button>
+    <button id="discardResume" class="secondary icon" type="button" style="font-size:11px;"
+            title="Forget the checkpoint and start from the first row next time">✕</button>
+  </div>
   <div id="pqtRow" class="row" style="margin-top:6px; display:none;">
     <select id="pqtQuery" style="flex:1"></select>
     <button id="pqtUse" type="button" style="width:auto;">Use mapping</button>
+    <button id="pqtUseAll" class="secondary" type="button" style="width:auto;"
+            title="Download a .dvmap.json for every query in this .pqt and add each as a run-plan step">Use all</button>
     <button id="pqtCopyM" class="secondary" type="button" style="width:auto;"
             title="Copy the M code to paste into Excel: Data → Get Data → Blank Query → Advanced Editor">Copy M</button>
+    <button id="pqtExport" class="secondary" type="button" style="width:auto;"
+            title="Write the current column mapping into the .pqt's FieldsMetadata and download it for import as a Dataverse Dataflow">Export .pqt</button>
   </div>
 
   <label id="telemetryRow" style="display:none; font-size:11px; color:#605e5c; margin-top:6px;">
@@ -197,6 +284,10 @@
   </div>
   <div id="logWrap" style="display:none; margin-top:6px;">
     <button id="downloadLog" class="secondary" type="button">Download log…</button>
+    <button id="downloadFailed" class="secondary" type="button" style="display:none; margin-top:4px;"
+            title="The source rows that failed, as a workbook you can fix and re-import">
+      Download failed rows…
+    </button>
     <div id="errorDetails" style="display:none; margin-top:4px; max-height:140px; overflow-y:auto;
          font-size:11px; font-family:monospace; white-space:pre-wrap;
          background:#fde7e9; color:#5c0011; padding:6px; border-radius:4px;"></div>

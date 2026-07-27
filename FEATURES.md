@@ -43,20 +43,27 @@
 ### Excel add-in (task pane)
 
 - MSAL popup sign-in (delegated flow)
-- Lists Excel tables in the open workbook
+- Lists Excel tables in the open workbook, or reads a picked `.xlsx`/`.csv`/`.tsv` file instead
 - Fetches Dataverse entities and their attributes from the live environment
 - Solution picker: defaults to all entities (Default solution); selecting a solution filters the target-entity list to that solution's tables (via `solutioncomponents`, componenttype 1)
 - **Create new table from source** ("＋ Create new table from source…" in the entity picker): infers column types from sample rows (string/memo/integer/decimal/boolean/datetime/dateonly), lets you rename columns, pick the primary name column and an alternate key, then one button creates the table + columns + key via the metadata API and immediately runs the import against it ("Create table and run import")
 - Column mapping UI (source column → target attribute + field kind)
 - Type-ahead comboboxes on the solution, entity, target-attribute, and lookup entity-set pickers (type first letters to filter)
-- Fixed-value rows ("Add fixed value"): set a field to a constant on every record; lookup targets (e.g. owner) get a live record search against the bound entity set (users/teams), storing the picked record's GUID
+- Fixed-value rows ("Add fixed value"): set a field to a constant on every record; lookup targets (e.g. owner) get a live record search against the bound entity set (users/teams), storing the picked record's GUID as a chip you can clear. Alternate-key and text resolutions take a plain key value instead, and the field is disabled until the bound entity set is chosen
+- Guided lookup config sub-row: labelled **Binds to → Match by → Key field**, in fill-in order. "Match by" offers GUID / alternate key / text match; the key field is a picker populated from the bound entity's metadata (only single-attribute alternate keys for alt-key mode, text attributes for text mode) rather than a typed logical name. Text mode also exposes `createIfMissing` and `duplicateBehavior`
+- Inline per-column validation (`validateColumn`) under each mapping row, so a half-configured lookup shows its error while you build it; "Save mapping…" warns before writing a mapping `dvload run` would reject
 - Auto-suggest column mappings based on column name similarity
-- Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows
+- Import options UI: conflict mode (insert/upsert/skip-if-exists/sync), upsert key, sync action, batch size, parallel batches, bypass plugins/flows, skip unchanged rows, **dry run**
+- **Advanced options**: mapping name and description, `maxErrors` (stop after N row errors), `notifyUrl` (Teams/Slack webhook posted after the run), and **Run as user** — a systemuser search that sets `impersonateUserId` / `MSCRMCallerID`
+- **Date format override** on datetime/dateonly columns, so ambiguous text dates (`03/04/2025`) can be pinned to `dd/MM/yyyy` rather than guessed
 - Option-set labels fetched from metadata: picking a choice/multichoice/status/state target auto-fills `optionMap`, so spreadsheet cells can contain labels instead of integers
-- Import .pqt: read a Dataverse Dataflow / PQ Online export in the task pane, list its queries with field-mapping counts, populate the mapping grid from any query, and copy the M code for pasting into Excel's Advanced Editor
-- Run-plan editor: load/save/edit `.dvplan.json`, define step `stage` / `dependsOn`, and record alternate-key links (`fromStep` + lookup target + key attribute) for cross-step dependencies
+- **File source** ("Use a file instead…"): read rows from another `.xlsx`/`.xlsm` or a `.csv`/`.tsv` rather than a table in the open workbook. A picked workbook without a named table falls back to the first sheet's used range
+- .pqt round-trip: read a Dataverse Dataflow / PQ Online export, list its queries with field-mapping counts, populate the grid from one query or **download a mapping for every query** (adding a run-plan step each), copy the M code, and **export a .pqt** with the current mapping written into its `FieldsMetadata`
+- Run-plan editor: load/save/edit `.dvplan.json` including plan name, description and `stopOnError`; per-step `stage` / `dependsOn` / `overrides` (`maxErrors=N`, `concurrency=N`, `notifyUrl=…`, `dryRun`, `user`, `noFailedRows`); alternate-key links (`fromStep` + lookup target + key attribute) for cross-step dependencies; and inline `validateRunPlan` errors before save
 - Cancel button during runs (confirm dialog; in-flight batches finish, summary shows how far it got) and a close-pane warning while an import is running
-- Persists the last mapping per workbook in Office Settings store
+- **Resume after cancel**: a cancelled run leaves a checkpoint in the workbook's settings, and the pane offers to restart at the row it stopped on (guarded against the source changing underneath)
+- **Failed-rows download**: the rows that errored, as an `.xlsx` you can fix and re-import — the pane equivalent of the CLI's `failed_*.xlsx`
+- Persists the last mapping per workbook in Office Settings store; fields the pane has no control for (`createdAt`, `logDir`) survive a load → save round-trip instead of being silently dropped
 - Saved environment profiles in `localStorage`
 - Dev-mode banner — warns when using the fallback Microsoft PowerApps client ID
 

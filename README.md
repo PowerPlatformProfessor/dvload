@@ -445,7 +445,7 @@ fields:
 | `targetEntitySet` | Plural set name, e.g. `contacts`, `accounts`. |
 | `sourceTable` | Excel table name (the kind PQ writes to). |
 | `conflictMode` | `insert`, `upsert`, or `skip-if-exists`. |
-| `upsertKey` | Required for upsert. List of attributes that form a Dataverse alternate key. |
+| `upsertKey` | Required for upsert. Either the attributes forming a Dataverse alternate key, or a single `uniqueidentifier` column holding the record's own id (see [Upserting on the record id](#upserting-on-the-record-id)). |
 | `batchSize` | Rows per `$batch` changeset (Dataverse caps at 1000). |
 | `columns[].kind` | `string`, `integer`, `boolean`, `datetime`, `dateonly`, `lookup`, `choice`, etc. |
 | `columns[].bindEntitySet` | For `lookup`: the entity set to bind to. |
@@ -460,6 +460,41 @@ fields:
 | `bypassCustomLogic` | Send bypass headers so plugins and Power Automate flows don't fire. |
 | `impersonateUserId` | systemuser GUID to impersonate (`MSCRMCallerID`). |
 | `notifyUrl` | Webhook that receives a `{text}` summary after each run. |
+
+### Upserting on the record id
+
+`upsertKey` normally names a Dataverse **alternate key** — the usual integration
+case, where the source system has no idea what a Dataverse GUID is. But if your
+source already holds the record ids (a re-import, a migration between
+environments, or ids you minted yourself), you can upsert on the primary key
+instead: map it as `uniqueidentifier` and name it as the only `upsertKey`.
+
+```json
+{
+  "conflictMode": "upsert",
+  "upsertKey": ["accountid"],
+  "columns": [
+    { "source": "accountid", "target": "accountid", "kind": "uniqueidentifier", "treatEmptyAsNull": true },
+    { "source": "Name", "target": "name", "kind": "string", "treatEmptyAsNull": true }
+  ]
+}
+```
+
+dvload addresses these rows as `accounts(<guid>)` rather than the
+`accounts(accountid='<guid>')` alternate-key form, which is what Dataverse
+expects for a primary key — the record is created with that id if it doesn't
+exist and updated if it does. No alternate key needs to exist on the table.
+
+Two things to know:
+
+- The id column is dropped from the request body (it's already in the URL).
+  Dataverse rejects writes to the primary key on an existing row, so leaving it
+  in would fail every update while letting creates through.
+- Values must be real GUIDs. A blank or malformed id fails that row rather than
+  silently creating a record with a server-generated id.
+
+Compound keys and non-GUID keys are unaffected and still use the alternate-key
+form.
 
 ## Run plan JSON shape (`.dvplan.json`)
 
