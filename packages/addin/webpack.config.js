@@ -4,35 +4,22 @@ const HtmlWebpackPlugin = require("html-webpack-plugin");
 const CopyWebpackPlugin = require("copy-webpack-plugin");
 const devCerts = require("office-addin-dev-certs");
 
-// Keep in sync with WELL_KNOWN_DEV_CLIENT_IDS in src/auth.ts.
-// Note: unlike the CLI, the add-in cannot actually authenticate with these
-// — a browser flow needs a `spa` redirect URI on the app registration for
-// both the redirect and the token endpoint's CORS header, and you can't
-// add one to a Microsoft-owned app. They're listed to catch a misconfigured
-// build, not as a usable fallback.
-const WELL_KNOWN_DEV_CLIENT_IDS = [
-  "2ad88395-b77d-4561-9441-d0e40824f9bc", // Microsoft PowerApps
-  "51f81489-12ee-4a9e-aaae-a2591f45987d", // Microsoft Dynamics CRM (XRM Tooling)
-];
-
+// There is no client id in this build any more.
+//
+// The bundle used to bake one in for @azure/msal-browser, along with a guard
+// that failed the production build if it was a borrowed Microsoft app id.
+// Both are gone: the UI no longer authenticates. It asks the local sidecar
+// (`dvload serve`) for tokens over a same-origin fetch, and the sidecar uses
+// the CLI's auth stack — which *can* borrow Microsoft's pre-consented
+// Dataverse client, because a native client redirects to http://localhost
+// and never meets CORS. See packages/addin/src/auth.ts.
+//
+// Consequence for packaging: this output is served from loopback by the
+// CLI, not from a public origin, so there is nothing host-specific to
+// configure at build time.
 module.exports = async (env, argv) => {
   const isProd = argv.mode === "production";
   const httpsOptions = isProd ? undefined : await devCerts.getHttpsServerOptions();
-
-  const clientId = process.env.DATAVERSE_LOAD_CLIENT_ID || "e6828b0f-9fde-43f8-85d0-602660d498bb";
-
-  // A production bundle must never ship with a borrowed Microsoft client id
-  // (the consent screen would show "Microsoft PowerApps", and it's against
-  // Microsoft's terms). Fail the build rather than relying on the runtime
-  // banner. DVLOAD_ALLOW_DEV_CLIENT=1 is an explicit local escape hatch.
-  if (isProd && WELL_KNOWN_DEV_CLIENT_IDS.includes(clientId) && process.env.DVLOAD_ALLOW_DEV_CLIENT !== "1") {
-    throw new Error(
-      "Refusing production build: DATAVERSE_LOAD_CLIENT_ID is unset or points at a " +
-        "well-known Microsoft client id. Register your own Entra ID app " +
-        "(see PRE-RELEASE-CHECKLIST.md) and set DATAVERSE_LOAD_CLIENT_ID, or set " +
-        "DVLOAD_ALLOW_DEV_CLIENT=1 to build a local dev bundle anyway."
-    );
-  }
 
   return {
     devtool: isProd ? false : "source-map",
@@ -76,10 +63,6 @@ module.exports = async (env, argv) => {
         chunks: ["commands"],
       }),
       new webpack.DefinePlugin({
-        // Defaults to the registered "dataverse-load" multi-tenant app.
-        // Override with DATAVERSE_LOAD_CLIENT_ID at build time to ship
-        // against a different registration.
-        ADDIN_CLIENT_ID: JSON.stringify(clientId),
         // Application Insights connection string; empty = telemetry fully off.
         ADDIN_AI_CONNECTION: JSON.stringify(process.env.DVLOAD_AI_CONNECTION_STRING || ""),
       }),
@@ -90,6 +73,10 @@ module.exports = async (env, argv) => {
         ],
       }),
     ],
+    // Kept for UI-only work (HMR while restyling). Note that sign-in and
+    // anything touching Dataverse will NOT work here: /api/* is served by
+    // `dvload serve`, not by this dev server. For a working end-to-end loop
+    // run `webpack --watch` and point `dvload serve` at dist/ instead.
     devServer: {
       static: { directory: path.resolve(__dirname, "dist") },
       server: { type: "https", options: httpsOptions },

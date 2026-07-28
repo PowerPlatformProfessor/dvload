@@ -7,13 +7,13 @@
     "build": "webpack --mode production",
     "clean": "rimraf dist",
     "dev": "webpack serve --mode development",
+    "watch": "webpack --mode development --watch",
     "start": "office-addin-debugging start manifest.xml",
     "stop": "office-addin-debugging stop manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
     "test": "node --test --import tsx \"src/**/*.test.ts\""
   },
   "dependencies": {
-    "@azure/msal-browser": "^3.7.0",
     "@dvload/core": "0.1.0"
   },
   "devDependencies": {

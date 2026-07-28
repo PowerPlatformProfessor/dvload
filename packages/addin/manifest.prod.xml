@@ -1,8 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  PRODUCTION manifest — points at the GitHub Pages deployment.
-  Sideload this one (or upload it to M365 Centralized Deployment / AppSource).
-  manifest.xml stays localhost-only for local dev.
+  PRODUCTION manifest.
+
+  The pane is served by `dvload serve` on loopback, not from a public origin,
+  so SourceLocation points at localhost — same as manifest.xml. That is the
+  point of the design: the UI and its tokens both come from a process running
+  as the signed-in user, which is what removes the Entra admin-consent
+  requirement. See docs/AUTH-NOTES.md.
+
+  What still differs from manifest.xml is identity and chrome: a stable Id,
+  real support/icon URLs. Sideload this one; manifest.xml carries a
+  placeholder GUID and is for local iteration.
+
+  The port must match `dvload serve` (default 44321). If you change one,
+  change the other.
 -->
 <OfficeApp
   xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
@@ -21,16 +32,19 @@
   <IconUrl DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-32.png"/>
   <HighResolutionIconUrl DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-80.png"/>
 
-  <AppDomains>
-    <AppDomain>https://login.microsoftonline.com</AppDomain>
-  </AppDomains>
+  <!--
+    No AppDomains entry: the pane never navigates off its own origin. The
+    login.microsoftonline.com entry that used to live here existed for the
+    MSAL.js popup, which no longer happens — sign-in opens a browser from the
+    sidecar process instead.
+  -->
 
   <Hosts>
     <Host Name="Workbook"/>
   </Hosts>
 
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://powerplatformprofessor.github.io/dvload/taskpane.html"/>
+    <SourceLocation DefaultValue="https://localhost:44321/taskpane.html"/>
   </DefaultSettings>
 
   <Permissions>ReadWriteDocument</Permissions>
@@ -83,7 +97,7 @@
       </bt:Images>
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/PowerPlatformProfessor/dvload#readme"/>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://powerplatformprofessor.github.io/dvload/taskpane.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:44321/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GetStarted.Title" DefaultValue="Dataverse Load"/>

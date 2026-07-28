@@ -22,7 +22,8 @@
     "dvload": "build/dvload.cjs"
   },
   "files": [
-    "build/dvload.cjs"
+    "build/dvload.cjs",
+    "build/web"
   ],
   "main": "dist/index.js",
   "engines": {

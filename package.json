@@ -11,6 +11,9 @@
     "clean": "npm run clean --workspaces --if-present",
     "dev:cli": "npm run dev --workspace=dvload",
     "dev:addin": "npm run dev --workspace=@dvload/addin",
+    "watch:addin": "npm run watch --workspace=@dvload/addin",
+    "serve": "npm run dev --workspace=dvload -- serve",
+    "gui": "npm run dev --workspace=dvload -- gui",
     "lint": "eslint \"packages/*/src/**/*.ts\"",
     "test": "npm run test --workspaces --if-present"
   },

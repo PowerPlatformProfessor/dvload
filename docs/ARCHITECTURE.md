@@ -38,13 +38,35 @@ upsert/sync/lookup-resolution serve both a task pane and a scheduled task.
 
 ```
 packages/core     @dvload/core   — mapping schema, coercion, OData client, load engine, .pqt codec
-packages/cli      dvload         — argv → filesystem → core → stdout; auth, scheduling, PQ refresh
-packages/addin    @dvload/addin  — Office.js task pane; MSAL popup auth; DOM UI over core
+packages/cli      dvload         — argv → filesystem → core → stdout; auth, scheduling, PQ refresh, `serve`
+packages/addin    @dvload/addin  — the web UI: DOM over core, host-adapted for Excel or a browser
 ```
 
 Dependency direction is strictly `cli → core` and `addin → core`. There is
 no `core → cli` or `addin ↔ cli` edge, and nothing in `core` may import a
 Node built-in at module scope.
+
+`addin → cli` is *not* an exception to that. The UI never imports CLI code;
+it talks to `dvload serve` over HTTP, which is a runtime dependency between
+processes, not a build-time one between packages. The CLI does have a
+packaging dependency on the add-in — `npm run bundle` copies
+`packages/addin/dist` into `build/web` — but that is a file copy, not an
+import, and it is one-directional.
+
+### Why the UI has no auth of its own
+
+A WebView cannot acquire a Dataverse token without its own Entra app
+registration: a browser auth-code flow needs an `spa` redirect URI (for the
+redirect *and* for the token endpoint's `Access-Control-Allow-Origin`) and
+you cannot add one to Microsoft's pre-consented Dataverse client. A Node
+process has neither problem — it redirects to `http://localhost` and never
+meets CORS.
+
+So the UI does not authenticate. `dvload serve` serves the UI bundle on
+loopback and exposes `POST /api/token`; the pane fetches it same-origin.
+One auth implementation, no app registration for the UI, no admin consent,
+and no public host for the pane. Full reasoning in
+[AUTH-NOTES.md](./AUTH-NOTES.md).
 
 **The hard rule in `core`:** it must load in a browser. Node-only APIs are
 either avoided or reached through a dynamic `await import()` inside the
@@ -78,8 +100,8 @@ rather than using a schema library — see [Coercion layer](#coercion-layer).
 
 ```
                  ┌──────────────────────────────┐
-   Excel table   │  add-in task pane            │  builds + saves
-   or .xlsx      │  (Office.js, MSAL popup)      │──────────────┐
+   Excel table   │  web UI: Excel pane or        │  builds + saves
+   or .xlsx      │  browser (tokens ← serve)     │──────────────┐
    or .csv/.tsv  └──────────────────────────────┘              │
         │                                                       ▼
         │                                              ┌──────────────────┐
@@ -549,8 +571,9 @@ PowerShell because there is no clean COM or DPAPI story from Node:
 |---|---|
 | `taskpane/taskpane.ts` | The pane. Single `AppState` object, imperative re-render functions. |
 | `taskpane/taskpane.html` | Static markup; every control has a stable `id` that `el<T>(id)` looks up. |
-| `auth.ts` | MSAL.js popup flow, dev-client detection. |
-| `excel.ts` | Office.js table listing and reading. |
+| `auth.ts` | Token client for the sidecar. No MSAL, no Entra traffic; caches tokens and de-dupes concurrent misses. |
+| `host.ts` | The Office-vs-browser split: settings store, workbook source, external links, bootstrap. The only module that knows which host it's in. |
+| `excel.ts` | Office.js table listing and reading. Reached through `host.ts`, never directly. |
 | `suggest.ts` | Column-name similarity → suggested mappings. The one unit-tested module here. |
 | `combobox.ts` | Type-ahead wrapper (`enhanceSelect`) over a plain `<select>`. |
 | `telemetry.ts` | Opt-in event reporting. |
@@ -576,12 +599,14 @@ Three metadata caches keyed by name — `lookupTargetsCache`,
 `optionLabelsCache`, `solutionEntityIdsCache` — sit next to `state` and are
 not cleared on entity change, only on reload.
 
-Persistence, all documented in
-[DATA-FORMATS.md § Add-in state](./DATA-FORMATS.md#add-in-persisted-state):
-`Office.context.document.settings` (per workbook) holds
-`dvload:lastMapping`, `dvload:lastRunPlan`, `dvload:runCheckpoint`;
-`localStorage` (per user/host) holds `dvload:profiles` and MSAL's token
-cache.
+Persistence goes through `host().settings`, documented in
+[DATA-FORMATS.md § Add-in state](./DATA-FORMATS.md#add-in-persisted-state).
+In Excel that's `Office.context.document.settings`, so `dvload:lastMapping`,
+`dvload:lastRunPlan` and `dvload:runCheckpoint` travel *with the workbook*;
+in the browser there is no workbook, so it's `localStorage` under a
+`dvload:settings:` prefix. `localStorage` also holds `dvload:profiles` in
+both hosts. Refresh tokens live in the sidecar's own store, never in the
+browser.
 
 Only writable attributes are offered as targets: `IsValidForCreate ||
 IsValidForUpdate`, which filters out `fullname`, `contact.accountid`, and
@@ -591,23 +616,28 @@ friends that would fail at run time.
 
 Webpack, not `tsc`, because the output is a browser bundle:
 
-- Client id is injected at build time via `DefinePlugin` as
-  `ADDIN_CLIENT_ID`, from `DATAVERSE_LOAD_CLIENT_ID`. Production builds
-  refuse the borrowed dev client id.
-- HTTPS on :3000 via `office-addin-dev-certs`, configured in
-  `webpack.config.js` (not a `--https` CLI flag).
+- **No client id is injected.** There used to be an `ADDIN_CLIENT_ID`
+  `DefinePlugin` entry and a guard that failed production builds using a
+  borrowed Microsoft id; both went away with browser-side auth. The bundle
+  is now host-agnostic — nothing in it names an environment, an app or an
+  origin — which is why the same output serves Excel and the browser.
+- Output is consumed by `dvload serve`, not deployed. `npm run bundle` in
+  the CLI copies `dist/` to `build/web` and warns loudly if it's missing,
+  because a release that shipped without it would strand every UI user.
+- The webpack dev server (:3000, `office-addin-dev-certs`) is for styling
+  work only; it serves no `/api`, so auth fails there by construction.
 - `resolve.extensionAlias { ".js": [".ts", ".js"] }` so `core`'s
   ESM-style `./foo.js` imports resolve to TypeScript sources.
 - `*.test.ts` excluded in `packages/addin/tsconfig.json` or webpack pulls
   test files into the bundle.
-- `lib` includes `DOM.Iterable`; the browser tsconfig has no Node types,
-  which is why the client id can't come from `process.env` at runtime.
-- `window.fetch = window.fetch.bind(window)` before MSAL init, or MSAL
-  throws "Illegal invocation" inside the Office WebView.
+- `lib` includes `DOM.Iterable`; the browser tsconfig has no Node types.
+- `window.fetch = window.fetch.bind(window)` in `initAuth`, or the Office
+  WebView throws "Illegal invocation" on a bare `fetch(...)`. Originally a
+  MSAL workaround; still needed, because the sidecar client is all fetch.
 
 ## Auth
 
-Two independent implementations by necessity — see
+One implementation, reached two ways — see
 [docs/AUTH-NOTES.md](./AUTH-NOTES.md) for the empirical findings behind the
 CLI's design, including what was actually tested versus assumed.
 
@@ -637,15 +667,30 @@ inspects SSH/display-server env), overridable via flags or
 
 Scope is always `<environment origin>/.default`.
 
-**Add-in** (`packages/addin/src/auth.ts`, msal-browser). MSAL popup only,
-against a real app registration. It *cannot* borrow the shared Microsoft
-client, and this is not a library choice: a browser auth-code flow needs a
-registered redirect URI, Entra only returns
-`Access-Control-Allow-Origin` from the token endpoint when the caller's
-origin matches an `spa`-type redirect URI, you cannot add a redirect URI to
-a Microsoft-owned app, and Entra rejects `spa` URIs in non-SPA flows.
-`redirectUri` is computed as `origin + pathname` so the same bundle works at
-`localhost:3000/taskpane.html` and under a hosted subpath.
+**UI** (`packages/addin/src/auth.ts`). No MSAL and no Entra traffic: it
+POSTs to the sidecar's `/api/token` on its own origin and caches the result
+until five minutes before the JWT's `exp`, de-duplicating concurrent misses
+so the pane's first render doesn't fire several token requests at once.
+
+This is what lets the UI use the shared Microsoft client. Doing it in the
+browser is impossible — a browser auth-code flow needs a registered redirect
+URI, Entra only returns `Access-Control-Allow-Origin` from the token
+endpoint when the caller's origin matches an `spa`-type redirect URI, you
+cannot add a redirect URI to a Microsoft-owned app, and Entra rejects `spa`
+URIs in non-SPA flows. Moving the request into Node dissolves all four.
+
+**Sidecar** (`packages/cli/src/commands/serve.ts`). Serves the UI bundle and
+brokers tokens through `getTokenProvider`, i.e. the same code path as
+`dvload run` — but pinned to `forceUser: true`, and not overridable from the
+request. `getTokenProvider` prefers app-only whenever credentials are stored,
+which is right for the unattended path and wrong for a task pane: an
+interactive click must write as the person who made it. Since `dvload
+schedule` recommends `app-login`, the unpinned version would have meant
+setting up a nightly job silently changed who the UI writes as. It holds access tokens on a predictable loopback port, so its
+request guard is load-bearing: bind `127.0.0.1`, allowlist the `Host` header
+(DNS rebinding defeats origin checks), require POST plus a custom header on
+API routes (forcing a preflight), and never send CORS headers. Covered by
+`serve.test.ts` against a real listener.
 
 Credential storage is described in
 [DATA-FORMATS.md § On-disk state](./DATA-FORMATS.md#on-disk-state-dvload).

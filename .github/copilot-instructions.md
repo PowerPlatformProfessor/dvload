@@ -52,22 +52,31 @@ Edge WebView. It needs admin rights. If it fails, run this once in admin PowerSh
 CheckNetIsolation LoopbackExempt -a -n="microsoft.win32webviewhost_cw5n1h2txyewy"
 ```
 
-## Add-in auth
+## UI auth
 
-- Uses MSAL.js popup flow (`@azure/msal-browser` v3).
-- Client ID is injected at **build time** via webpack `DefinePlugin` in
-  `packages/addin/webpack.config.js`. Override with env var `DATAVERSE_LOAD_CLIENT_ID`.
-- Entra app must have `https://localhost:3000/taskpane.html` as a **Single-page application**
-  redirect URI (not Web, not Public client).
-- `window.fetch` is rebound to `window` in `initAuth()` to avoid the "Illegal invocation"
-  error that MSAL triggers inside the Office WebView.
+- **The UI does not authenticate.** No MSAL, no client id, no Entra traffic.
+  `packages/addin/src/auth.ts` POSTs `/api/token` to the local sidecar
+  (`dvload serve`) on its own origin, and caches the token until 5 minutes
+  before the JWT `exp`.
+- Why: a browser flow needs an `spa` redirect URI on the app registration
+  (for the redirect *and* the token endpoint's CORS header), which can't be
+  added to Microsoft's pre-consented Dataverse client. A Node process has
+  neither constraint. Result: no app registration, no admin consent.
+- Therefore **`dvload serve` must be running** or the pane shows a "dvload
+  isn't running" screen. Port 44321, hardcoded in both manifests because
+  `SourceLocation` is a literal URL.
+- `window.fetch` is rebound to `window` in `initAuth()` to avoid the
+  "Illegal invocation" error the Office WebView throws on a bare `fetch`.
+- `packages/addin/src/host.ts` is the only module that knows whether it's
+  running in Excel or a browser. Don't reach for `Office.*` outside it.
 
 ## Known quirks
 
 | Issue | Fix |
 |---|---|
 | `webpack serve --https` unknown option | Removed — HTTPS is configured in `webpack.config.js` via `office-addin-dev-certs` |
-| `Cannot find name 'process'` in addin build | Browser tsconfig has no Node types; client ID is injected by `DefinePlugin` instead |
+| `Cannot find name 'process'` in addin build | Browser tsconfig has no Node types by design; the UI needs no build-time config |
+| Pane loads but sign-in does nothing | `dvload serve` isn't running, or the webpack dev server (:3000) is being used instead — it serves no `/api` |
 | Test files (`*.test.ts`) pulled into webpack | Excluded via `"exclude"` in `packages/addin/tsconfig.json` |
 | `HTMLOptionsCollection` not iterable | Added `"DOM.Iterable"` to lib in `packages/addin/tsconfig.json` |
 | Module not found `../auth.js` | Added `extensionAlias: { ".js": [".ts", ".js"] }` to webpack resolve config |

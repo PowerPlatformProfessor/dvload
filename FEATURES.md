@@ -47,9 +47,13 @@
 - `--max-attempts <n>` on `run` / `run-all` (default 5) to ride out longer outages; retries are counted in the run summary and the `--json` output, and each dropped request is recorded in the run log with status 0 and its error code
 - Runs that fail with no HTTP response are called out in the summary as a connectivity problem rather than bad data
 
-### Excel add-in (task pane)
+### Web UI (Excel task pane, or `dvload gui` in a browser)
 
-- MSAL popup sign-in (delegated flow)
+One bundle, served from loopback by `dvload serve`. The Office-vs-browser
+differences are confined to `packages/addin/src/host.ts`.
+
+- Sign-in delegated to `dvload serve`, so no Entra app registration and no admin consent — the UI carries no client id and never talks to Entra
+- `dvload gui` runs the same interface without Excel; everything works except reading the open workbook and extracting its Power Query
 - Lists Excel tables in the open workbook, or reads a picked `.xlsx`/`.csv`/`.tsv` file instead
 - Fetches Dataverse entities and their attributes from the live environment
 - Solution picker: defaults to all entities (Default solution); selecting a solution filters the target-entity list to that solution's tables (via `solutioncomponents`, componenttype 1)
@@ -87,7 +91,9 @@
 | ~~**Single-file executable distribution**~~ | Scaffolded: `npm run bundle` (esbuild) + Node SEA in `.github/workflows/release.yml`. Code signing still to wire up (see `packaging/README.md`). |
 | ~~**`winget` package**~~ | Documented in `packaging/README.md`; submit after the first signed release. Scoop manifest template in `packaging/scoop/`. |
 | ~~**CI build**~~ | Done: `.github/workflows/ci.yml` (build + test + lint on windows-latest). |
-| **Production add-in host** | Replace all `localhost:3000` URLs in `manifest.xml` with a real hosted URL. Production webpack builds now refuse the borrowed dev client id. |
-| **AppSource listing** | Finalise manifest (real GUID, icons, metadata), test on Win/Mac/Web/iPad, submit via Partner Center. Centralized Deployment (M365 admin center) is the better route for known orgs. |
+| ~~**Production add-in host**~~ | Dropped, not done — there is nothing to host. `dvload serve` serves the pane from loopback, so dev and production are the same setup and the manifest URL never changes. |
+| ~~**Entra app registration for the add-in**~~ | No longer required. The UI gets tokens from `dvload serve`, which uses the CLI's pre-consented client. No admin consent, in either front end. |
+| **Auto-start `dvload serve`** | The pane is dead if the sidecar isn't running; today that's a "start dvload" screen. Register a logon-triggered Scheduled Task (the `schedule` command already has the Task Scheduler plumbing) or a tray shim. |
+| **AppSource listing** | Poor fit as designed: a listed add-in must load from a public host, and this one loads from localhost and needs the CLI running. Would mean reintroducing a hosted pane, its own app registration, and admin consent. Centralized Deployment or sideloading are the routes that fit. |
 | **Public telemetry dashboard (Power BI)** | À la FetchXML Builder ([jonasr.app/xtb-stats](https://jonasr.app/xtb-stats/)): Power BI report over the Application Insights events, published publicly and linked from TELEMETRY.md. Doubles as transparency (users see exactly what granularity exists) and marketing. Requires: create the App Insights resource, bake the connection string into CLI + add-in builds, build the report, publish-to-web. |
 | **`dvload init` wizard** | Guided first-run: env URL → profile → auth choice → login. Collapses the Entra-registration onboarding cliff. |

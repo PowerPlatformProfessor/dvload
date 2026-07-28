@@ -630,13 +630,18 @@ dropped on save.
 | Key | Contents |
 |---|---|
 | `dvload:profiles` | `Array<{ name, url }>` |
-| MSAL keys | token cache (`cacheLocation: "localStorage"`, `storeAuthStateInCookie: false`) |
+| `dvload:settings:*` | Browser-host mirror of the workbook settings above (`dvload:settings:dvload:lastMapping` and friends). Not written in Excel, which has a workbook to store them in. |
+
+No tokens are held here. Access tokens live in memory in the page and are
+discarded on reload; refresh tokens never reach the browser at all — they
+stay in the sidecar's store, described earlier in this document.
 
 ## Environment variables
 
 | Variable | Scope | Effect |
 |---|---|---|
-| `DATAVERSE_LOAD_CLIENT_ID` | CLI runtime; add-in **build** time | Pin the public-client app id. Setting it also disables the shared-client fallback, so the app must register `http://localhost`. For the add-in it's injected by webpack `DefinePlugin` as `ADDIN_CLIENT_ID`, so overriding means rebuilding. |
+| `DATAVERSE_LOAD_CLIENT_ID` | CLI runtime, including `serve` | Pin the public-client app id. Setting it also disables the shared-client fallback, so the app must register `http://localhost`. Applies to the UI too, since the UI's tokens come from `serve` — no rebuild needed. |
+| `DVLOAD_WEB_ROOT` | `serve` / `gui` | Directory to serve the UI from. Defaults to the bundled `build/web`, falling back to `packages/addin/dist` in a repo checkout. |
 | `DVLOAD_NO_SHARED_CLIENT=1` | CLI | Skip the shared Microsoft client; use dvload's own registration only. |
 | `DVLOAD_AUTH_FLOW` | CLI | `interactive` or `device-code` (`devicecode` also accepted), overriding auto-detection. |
 | `DVLOAD_AUTH_TIMEOUT_MS` | CLI | Browser sign-in wait before giving up. Default 3 minutes. |

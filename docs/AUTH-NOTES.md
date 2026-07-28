@@ -47,12 +47,59 @@ version of this file claimed otherwise, incorrectly.
   both during app registration and when you create the
   PublicClientApplication object."
   (microsoft/PowerPlatform-DataverseServiceClient discussion #456)
-- **The add-in cannot borrow a client id at all.** A browser auth-code flow
-  needs a redirect URI of type `spa` on the app registration — both for the
-  redirect and for the token endpoint's `Access-Control-Allow-Origin` — and
-  you can't add one to a Microsoft-owned app. Entra also rejects `spa`
-  redirect URIs in non-SPA flows, so device-code-from-the-taskpane is closed
-  too. Not a library problem; swapping MSAL.js changes nothing.
+- **The add-in cannot borrow a client id *from the browser*.** A browser
+  auth-code flow needs a redirect URI of type `spa` on the app registration —
+  both for the redirect and for the token endpoint's
+  `Access-Control-Allow-Origin` — and you can't add one to a Microsoft-owned
+  app. Entra also rejects `spa` redirect URIs in non-SPA flows, so
+  device-code-from-the-taskpane is closed too. Not a library problem;
+  swapping MSAL.js changes nothing.
+
+  Still true, and still worth knowing — but no longer a limitation of the
+  product, because the pane stopped authenticating. See "Resolved: the pane
+  doesn't authenticate" below.
+
+## Resolved: the pane doesn't authenticate
+
+Every constraint above is about *where the token request originates*. A
+native client redirects to `http://localhost` and posts to the token endpoint
+from a socket, so CORS never applies. A WebView cannot do either. That
+framing makes the fix obvious in hindsight: stop asking the WebView to
+authenticate.
+
+`dvload serve` runs a loopback HTTP server that serves the pane's own bundle
+and exposes `POST /api/token`, backed by the same `getTokenProvider` the CLI
+uses. The pane fetches a token from its own origin. There is no MSAL in the
+browser bundle, no app registration for the UI, no `spa` redirect URI, and no
+admin consent.
+
+What this bought, beyond the consent fix:
+
+- One auth implementation instead of two (msal-node and msal-browser were
+  both being maintained, with different failure modes).
+- No public web host for the UI, so no deployment to keep in sync with the
+  manifest's `SourceLocation`. Dev and production are the same setup.
+- The same UI runs in an ordinary browser (`dvload gui`), because nothing in
+  it depends on Office except reading the open workbook.
+
+What it cost:
+
+- The pane is dead without the sidecar running. Mitigated with an explicit
+  "dvload isn't running" screen rather than a blank pane; a logon-triggered
+  Scheduled Task is the obvious next step.
+- Office requires HTTPS even on loopback, so a trusted localhost certificate
+  is now a prerequisite. `office-addin-dev-certs` installs one into the
+  **CurrentUser** store, which keeps the whole install admin-free — the point
+  of the exercise.
+- The port is fixed (44321), because `SourceLocation` is a literal URL in the
+  manifest. A conflict is a hard failure with a clear message.
+
+Threat model, since this process holds tokens and listens on a predictable
+port: bind `127.0.0.1`; check the `Host` header (DNS rebinding is the attack
+that defeats origin checks); require POST plus a custom header on API routes,
+which forces a preflight; never send CORS headers, so a cross-origin caller
+cannot read a response even if it gets one. Tested in
+`packages/cli/src/commands/serve.test.ts`.
 
 ## Resolved: the shared client DOES support loopback
 

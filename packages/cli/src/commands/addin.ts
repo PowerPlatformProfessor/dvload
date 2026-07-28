@@ -1,6 +1,17 @@
+// Sideload helpers for the Excel add-in.
+//
+// Note the division of labour with `dvload serve`: this command registers the
+// manifest with Excel, `serve` supplies the pane itself and its tokens. The
+// manifest's SourceLocation points at the serve port, so sideloading alone is
+// not enough — hence the reminder printed below rather than a silent blank
+// pane.
+
 import { access } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import kleur from "kleur";
+
+import { DEFAULT_PORT } from "./serve.js";
 
 interface AddinOpts {
   withDevServer?: boolean;
@@ -19,6 +30,7 @@ export async function addinCommand(action: string, opts: AddinOpts): Promise<voi
       await runNpm(repoRoot, ["run", "dev:addin"]);
       return;
     }
+    noteServeRequirement();
     await runNpm(repoRoot, ["--workspace=@dvload/addin", "run", "start"]);
     return;
   }
@@ -27,11 +39,24 @@ export async function addinCommand(action: string, opts: AddinOpts): Promise<voi
     return;
   }
   if (action === "dev") {
-    await runNpm(repoRoot, ["run", "dev:addin"]);
+    // Rebuild-on-change only. The pane is served by `dvload serve` out of
+    // packages/addin/dist, so a watch build is the whole dev loop — the
+    // webpack dev server would serve the UI without an /api to talk to.
+    noteServeRequirement();
+    await runNpm(repoRoot, ["run", "watch:addin"]);
     return;
   }
 
   throw new Error(`Unknown addin action "${action}". Use: start, stop, or dev.`);
+}
+
+function noteServeRequirement(): void {
+  console.log(
+    kleur.yellow(
+      `The pane loads from https://localhost:${DEFAULT_PORT}. Run \`dvload serve\` in another ` +
+        `terminal if it isn't already running, or the task pane will come up blank.`
+    )
+  );
 }
 
 async function findRepoRoot(start: string): Promise<string | null> {

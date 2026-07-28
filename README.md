@@ -1,17 +1,20 @@
 # dvload
 
 Map an Excel table (typically a Power Query output) to a Microsoft Dataverse
-entity, then load via the OData Web API. Comes in two front ends that share
-one engine:
+entity, then load via the OData Web API. Comes in three front ends that
+share one engine — and, since the UI moved behind a local sidecar, one
+auth stack:
 
 - **Excel add-in** — task pane UI for picking a table, picking a Dataverse
   entity, building a column mapping, and running an import on demand.
+- **Browser UI** (`dvload gui`) — the same interface without Excel. Point
+  it at an `.xlsx`, `.csv` or `.tsv` instead of the open workbook.
 - **CLI** — runs a saved `.dvmap.json` against an `.xlsx` file from the
   command line. Pairs with Windows Task Scheduler for daily unattended
   imports.
 
-The mapping is portable: build it in the add-in, save it next to your
-workbook, and have the CLI run it nightly.
+The mapping is portable: build it in whichever UI suits, save it next to
+your workbook, and have the CLI run it nightly.
 
 ## Repo layout
 
@@ -19,8 +22,8 @@ workbook, and have the CLI run it nightly.
 dvload/
 ├── packages/
 │   ├── core/      # mapping engine, OData client, xlsx reader (shared)
-│   ├── cli/       # Node CLI: dvload run|login|validate|schedule
-│   └── addin/     # Office.js task pane add-in
+│   ├── cli/       # Node CLI: dvload run|login|serve|gui|validate|schedule
+│   └── addin/     # the web UI: task pane in Excel, page in the browser
 ├── docs/          # architecture, data formats, JSON schemas, auth notes
 ├── packaging/     # distribution manifests (Scoop, winget notes)
 ├── tests/         # seeded test-data generators and fixtures
@@ -49,18 +52,51 @@ dvload/
 - Windows 10/11 (CLI scheduling and Power Query refresh are Windows-only in v1)
 - Excel desktop, signed in to the same Microsoft 365 tenant as your Dataverse environment
 
-No Entra ID app registration is needed for interactive use — dvload
-ships with a registered multi-tenant app. Unattended scheduled runs need
-a per-org registration; see [docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md).
+No Entra ID app registration and no admin approval are needed for
+interactive use, in either front end. Unattended scheduled runs need a
+per-org registration; see
+[docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md).
+
+## The UI and the sidecar
+
+Both front ends are the same web UI, served from your own machine by
+`dvload serve`:
+
+```bash
+dvload serve     # Excel task pane loads from here
+dvload gui       # same UI in a browser, no Excel required
+```
+
+Sign-in happens in that background process, not in the browser, and that
+is what makes the "no admin approval" part true for the UI as well as the
+CLI. A task pane cannot borrow Microsoft's pre-consented Dataverse client
+— a browser flow needs an `spa` redirect URI on the app registration, and
+you cannot add one to a Microsoft-owned app — but a Node process can,
+because it redirects to `http://localhost` and never meets CORS. The pane
+just asks the sidecar for a token over a same-origin fetch.
+
+Practical consequences:
+
+- **`dvload serve` must be running** before you open the pane, or it
+  comes up with a "dvload isn't running" message instead of loading.
+- **The pane is served from `https://localhost:44321`.** Office requires
+  HTTPS even on loopback, so you need a trusted localhost certificate:
+  `npx office-addin-dev-certs install` (user store — no admin rights).
+- **Nothing is hosted publicly.** There is no web deployment to keep in
+  sync with the manifest.
+- **The browser UI can do everything except read the open workbook.**
+  Pick an `.xlsx`, `.csv` or `.tsv` with the file button instead.
+
+The sidecar binds `127.0.0.1` only, checks the `Host` header (DNS
+rebinding), requires POST plus a custom header on API routes, and never
+sends CORS headers — so no other page in your browser can reach it.
 
 ## Auth model
 
-The CLI supports two flows; the add-in supports the first.
-
 | | Delegated (user signs in) | App-only (client credentials) |
 |---|---|---|
-| Used by | add-in always; CLI by default | CLI when configured |
-| Flow | browser (CLI, default), device-code (CLI, headless), popup (add-in) | client_id + secret |
+| Used by | UI **always**; CLI by default | CLI only, when configured |
+| Flow | browser loopback (device code when headless) | client_id + secret |
 | Identity in Dataverse | the signed-in user | an "Application User" you create |
 | Refresh expiry | ~90 days idle | none |
 | Survives MFA / conditional access changes | sometimes | yes |
@@ -69,6 +105,13 @@ The CLI supports two flows; the add-in supports the first.
 You can have both configured for the same environment. The CLI prefers
 app-only when it's set; pass `--user` to force delegated (handy when
 you're iterating in a shell where a schedule has stored a secret).
+
+**The UI never uses app-only, even when it's configured.** Clicking "Run
+import" writes as you, which is what the ownership and audit fields on
+the created records will show. So on an environment with a nightly
+schedule set up, the same mapping run from the pane and run by the
+scheduled task will land under two different identities — by design. The
+pane says so when it detects stored app-only credentials.
 
 ### Quick start (delegated)
 
@@ -151,11 +194,10 @@ Sign-in logs → the failed attempt → Conditional Access tab** to see which
 policy and condition actually fired. dvload prints this guidance itself
 when it detects a CA block.
 
-> **Add-in note:** none of this applies to the Excel add-in, which always
-> uses a real app registration. Browser flows need a `spa`-type redirect
-> URI on the app — both for the redirect itself and for the token
-> endpoint's CORS header — and you cannot add one to a Microsoft-owned
-> app. Swapping MSAL.js for another library doesn't change that.
+> **This applies to the UI too.** The task pane and `dvload gui` get their
+> tokens from `dvload serve`, which uses this exact code path — so the
+> client-id chain, the shared-client fallback and every setting below
+> behave identically whichever front end you're in.
 
 ### Using your own app registration (optional)
 
@@ -166,9 +208,9 @@ client** app:
 
 1. Open **Microsoft Entra admin center** → Applications → App registrations → New registration.
 2. Supported account types: single-tenant is fine for internal use.
-3. Redirect URIs:
-   - Single-page application: the URL your copy of the add-in is hosted at (only if you self-host the add-in).
-   - Public client / native: leave the default `http://localhost`.
+3. Redirect URIs → Public client / native: leave the default `http://localhost`.
+   (No `spa` redirect URI is needed. Nothing authenticates from a browser
+   any more — `dvload serve` does it, as a native public client.)
 4. Authentication → Allow public client flows: **Yes**.
 5. API permissions → Add → Dynamics CRM → user_impersonation (delegated).
 6. Copy the **Application (client) ID** and pin it:
@@ -185,9 +227,8 @@ setx DATAVERSE_LOAD_CLIENT_ID "<your-client-id>"
 > prints which client id it's using and what pinned it, so check that first
 > when sign-in misbehaves.
 
-The CLI picks up the env var on the next run. For the add-in, the id is
-baked in at build time (`DATAVERSE_LOAD_CLIENT_ID` at webpack build), so
-overriding it means self-hosting a rebuild.
+The env var is picked up on the next run, by the CLI and by `dvload serve`
+alike — so the UI follows it too, with no rebuild.
 
 ### App-only setup (recommended for scheduled runs)
 
@@ -305,24 +346,36 @@ Failed rows are written to `logs/failed_<workbook>_<timestamp>.xlsx` in the
 same column shape as the source table — fix the cells and re-run just that
 file. Suppress with `--no-failed-rows` if the data is sensitive.
 
-### Add-in (development)
+### UI (development)
 
-Dev builds use the built-in `dataverse-load` app, which already has
-`https://localhost:3000/taskpane.html` as an SPA redirect URI — no Entra
-setup needed. To build against a different registration, pass
-`DATAVERSE_LOAD_CLIENT_ID` at build time (its app needs that same SPA
-redirect URI and `Dynamics CRM → user_impersonation` delegated permission).
+There is no client id in the UI build any more, so there is nothing to
+configure: it gets tokens from `dvload serve`. First time only, install a
+trusted localhost certificate (user store, no admin rights):
 
 ```powershell
-# Terminal 1 — webpack dev server (hot-reload, HTTPS on port 3000)
-npm run dev:addin
-
-# Terminal 2 — sideload the manifest into Excel desktop
-npm --workspace=@dvload/addin run start
-
-# Same from the CLI (local/dev repo clone)
-dvload addin start
+npx office-addin-dev-certs install
 ```
+
+Then:
+
+```powershell
+# Terminal 1 — rebuild the UI on change
+npm run watch:addin
+
+# Terminal 2 — serve it and supply tokens
+npm run serve          # or: dvload serve
+
+# Terminal 3 — sideload the manifest into Excel desktop (first time only)
+npm --workspace=@dvload/addin run start
+```
+
+For UI work that doesn't need Dataverse, `npm run gui` skips Excel
+entirely and opens the same pane in a browser.
+
+> The webpack dev server (`npm run dev:addin`, port 3000) still exists for
+> styling work with hot reload, but it serves no `/api`, so sign-in and
+> everything downstream of it will fail there. Use `dvload serve` for any
+> end-to-end loop.
 
 If you see "Failed to add loopback exemption", run this **once** in an admin PowerShell
 and then re-run the start command:
@@ -440,17 +493,21 @@ use *Load To…* to land one on a sheet. The QDEFF writer is experimental —
 if Excel rejects the file, the fallback is `import-pqt --emit-m` and
 pasting the M into a Blank Query's Advanced Editor.
 
-### In the add-in
+### In the UI
 
-*Import .pqt…* in the task pane reads a Dataflow export directly: it
+*Import .pqt…* reads a Dataflow export directly: it
 lists every query with its field-mapping count, *Use mapping* populates
 the column grid from the selected query's `FieldsMetadata`, and *Copy M*
 puts the M document on the clipboard for pasting into Excel's Advanced
 Editor.
 
-The task pane also supports run plans: add/edit/load/save `.dvplan.json`
-steps, assign `stage`/`dependsOn`, and capture alternate-key links for
+The UI also supports run plans: add/edit/load/save `.dvplan.json` steps,
+assign `stage`/`dependsOn`, and capture alternate-key links for
 cross-step lookup wiring.
+
+*Export workbook as .pqt…* is the one feature that needs Excel — it reads
+the open workbook's embedded Power Query, which the browser UI has no
+access to. It's disabled there rather than hidden.
 
 ## Mapping JSON shape
 

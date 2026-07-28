@@ -50,6 +50,19 @@ Data is deterministic (seeded): re-running a command reproduces identical files;
 
 ## 4. Auth & profiles
 
+> Rows 4.2, 4.5, 4.7 and 4.8, plus sections 5 and 6, are automated by
+> `tests\unattended-smoke.ps1`. It is dry-run by default and writes nothing
+> without `-Write`:
+>
+> ```powershell
+> $env:DVLOAD_SECRET = "<secret>"
+> .\tests\unattended-smoke.ps1 -ClientId <app-id> -TenantId <tenant-id>
+> ```
+>
+> Run it before working through the table by hand; it fails fast on the
+> credential problems that otherwise show up halfway down as confusing
+> data errors.
+
 | # | Test | Steps | Expected | Result |
 |---|---|---|---|---|
 | 4.1 | Delegated login (browser) | `dvload login --env <url>` | System browser opens; success page; token cached in `~/.dvload/` (DPAPI-encrypted, not plaintext — open the file and confirm) | |
@@ -233,7 +246,10 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 
 | # | Test | Expected | Result |
 |---|---|---|---|
-| 19.1 | Sign-in | MSAL popup, delegated; dev-mode banner visible while on fallback client id (must be gone after checklist §1) | |
+| 19.0 | No sidecar | Close `dvload serve`, open the pane: "dvload isn't running" with a Retry button, not a blank pane or a stack trace | |
+| 19.1 | Sign-in | Browser opens from the *sidecar* process (no Office popup); pane shows the account after it completes. Info banner names the shared Microsoft client | |
+| 19.2 | Browser UI | `dvload gui` opens the same pane; table picker disabled with "Not available outside Excel", file picker works, mapping round-trips via localStorage | |
+| 19.3 | Sidecar isolation | With `serve` running, open any other site and `fetch('https://localhost:44321/api/token', {method:'POST'})` from its console — blocked by CORS, no token returned | |
 | 19.2 | Table list | All tables in workbook listed; refreshes when a table is added | |
 | 19.3 | Entity + solution picker | Entities load; selecting a solution filters to its tables; Default solution = all | |
 | 19.4 | Mapping UI + auto-suggest | Suggestions match on name similarity (verify "First Name"→firstname); manual override works | |

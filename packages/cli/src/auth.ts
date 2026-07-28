@@ -348,6 +348,31 @@ export async function getStoredClientId(env: string): Promise<string | null> {
   return await getSecret(keys.delegatedClient(env));
 }
 
+/**
+ * The delegated account currently cached for `env`, or null.
+ *
+ * Only the home account id is kept in the secure store, so the username has
+ * to come back out of the MSAL cache — which means rebuilding the app with
+ * the same tenant and client id the login used, exactly as
+ * `makeDelegatedProvider` does. Purely a read: never prompts, and returns
+ * null rather than throwing when the cache is missing or unreadable, because
+ * every caller is rendering a status line.
+ */
+export async function getSignedInAccount(env: string): Promise<AccountInfo | null> {
+  try {
+    const accountId = await getSecret(keys.delegatedAccount(env));
+    if (!accountId) return null;
+    const app = makePublicApp({
+      environmentUrl: env,
+      tenantId: (await getSecret(keys.delegatedTenant(env))) ?? undefined,
+      clientId: (await getStoredClientId(env)) ?? undefined,
+    });
+    return await app.getTokenCache().getAccountByHomeId(accountId);
+  } catch {
+    return null;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Persistent MSAL cache                                                       */
 /* -------------------------------------------------------------------------- */
@@ -563,7 +588,7 @@ export function assertUsableAuthorizeUrl(url: string): void {
  * Note that explorer.exe habitually exits non-zero even on success, so its
  * exit code is deliberately ignored; we only care that the spawn worked.
  */
-async function openInBrowser(url: string): Promise<void> {
+export async function openInBrowser(url: string): Promise<void> {
   const { spawn } = await import("node:child_process");
   const platform = process.platform;
   const [cmd, args] =

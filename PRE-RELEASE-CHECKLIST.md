@@ -4,67 +4,53 @@ Things that must change before this tool is shared with anyone outside your
 own machine. Track these like blockers — at minimum, the auth and manifest
 items are non-negotiable.
 
-## How to know you're not ready yet
+## 1. Entra app registration — no longer required
 
-- Add-in shows a yellow banner at the top: `Dev mode — signing in as
-  "Microsoft Dynamics CRM"`.
-- Browser dev console logs `[dvload dev mode]` on add-in start.
+An earlier version of this checklist opened with an app-registration
+blocker, on the reasoning that a browser auth-code flow needs an `spa`
+redirect URI that a Microsoft-owned app can't have, so the pane had to
+ship its own registration. It ended by noting the one alternative: *stop
+authenticating in the browser entirely and broker tokens through a local
+dvload process.*
 
-Either one means the add-in build is pointed at a borrowed Microsoft
-client id, which cannot work in a browser (see below). Fix that first.
+That is now what happens. `dvload serve` holds the auth and the UI fetches
+tokens from it same-origin, so there is no client id in the UI bundle and
+nothing to register. Both front ends use the CLI's client-id chain: shared
+Microsoft client first, dvload's own app as fallback. See
+[docs/AUTH-NOTES.md](./docs/AUTH-NOTES.md).
 
-**The CLI is a different case and is not a blocker.** By design it signs
-in through the shared Microsoft Dataverse client
-(`51f81489-12ee-4a9e-aaae-a2591f45987d`) so users never hit an admin
-consent wall and falls back to dvload's own
-app if that client is blocked. `dvload login` prints a one-line note
-saying which identity the consent screen will show. That's informational,
-not a warning.
+**Nothing here is a release blocker any more.** Optional, if you want your
+own identity on the consent screen for branding, Conditional Access
+targeting, or auditability:
 
-## 1. Register your own Entra ID app(s)
-
-You need at least one app registration, possibly two depending on whether
-the CLI will support unattended (app-only) auth out of the box for users.
-
-**Public client (delegated flow) — required for the add-in, fallback for
-the CLI.**
-
-The add-in has no alternative here. A browser auth-code flow needs a
-redirect URI registered on the app registration, and Entra only returns
-`Access-Control-Allow-Origin` from the token endpoint when the caller's
-origin matches a redirect URI of type `spa`. You can't add either to a
-Microsoft-owned app, and Entra explicitly rejects `spa` redirect URIs in
-non-SPA flows — so device code from the taskpane doesn't rescue you
-either. The only way around it would be to stop authenticating in the
-browser entirely and broker tokens through a local dvload process.
-
-- Microsoft Entra admin center → App registrations → New registration
-- Name: `<your tool name>` (whatever appears on the consent screen)
-- Supported account types: *Accounts in any organizational directory
-  (multi-tenant)*
-- Redirect URIs:
-  - Single-page application: every URL the add-in will be hosted at
-    (`https://yourdomain.example/taskpane.html`, plus
-    `https://localhost:3000/taskpane.html` if you keep dev sideloading)
-  - Public client / native: leave the default `http://localhost`
+- Register a **public client** (Entra admin center → App registrations →
+  New registration), multi-tenant, redirect URI `http://localhost` under
+  *Public client / native*. No `spa` redirect URI is needed — nothing
+  authenticates from a browser.
 - Authentication → Allow public client flows: **Yes**
 - API permissions → Add → Dynamics CRM → user_impersonation (delegated)
-- Branding & properties → set your publisher name, support URL, privacy
-  statement URL, terms of service URL. These show on the consent screen.
-
-Then:
-
-- Set `DATAVERSE_LOAD_CLIENT_ID` at webpack build time so the add-in
-  bundle carries your app id (`packages/addin/webpack.config.js` fails a
-  production build if it doesn't).
-- Optionally update `DVLOAD_CLIENT_ID` in `packages/cli/src/auth.ts` — this
-  is only the CLI's *fallback*, used when the shared Microsoft client is
-  blocked. Leaving it alone is fine.
+- Branding & properties → publisher name, support URL, privacy statement,
+  terms of service. These show on the consent screen.
+- Point dvload at it with `DATAVERSE_LOAD_CLIENT_ID`, or change
+  `DVLOAD_CLIENT_ID` in `packages/cli/src/auth.ts` to change only the
+  fallback. Note that pinning a client id **disables the shared-client
+  chain**, so your app must have `http://localhost` registered or sign-in
+  fails with `AADSTS900971`.
 
 **Confidential client (app-only flow) — optional.** Only needed if you
 want `app-login` to work without users having to register their own
 Entra app first. Most tools omit this from the default install and have
 power users register their own; that's fine.
+
+## How to know you're not ready yet
+
+- `dvload serve` fails with "could not find the built add-in UI" — the
+  release bundle is missing `build/web`. Run the add-in build before
+  `npm run bundle`; the bundle step warns loudly about this.
+- `npm --workspace=@dvload/addin run validate` rejects the manifest.
+- The pane shows an informational note naming *Microsoft Dynamics CRM*.
+  That one is **not** a blocker — it is the shared-client default doing
+  its job, and it's shown so the attribution isn't a surprise.
 
 ## 2. Office add-in manifest
 
@@ -74,8 +60,12 @@ AppSource submission:
 
 - Replace `<Id>00000000-0000-0000-0000-000000000000</Id>` with a real
   GUID. Generate with `[guid]::NewGuid()` in PowerShell or `uuidgen`.
-- Replace every `https://localhost:3000/...` URL with your production
-  add-in host.
+  (`manifest.prod.xml` already has one — ship that.)
+- Leave the `https://localhost:44321/...` URLs alone. The pane is served
+  by `dvload serve` on loopback, so there is no production host to point
+  at; that's deliberate, and it's what keeps the install admin-free. If
+  you change the port, change it in both manifests and pass `--port` to
+  `serve`.
 - Update `<ProviderName>`, `<DisplayName>`, `<Description>`,
   `<SupportUrl>`, and the resources at the bottom (`GetStarted.Title`,
   `GetStarted.Description`, `GetStarted.LearnMoreUrl`, etc.).
@@ -85,9 +75,17 @@ AppSource submission:
 
 ## 3. AppSource submission (only if listing publicly)
 
+> **Read this before starting.** AppSource is a poor fit for the current
+> design: a listed add-in must load from a public HTTPS host, and this one
+> loads from the user's own machine and requires a companion CLI to be
+> running. Centralized Deployment for known orgs, or plain sideloading,
+> both work fine. Listing publicly would mean reintroducing a hosted pane
+> and therefore its own app registration and admin consent — the thing the
+> sidecar exists to avoid. Excel for the web and iPad are out for the same
+> reason: no loopback.
+
 - Add a privacy policy and terms of service hosted somewhere durable.
-- Test the add-in in Excel desktop (Win + Mac), Excel for the web, and
-  Excel on iPad if claiming mobile support.
+- Test the add-in in Excel desktop (Win + Mac).
 - Submit through Partner Center → Office Add-ins.
 - Expect 5–10 business days for review; reviewers do test data ops, so
   make sure a tester Dataverse environment is reachable.

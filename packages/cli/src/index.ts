@@ -16,6 +16,7 @@ import { scheduleCommand } from "./commands/schedule.js";
 import { extractPqtCommand, importPqtCommand, pqtToXlsxCommand } from "./commands/pqt.js";
 import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
 import { addinCommand } from "./commands/addin.js";
+import { serveCommand, guiCommand, DEFAULT_PORT } from "./commands/serve.js";
 import { telemetryCommand } from "./telemetry.js";
 
 const program = new Command();
@@ -177,6 +178,32 @@ program
   .description("Show or change anonymous usage telemetry (see TELEMETRY.md).")
   .argument("[action]", '"on", "off", or omit for status')
   .action(telemetryCommand);
+
+// Local UI sidecar ----------------------------------------------------------
+// Both front ends (Excel task pane, browser) are the same bundle served from
+// here, and both get their Dataverse tokens from this process rather than
+// authenticating in the browser. That is what lets the UI use the same
+// pre-consented Microsoft client the CLI uses — see commands/serve.ts.
+program
+  .command("serve")
+  .description("Serve the dvload UI on localhost and supply it Dataverse tokens. Required by the Excel add-in.")
+  .option("--port <n>", `Port to listen on (default ${DEFAULT_PORT}; must match the add-in manifest)`, parseIntStrict)
+  .option("--http", "Serve plain HTTP. Fine for the browser UI; Office requires HTTPS.")
+  .option("--open", "Open the browser UI once listening.")
+  .option("--web-root <dir>", "Directory containing the built taskpane.html (default: the bundled UI).")
+  .option("--cert <path>", "TLS certificate (default: the office-addin-dev-certs localhost cert).")
+  .option("--key <path>", "TLS private key.")
+  .action(serveCommand);
+
+program
+  .command("gui")
+  .description("Open the dvload UI in your browser. Same interface as the Excel pane, without Excel.")
+  .option("--port <n>", `Port to listen on (default ${DEFAULT_PORT})`, parseIntStrict)
+  .option("--http", "Serve plain HTTP instead of HTTPS (no certificate needed).")
+  .option("--web-root <dir>", "Directory containing the built taskpane.html (default: the bundled UI).")
+  .option("--cert <path>", "TLS certificate (default: the office-addin-dev-certs localhost cert).")
+  .option("--key <path>", "TLS private key.")
+  .action(guiCommand);
 
 program
   .command("addin")

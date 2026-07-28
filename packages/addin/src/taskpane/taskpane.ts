@@ -43,8 +43,15 @@ import {
   type RunPlanStepOverrides,
   RUN_PLAN_SCHEMA_VERSION,
 } from "@dvload/core";
-import { initAuth, getAccount, signIn, makeTokenProvider, devModeBanner } from "../auth.js";
-import { listTables, readTable, getWorkbookBytes, type TableInfo } from "../excel.js";
+import {
+  initAuth,
+  getAccount,
+  signIn,
+  makeTokenProvider,
+  devModeBanner,
+  SidecarUnavailableError,
+} from "../auth.js";
+import { initHost, host, type TableInfo } from "../host.js";
 import { suggestMappings, suggestionsToMappings } from "../suggest.js";
 import { enhanceSelect } from "../combobox.js";
 import {
@@ -200,12 +207,28 @@ async function applyOptionLabels(attrLogical: string, i: number): Promise<void> 
   }
 }
 
-Office.onReady(async () => {
-  await initAuth();
-  renderDevModeBanner();
+/**
+ * Entry point for both hosts. `initHost()` decides which one we're in and
+ * waits for the DOM; everything after that is host-agnostic.
+ *
+ * Auth is checked before any UI is wired up because the sidecar is not
+ * optional — without it there are no tokens, and a pane full of live
+ * controls that all fail on click is worse than one honest message.
+ */
+async function bootstrap(): Promise<void> {
+  await initHost();
+
+  try {
+    await initAuth();
+  } catch (e) {
+    renderFatal(e);
+    return;
+  }
+
+  applyHostCapabilities();
   await refreshAccountUI();
 
-  state.tables = await listTables();
+  state.tables = await host().workbook.listTables();
   populateTablePicker();
   restoreMapping();
   restoreRunPlan();
@@ -330,17 +353,63 @@ Office.onReady(async () => {
     trackTelemetry("addin_open");
   }
 
-  // External links: prefer Office's openBrowserWindow (guaranteed system
-  // browser) over the anchor's target=_blank, which some hosts ignore.
+  // External links: some Office hosts ignore target=_blank, so route them
+  // through the host adapter instead.
   document.body.addEventListener("click", (e) => {
     const a = (e.target as HTMLElement).closest?.("a[target=_blank]") as HTMLAnchorElement | null;
     if (!a?.href) return;
-    if (Office.context.ui && "openBrowserWindow" in Office.context.ui) {
-      e.preventDefault();
-      (Office.context.ui as unknown as { openBrowserWindow: (url: string) => void }).openBrowserWindow(a.href);
-    }
+    e.preventDefault();
+    host().openExternal(a.href);
   });
-});
+}
+
+void bootstrap();
+
+/**
+ * Grey out what this host genuinely cannot do, rather than letting the user
+ * find out by clicking. In the browser there is no open workbook: the table
+ * picker has nothing to list and Power Query extraction has nothing to read,
+ * but picking a file covers both — so the file button becomes the primary
+ * path instead of the fallback.
+ */
+function applyHostCapabilities(): void {
+  if (host().workbook.canReadOpenWorkbook) return;
+
+  const tableSel = el<HTMLSelectElement>("table");
+  tableSel.innerHTML = '<option value="">Not available outside Excel</option>';
+  tableSel.disabled = true;
+
+  const extract = el<HTMLButtonElement>("extractPqt");
+  extract.disabled = true;
+  extract.title = "Only available in the Excel add-in — it reads the open workbook.";
+
+  const pick = el<HTMLButtonElement>("pickFile");
+  pick.textContent = "Choose a file…";
+  pick.classList.remove("secondary");
+}
+
+/** Replace the pane with a single actionable message. Used when there is no sidecar. */
+function renderFatal(e: unknown): void {
+  const message = e instanceof Error ? e.message : String(e);
+  const isSidecar = e instanceof SidecarUnavailableError;
+  document.body.innerHTML = "";
+  const box = document.createElement("div");
+  box.style.cssText = "padding:16px; max-width:420px; line-height:1.5;";
+  const h = document.createElement("h1");
+  h.textContent = isSidecar ? "dvload isn't running" : "Couldn't start";
+  const p = document.createElement("p");
+  p.style.whiteSpace = "pre-wrap";
+  p.textContent = message;
+  box.append(h, p);
+  if (isSidecar) {
+    const retry = document.createElement("button");
+    retry.textContent = "Retry";
+    retry.style.width = "auto";
+    retry.addEventListener("click", () => window.location.reload());
+    box.append(retry);
+  }
+  document.body.append(box);
+}
 
 /* -------------------------------------------------------------------------- */
 /* .pqt import (Dataverse Dataflows / Power Query Online export)               */
@@ -501,7 +570,7 @@ async function onExportPqt(): Promise<void> {
 async function onExtractPqt(): Promise<void> {
   try {
     setStatus("info", "Reading the workbook's Power Query…");
-    const bytes = await getWorkbookBytes();
+    const bytes = await host().workbook.getWorkbookBytes();
     const mapping = state.mappings.length > 0 ? buildMapping() : null;
     if (mapping) {
       const errs = validateMapping(mapping);
@@ -725,24 +794,52 @@ function setProgress(
     `skipped=${counts.skipped}  failed=${counts.failed}`;
 }
 
+/**
+ * Note which identity is being used, when it isn't dvload's own.
+ *
+ * Informational rather than a warning: borrowing Microsoft's pre-consented
+ * Dataverse client is the supported default and is what removes the
+ * admin-consent requirement. What it costs is attribution — the tenant's
+ * sign-in logs name Microsoft — and that should be visible where the user
+ * is, not buried in the docs.
+ */
 function renderDevModeBanner(): void {
   const text = devModeBanner();
-  if (!text) return;
-  let banner = document.getElementById("devModeBanner") as HTMLDivElement | null;
+  const existing = document.getElementById("devModeBanner");
+  if (!text) {
+    existing?.remove();
+    return;
+  }
+  let banner = existing as HTMLDivElement | null;
   if (!banner) {
     banner = document.createElement("div");
     banner.id = "devModeBanner";
     banner.style.cssText =
-      "background:#fff4ce;color:#5a4500;border:1px solid #e0c769;" +
+      "background:#eff6fc;color:#243a5e;border:1px solid #b3d3ea;" +
       "border-radius:4px;padding:6px 8px;font-size:11px;margin-bottom:8px;";
     document.body.insertBefore(banner, document.body.firstChild);
   }
-  banner.textContent = text + " — replace before sharing this tool.";
+  banner.textContent = text + ".";
 }
 
 async function refreshAccountUI(): Promise<void> {
-  const acc = await getAccount();
+  // Ask the sidecar only once an environment is known — auth state is
+  // per-environment, and there is nothing meaningful to report before then.
+  // Failures here are not fatal: they render as "not signed in", and the
+  // Sign in button surfaces the real error when the user acts on it.
+  let acc = null;
+  if (state.environmentUrl) {
+    try {
+      acc = await getAccount(state.environmentUrl);
+    } catch {
+      acc = null;
+    }
+  } else {
+    acc = await getAccount();
+  }
   state.account = acc ? { username: acc.username } : null;
+  // Depends on the status fetched above, so it has to come after it.
+  renderDevModeBanner();
   el<HTMLSpanElement>("authDot").style.color = acc ? "#107c10" : "#d13438";
   el<HTMLSpanElement>("who").textContent = acc ? acc.username : "Not signed in";
   const entSel = el<HTMLSelectElement>("entity");
@@ -992,7 +1089,7 @@ async function enterCreateTableMode(): Promise<void> {
   ctFixedOwner = null;
   el<HTMLInputElement>("ctOwner").value = "";
   setStatus("info", "Reading source rows to infer column types…");
-  const { rows } = await readTable(state.selectedTable.name);
+  const { rows } = await host().workbook.readTable(state.selectedTable.name);
   ctCols = suggestColumns(state.selectedTable.columns, rows.slice(0, 200));
   renderCtColumns();
   setStatus(
@@ -2378,12 +2475,12 @@ function buildRunPlan(): RunPlan {
 }
 
 function persistRunPlan(): void {
-  Office.context.document.settings.set(PLAN_SETTINGS_KEY, JSON.stringify(buildRunPlan()));
-  Office.context.document.settings.saveAsync();
+  host().settings.set(PLAN_SETTINGS_KEY, JSON.stringify(buildRunPlan()));
+  host().settings.save();
 }
 
 function restoreRunPlan(): void {
-  const raw = Office.context.document.settings.get(PLAN_SETTINGS_KEY);
+  const raw = host().settings.get(PLAN_SETTINGS_KEY);
   if (!raw || typeof raw !== "string") return;
   try {
     applyRunPlan(parseRunPlan(JSON.parse(raw)));
@@ -2576,10 +2673,10 @@ async function onResetAll(): Promise<void> {
   renderFileSource();
   updateOptionsVisibility();
 
-  // Forget the per-workbook remembered mapping so it doesn't restore on reload.
-  Office.context.document.settings.remove(SETTINGS_KEY);
-  Office.context.document.settings.remove(PLAN_SETTINGS_KEY);
-  Office.context.document.settings.saveAsync();
+  // Forget the remembered mapping so it doesn't restore on reload.
+  host().settings.remove(SETTINGS_KEY);
+  host().settings.remove(PLAN_SETTINGS_KEY);
+  host().settings.save();
   state.planSteps = [];
   state.planMeta = { name: "Run plan", stopOnError: true };
   writePlanMetaToForm();
@@ -2752,7 +2849,7 @@ async function readSourceRows(
   if (state.fileSource) {
     return { rows: state.fileSource.rows, headers: state.fileSource.headers };
   }
-  const { rows } = await readTable(tableName);
+  const { rows } = await host().workbook.readTable(tableName);
   const headers = state.selectedTable?.columns ?? Object.keys(rows[0] ?? {});
   return { rows, headers };
 }
@@ -2807,15 +2904,15 @@ function downloadBlob(blob: Blob, filename: string): void {
 
 function persistCheckpoint(): void {
   if (state.checkpoint) {
-    Office.context.document.settings.set(CHECKPOINT_KEY, JSON.stringify(state.checkpoint));
+    host().settings.set(CHECKPOINT_KEY, JSON.stringify(state.checkpoint));
   } else {
-    Office.context.document.settings.remove(CHECKPOINT_KEY);
+    host().settings.remove(CHECKPOINT_KEY);
   }
-  Office.context.document.settings.saveAsync();
+  host().settings.save();
 }
 
 function restoreCheckpoint(): void {
-  const raw = Office.context.document.settings.get(CHECKPOINT_KEY);
+  const raw = host().settings.get(CHECKPOINT_KEY);
   if (!raw || typeof raw !== "string") return;
   try {
     const c = JSON.parse(raw) as Checkpoint;
@@ -2842,8 +2939,8 @@ function renderCheckpoint(): void {
 }
 
 function persistMapping(m: Mapping): void {
-  Office.context.document.settings.set(SETTINGS_KEY, JSON.stringify(m));
-  Office.context.document.settings.saveAsync();
+  host().settings.set(SETTINGS_KEY, JSON.stringify(m));
+  host().settings.save();
 }
 
 /** Start loading entities into the entity select, then restore any saved entity selection. */
@@ -2919,7 +3016,7 @@ function downloadRunLog(
 }
 
 function restoreMapping(): void {
-  const raw = Office.context.document.settings.get(SETTINGS_KEY);
+  const raw = host().settings.get(SETTINGS_KEY);
   if (!raw || typeof raw !== "string") return;
   try {
     const m = parseMapping(JSON.parse(raw));
