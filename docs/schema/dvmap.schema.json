@@ -1,0 +1,308 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/PowerPlatformProfessor/dvload/docs/schema/dvmap.schema.json",
+  "title": "dvload mapping (.dvmap.json)",
+  "description": "Column mapping from an Excel/CSV source table to a Dataverse entity set. Mirrors parseMapping + validateMapping in packages/core/src/mapping.ts, which remain the enforcement point — this file exists for editor completion and CI linting. Keep both in sync and bump schemaVersion together; `node tests/schema-parity.mjs` checks that they agree.",
+  "x-not-enforceable": [
+    "Every upsertKey entry must also appear as a columns[].target. JSON Schema draft-07 cannot reference sibling array contents.",
+    "columns[].target must be unique across the array. uniqueItems compares whole items, not one property."
+  ],
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "name",
+    "environmentUrl",
+    "targetEntitySet",
+    "sourceTable",
+    "columns"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Must equal SCHEMA_VERSION. parseMapping rejects any other value outright rather than attempting a migration."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable mapping name. Used in the run summary, the webhook notification, and as the default scheduled-task name."
+    },
+    "description": {
+      "type": ["string", "null"],
+      "description": "Free text shown in the CLI and add-in."
+    },
+    "createdAt": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC. Written by the add-in; preserved on round-trip via state.mappingExtras."
+    },
+    "updatedAt": {
+      "type": ["string", "null"],
+      "description": "ISO 8601 UTC. Rewritten by serializeMapping on every save."
+    },
+    "environmentUrl": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Dataverse base URL, e.g. https://contoso.crm.dynamics.com. Also determines the token scope (<origin>/.default) and which stored credentials are used.",
+      "examples": ["https://contoso.crm.dynamics.com"]
+    },
+    "targetEntitySet": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Plural entity set name, e.g. contacts. Must satisfy assertLogicalName (^[A-Za-z_][A-Za-z0-9_]*$) at run time — it is interpolated into request URLs.",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "examples": ["contacts", "accounts"]
+    },
+    "sourceTable": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Excel table (ListObject) name, typically a Power Query output. Ignored for .csv/.tsv sources. Also the query name used when injecting into a .pqt."
+    },
+    "sourceSheet": {
+      "type": ["string", "null"],
+      "description": "Constrain the table search to one worksheet. Omit to search the whole workbook."
+    },
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Column mappings, applied in order. Target attributes must be unique across the array.",
+      "items": { "$ref": "#/definitions/columnMapping" }
+    },
+    "conflictMode": {
+      "enum": ["insert", "upsert", "skip-if-exists", "sync"],
+      "default": "insert",
+      "description": "insert = POST creates. upsert = PATCH by key (creates or updates). skip-if-exists = PATCH with If-None-Match:* (create only; 412 counts as skipped). sync = upsert, then deactivate or delete target records whose key is absent from the source."
+    },
+    "upsertKey": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "description": "Required for upsert, sync, and skip-if-exists. Either the attributes forming a Dataverse alternate key, or a single uniqueidentifier column holding the record's own primary id. Every entry must also appear as a column target."
+    },
+    "batchSize": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 100,
+      "description": "Rows per $batch request. Dataverse hard-caps at 1000. Each row becomes its own changeset inside the batch."
+    },
+    "maxErrors": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Stop scheduling new batches once this many row errors have accumulated. 0 = unlimited. Unattempted rows are counted as skipped."
+    },
+    "logDir": {
+      "type": ["string", "null"],
+      "default": "./logs",
+      "description": "Run log, checkpoint, and failed-rows output directory, resolved relative to the mapping file (not the workbook)."
+    },
+    "concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "default": 1,
+      "description": "Parallel $batch requests. Raising this makes checkpoints frontier-based rather than sequential; see docs/ARCHITECTURE.md."
+    },
+    "bypassCustomLogic": {
+      "type": "boolean",
+      "default": false,
+      "description": "Send MSCRM.BypassCustomPluginExecution and MSCRM.SuppressCallbackRegistrationExpanderJob on every operation. Requires the prvBypassCustomPlugins privilege."
+    },
+    "impersonateUserId": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "systemuser GUID sent as MSCRMCallerID. Requires prvActOnBehalfOfAnotherUser."
+    },
+    "skipUnchanged": {
+      "type": "boolean",
+      "default": false,
+      "description": "upsert/sync only. Pre-read each target record and drop attributes that already match; skip the row entirely if nothing changed. Costs one GET per row; lookup binds are always sent."
+    },
+    "syncAction": {
+      "enum": ["deactivate", "delete", null],
+      "description": "conflictMode=sync only. What to do with target records missing from the source. Defaults to deactivate, which filters candidates to statecode eq 0."
+    },
+    "notifyUrl": {
+      "type": ["string", "null"],
+      "pattern": "^(https://|http://localhost(:[0-9]+)?/)",
+      "description": "Webhook receiving a {text: summary} POST after the run (Teams/Slack incoming-webhook compatible). Must be https, or http://localhost for testing, because a shared mapping file could otherwise exfiltrate run summaries."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "conflictMode": { "enum": ["upsert", "sync"] } },
+        "required": ["conflictMode"]
+      },
+      "then": {
+        "required": ["upsertKey"],
+        "properties": { "upsertKey": { "type": "array", "minItems": 1 } },
+        "description": "validateMapping: conflictMode=upsert/sync requires at least one upsertKey attribute."
+      }
+    },
+    {
+      "if": {
+        "properties": { "skipUnchanged": { "const": true } },
+        "required": ["skipUnchanged"]
+      },
+      "then": {
+        "properties": { "conflictMode": { "enum": ["upsert", "sync"] } },
+        "required": ["conflictMode"],
+        "description": "validateMapping: skipUnchanged requires conflictMode=upsert or sync."
+      }
+    },
+    {
+      "if": {
+        "properties": { "syncAction": { "type": "string" } },
+        "required": ["syncAction"]
+      },
+      "then": {
+        "properties": { "conflictMode": { "const": "sync" } },
+        "required": ["conflictMode"],
+        "description": "validateMapping: syncAction only applies when conflictMode=sync."
+      }
+    }
+  ],
+  "definitions": {
+    "columnMapping": {
+      "type": "object",
+      "required": ["target", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source column header, matched exactly as read from the table's header row. Mutually exclusive with constant."
+        },
+        "constant": {
+          "type": ["string", "number", "boolean"],
+          "description": "Fixed value applied to every record instead of reading a column. Coerced through the same pipeline as a cell value: for lookups this is a record GUID (guid resolution) or a key value (alternateKey/text). Mutually exclusive with source."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Dataverse attribute logical name. For lookups this is the writable single-valued navigation property, which is NOT always the attribute name (parentcustomerid -> parentcustomerid_account)."
+        },
+        "kind": {
+          "enum": [
+            "string",
+            "memo",
+            "integer",
+            "decimal",
+            "money",
+            "double",
+            "boolean",
+            "datetime",
+            "dateonly",
+            "uniqueidentifier",
+            "lookup",
+            "choice",
+            "multichoice",
+            "status",
+            "state"
+          ],
+          "description": "Coercion target type. See docs/DATA-FORMATS.md for the exact per-kind rules."
+        },
+        "bindEntitySet": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "lookup only: the entity set the bind points at, e.g. accounts."
+        },
+        "lookupResolution": {
+          "enum": ["guid", "alternateKey", "text", null],
+          "description": "lookup only. guid = the cell already holds the record id. alternateKey = resolve via a Dataverse alternate key. text = resolve by exact match on any attribute via $filter."
+        },
+        "keyAttribute": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Required when lookupResolution is alternateKey or text: the attribute to match on."
+        },
+        "createIfMissing": {
+          "type": "boolean",
+          "default": false,
+          "description": "lookupResolution=text only: create a record in bindEntitySet with keyAttribute set to the source value when no match exists."
+        },
+        "duplicateBehavior": {
+          "enum": ["error", "first", null],
+          "default": "error",
+          "description": "lookupResolution=text only: what to do when the value matches 2+ records. error fails the row; first takes the first match."
+        },
+        "optionMap": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "number" },
+          "description": "choice/multichoice/status/state: human label -> integer option value. The add-in fills this from option-set metadata. Cells may then contain either labels or raw integers."
+        },
+        "treatEmptyAsNull": {
+          "type": "boolean",
+          "default": true,
+          "description": "true: a blank cell sends null, clearing the field. false: the attribute is omitted from the payload entirely. For lookups, null is only sent when the operation can update an existing record."
+        },
+        "format": {
+          "type": ["string", "null"],
+          "description": "datetime/dateonly only: an explicit parse format built from the tokens yyyy, MM, M, dd, d, HH, H, mm, ss (all other characters are literals). Pins ambiguous text dates instead of guessing.",
+          "examples": ["dd/MM/yyyy", "yyyy-MM-dd HH:mm"]
+        },
+        "notes": {
+          "type": ["string", "null"],
+          "description": "UI-only annotation. Ignored by the engine."
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["source"],
+          "not": { "required": ["constant"] },
+          "title": "Source column"
+        },
+        {
+          "required": ["constant"],
+          "not": { "required": ["source"] },
+          "title": "Fixed value"
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "lookup" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["bindEntitySet", "lookupResolution"],
+            "description": "validateColumn: a lookup column needs both bindEntitySet and lookupResolution."
+          },
+          "else": {
+            "properties": {
+              "createIfMissing": { "const": false },
+              "duplicateBehavior": { "type": "null" }
+            },
+            "description": "validateColumn: createIfMissing and duplicateBehavior only apply to lookup columns."
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "lookup" },
+              "lookupResolution": { "enum": ["alternateKey", "text"] }
+            },
+            "required": ["kind", "lookupResolution"]
+          },
+          "then": {
+            "required": ["keyAttribute"],
+            "description": "validateColumn: alternateKey and text resolution both need a keyAttribute."
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              { "properties": { "createIfMissing": { "const": true } }, "required": ["createIfMissing"] },
+              { "properties": { "duplicateBehavior": { "type": "string" } }, "required": ["duplicateBehavior"] }
+            ]
+          },
+          "then": {
+            "properties": { "lookupResolution": { "const": "text" } },
+            "required": ["lookupResolution"],
+            "description": "validateColumn: createIfMissing and duplicateBehavior require lookupResolution=text."
+          }
+        }
+      ]
+    }
+  }
+}

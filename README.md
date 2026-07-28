@@ -21,9 +21,27 @@ dvload/
 │   ├── core/      # mapping engine, OData client, xlsx reader (shared)
 │   ├── cli/       # Node CLI: dvload run|login|validate|schedule
 │   └── addin/     # Office.js task pane add-in
+├── docs/          # architecture, data formats, JSON schemas, auth notes
+├── packaging/     # distribution manifests (Scoop, winget notes)
+├── tests/         # seeded test-data generators and fixtures
 ├── package.json   # npm workspaces
 └── tsconfig.base.json
 ```
+
+### Documentation map
+
+| Document | What it covers |
+|---|---|
+| this file | user-facing reference: install, auth, commands, mapping fields |
+| [FEATURES.md](./FEATURES.md) | full feature inventory and planned work |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | module boundaries, the load pipeline, invariants, extension points |
+| [docs/DATA-FORMATS.md](./docs/DATA-FORMATS.md) | coercion rules, `$batch` wire format, QDEFF layout, on-disk state, log formats |
+| [docs/schema/](./docs/schema/) | JSON Schemas for `.dvmap.json` and `.dvplan.json` |
+| [docs/AUTH-NOTES.md](./docs/AUTH-NOTES.md) | what's been verified about Entra/Conditional Access, and what hasn't |
+| [docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md) | end-user guide for unattended nightly imports |
+| [TEST-PROTOCOL.md](./TEST-PROTOCOL.md) | 22-section manual/E2E protocol, up to 100k rows |
+| [TELEMETRY.md](./TELEMETRY.md) | what is collected, and how to turn it off |
+| [PRE-RELEASE-CHECKLIST.md](./PRE-RELEASE-CHECKLIST.md) | what must be done before shipping |
 
 ## Prerequisites
 
@@ -436,8 +454,16 @@ cross-step lookup wiring.
 
 ## Mapping JSON shape
 
-See `packages/core/examples/contacts.dvmap.json` for a full example. Key
-fields:
+Full example: `packages/core/examples/contacts.dvmap.json`. Machine-readable
+schema: [docs/schema/dvmap.schema.json](./docs/schema/dvmap.schema.json) —
+point your editor at it for completion and inline validation:
+
+```json
+{ "$schema": "../docs/schema/dvmap.schema.json", "schemaVersion": 1, "...": "..." }
+```
+
+The authoritative validation lives in `parseMapping` / `validateMapping`
+(`packages/core/src/mapping.ts`); the schema mirrors it. Key fields:
 
 | field | what it does |
 |---|---|
@@ -499,7 +525,8 @@ form.
 ## Run plan JSON shape (`.dvplan.json`)
 
 Use a run plan to orchestrate multiple `.dvmap.json` files while keeping each
-single-table mapping unchanged.
+single-table mapping unchanged. Schema:
+[docs/schema/dvplan.schema.json](./docs/schema/dvplan.schema.json).
 
 ```json
 {
@@ -544,9 +571,20 @@ single-table mapping unchanged.
 - **Power Query refresh** requires Excel to be installed on the machine
   running the schedule. Headless / server scenarios aren't supported.
 - **Secrets and tokens** live in `~/.dvload/` — DPAPI-protected
-  (CurrentUser) on Windows, mode 0600 on POSIX. For long-lived
-  deployments prefer certificate auth: `dvload app-login --cert <pem>`.
+  (CurrentUser) on Windows, mode 0600 on POSIX. Nothing is stored in Windows
+  Credential Manager. For long-lived deployments prefer certificate auth:
+  `dvload app-login --cert <pem>`. Full layout:
+  [docs/DATA-FORMATS.md](./docs/DATA-FORMATS.md#on-disk-state-dvload).
+
+## Contributing
+
+Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) first — particularly the
+[invariants](./docs/ARCHITECTURE.md#invariants) and
+[extension points](./docs/ARCHITECTURE.md#extension-points) sections, which
+list the steps a change usually needs to touch. Docs are treated as part of
+the change, not a follow-up; see
+[.github/copilot-instructions.md](./.github/copilot-instructions.md).
 
 ## License
 
-MIT (suggested — adjust to taste before publishing).
+MIT — see [LICENSE](./LICENSE).

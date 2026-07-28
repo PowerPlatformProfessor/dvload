@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/PowerPlatformProfessor/dvload/docs/schema/dvplan.schema.json",
+  "title": "dvload run plan (.dvplan.json)",
+  "description": "Orchestrates several .dvmap.json runs with staging and dependency ordering. Mirrors parseRunPlan + validateRunPlan in packages/core/src/run-plan.ts and validatePlanMappings in packages/cli/src/commands/run-all.ts, which remain the enforcement point. Two forms are accepted: the current steps[] form and the legacy runs[] manifest, which is upgraded in memory. `node tests/schema-parity.mjs` checks that this file and the parsers agree.",
+  "x-not-enforceable": [
+    "Step ids must be unique. uniqueItems compares whole items, not one property.",
+    "dependsOn and alternateKeyLinks.fromStep must name existing steps, and not the step itself. Draft-07 cannot reference sibling array contents.",
+    "The dependency graph must be acyclic. Not expressible at all; validateRunPlan does a DFS.",
+    "alternateKeyLinks consistency with the referenced .dvmap.json files. Requires reading other files; validatePlanMappings does this before execution."
+  ],
+  "oneOf": [
+    { "$ref": "#/definitions/runPlan" },
+    { "$ref": "#/definitions/legacyManifest" }
+  ],
+  "definitions": {
+    "runPlan": {
+      "title": "Run plan (current)",
+      "type": "object",
+      "required": ["schemaVersion", "name", "steps"],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1,
+          "description": "Must equal RUN_PLAN_SCHEMA_VERSION."
+        },
+        "name": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Plan name. Trimmed on parse."
+        },
+        "description": { "type": ["string", "null"] },
+        "createdAt": { "type": ["string", "null"], "description": "ISO 8601 UTC." },
+        "updatedAt": {
+          "type": ["string", "null"],
+          "description": "ISO 8601 UTC. Rewritten by serializeRunPlan on every save."
+        },
+        "stopOnError": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stop after any stage that had a failure. Steps already running in that stage still complete; later stages are not attempted."
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Step ids must be unique. Steps with no unsatisfied dependency and the same stage run in parallel.",
+          "items": { "$ref": "#/definitions/runPlanStep" }
+        }
+      }
+    },
+    "runPlanStep": {
+      "type": "object",
+      "required": ["id", "mapping", "workbook"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Unique step id, referenced by dependsOn and alternateKeyLinks.fromStep."
+        },
+        "mapping": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Path to a .dvmap.json, resolved relative to the plan file. Parsed and validated before any step executes."
+        },
+        "workbook": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Path to the .xlsx/.csv/.tsv source, resolved relative to the plan file."
+        },
+        "refresh": {
+          "type": "boolean",
+          "description": "Refresh Power Query in this workbook before reading. Windows-only; requires Excel desktop."
+        },
+        "stage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Barrier number. If ANY step declares a stage, every step implicitly depends on all steps with a lower stage, so stages act as ordered barriers rather than labels."
+        },
+        "dependsOn": {
+          "type": ["array", "null"],
+          "items": { "type": "string", "pattern": "\\S" },
+          "description": "Explicit upstream step ids. Must name existing steps, must not name this step, and must not form a cycle."
+        },
+        "overrides": { "$ref": "#/definitions/runPlanStepOverrides" },
+        "alternateKeyLinks": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/definitions/alternateKeyLink" },
+          "description": "Cross-step lookup wiring. Each link also implies a dependency on fromStep, so ordering need not be restated in dependsOn."
+        }
+      }
+    },
+    "runPlanStepOverrides": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Per-step overrides. These take precedence over the equivalent run-all command-line flags.",
+      "properties": {
+        "maxErrors": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Overrides mapping.maxErrors for this step. 0 = unlimited."
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Overrides mapping.concurrency for this step."
+        },
+        "notifyUrl": {
+          "type": "string",
+          "pattern": "^(https://|http://localhost(:[0-9]+)?/)",
+          "description": "Webhook for this step's summary. https, or http://localhost for testing."
+        },
+        "dryRun": { "type": "boolean", "description": "Coerce and plan without writing to Dataverse." },
+        "user": { "type": "boolean", "description": "Force delegated auth even when app-only credentials exist." },
+        "failedRows": {
+          "type": "boolean",
+          "description": "false suppresses the failed-rows .xlsx for this step (the equivalent of --no-failed-rows)."
+        }
+      }
+    },
+    "alternateKeyLink": {
+      "type": "object",
+      "required": ["fromStep", "lookupTarget", "keyAttribute"],
+      "additionalProperties": false,
+      "description": "Asserts that a lookup in this step resolves against a key the upstream step writes. Enforced by validatePlanMappings before execution: the upstream mapping must include keyAttribute in its upsertKey, and this step's lookupTarget column must be a lookup with lookupResolution=alternateKey and the same keyAttribute.",
+      "properties": {
+        "fromStep": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Upstream step id that writes the parent records first."
+        },
+        "lookupTarget": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Column target (navigation property) in this step's mapping."
+        },
+        "keyAttribute": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Alternate-key attribute shared by the upstream upsertKey and this lookup."
+        }
+      }
+    },
+    "legacyManifest": {
+      "title": "Legacy run-all manifest",
+      "type": "object",
+      "required": ["runs"],
+      "additionalProperties": false,
+      "description": "Pre-run-plan format. Upgraded in memory to one step per entry with id \"run-<n>\" and stage <n>, i.e. strictly sequential. Note stopOnError defaults to true here as well (only an explicit false disables it).",
+      "properties": {
+        "stopOnError": { "type": "boolean", "default": true },
+        "runs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["mapping", "workbook"],
+            "additionalProperties": false,
+            "properties": {
+              "mapping": { "type": "string", "pattern": "\\S" },
+              "workbook": { "type": "string", "pattern": "\\S" },
+              "refresh": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
