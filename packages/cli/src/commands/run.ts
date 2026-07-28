@@ -25,6 +25,8 @@ export interface RunOpts {
   user?: boolean;
   maxErrors?: number;
   concurrency?: number;
+  /** Attempts per HTTP request, including the first. Default 5. */
+  maxAttempts?: number;
   /** Resume from the last checkpoint if one exists for this mapping+workbook. */
   resume?: boolean;
   /** POST a {text} summary here after the run (overrides mapping.notifyUrl). */
@@ -122,16 +124,22 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
 
   const requestLog: RequestLogEntry[] = [];
   const successLog: RowSuccess[] = [];
+  let retryCount = 0;
 
   const client = new DataverseClient({
     environmentUrl: mapping.environmentUrl,
     getToken,
     onRequest: (entry) => requestLog.push(entry),
     retry: {
+      ...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
       onRetry: (info) => {
+        retryCount++;
+        // status 0 = the request threw before producing a response (a dropped
+        // connection). Show the cause rather than a meaningless "0".
+        const what = info.status === 0 ? (info.error ?? "network error") : String(info.status);
         log(
           kleur.yellow(
-            `\n  [retry ${info.attempt}] ${info.status} ${info.url} — ` +
+            `\n  [retry ${info.attempt}] ${what} ${info.url} — ` +
               `waiting ${(info.delayMs / 1000).toFixed(1)}s (${info.source})`
           )
         );
@@ -207,9 +215,9 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
 
   if (quiet) {
     // Machine-readable result for pipelines/monitoring.
-    console.log(JSON.stringify({ ...result, failedRowsFile: failedFile ?? null }));
+    console.log(JSON.stringify({ ...result, failedRowsFile: failedFile ?? null, retries: retryCount }));
   } else {
-    printSummary(mapping, result, failedFile);
+    printSummary(mapping, result, failedFile, retryCount);
   }
 
   const notifyUrl = opts.notifyUrl ?? mapping.notifyUrl;
@@ -270,7 +278,12 @@ async function readCheckpoint(checkpointFile: string, workbookPath: string): Pro
   }
 }
 
-function printSummary(mapping: Mapping, result: LoadResult, failedFile?: string): void {
+function printSummary(
+  mapping: Mapping,
+  result: LoadResult,
+  failedFile?: string,
+  retryCount = 0
+): void {
   console.log("");
   console.log(kleur.bold("Run summary"));
   console.log(`  total:     ${result.total}`);
@@ -282,11 +295,33 @@ function printSummary(mapping: Mapping, result: LoadResult, failedFile?: string)
   }
   console.log(`  failed:    ${result.failed > 0 ? kleur.red(String(result.failed)) : "0"}`);
   console.log(`  duration:  ${duration(result.startedAt, result.finishedAt)}`);
+  // A run that quietly survived throttling or a dropped link shouldn't look
+  // identical to one that had a clean network.
+  if (retryCount > 0) {
+    console.log(`  retries:   ${kleur.yellow(String(retryCount))} ${kleur.gray("(throttled or dropped requests, recovered)")}`);
+  }
   if (result.errors.length > 0) {
     console.log("");
     console.log(kleur.red("First few errors:"));
     for (const e of result.errors.slice(0, 5)) {
       console.log(`  ${e.rowIndex >= 0 ? `row ${e.rowIndex}` : "sync"}: ${e.message}`);
+    }
+    // Rows that failed with no HTTP status never reached Dataverse — that's a
+    // connectivity problem, not bad data, and re-running usually just works.
+    const networkFailures = result.errors.filter(
+      (e) => e.httpStatus === undefined && e.code === undefined && /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|socket|network/i.test(e.message)
+    ).length;
+    if (networkFailures > 0) {
+      console.log("");
+      console.log(
+        kleur.yellow(`${networkFailures} of those failed with no response from Dataverse — the connection dropped.`)
+      );
+      console.log(
+        kleur.gray(
+          "  Usually the machine slept or the network blipped mid-run. Re-run the failed-rows\n" +
+            "  file below, and consider --max-attempts to ride out longer outages."
+        )
+      );
     }
     if (failedFile) {
       console.log("");

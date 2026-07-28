@@ -17,6 +17,8 @@ export interface RunAllOpts {
   user?: boolean;
   notifyUrl?: string;
   failedRows?: boolean;
+  /** Attempts per HTTP request, including the first. Applied to every step. */
+  maxAttempts?: number;
 }
 
 export async function runAllCommand(manifestPath: string, opts: RunAllOpts): Promise<void> {
@@ -99,6 +101,7 @@ function buildRunOpts(step: RunPlanStep, opts: RunAllOpts, dir: string): RunOpts
     failedRows: overrides.failedRows ?? opts.failedRows,
     maxErrors: overrides.maxErrors,
     concurrency: overrides.concurrency,
+    maxAttempts: opts.maxAttempts,
   };
 }
 

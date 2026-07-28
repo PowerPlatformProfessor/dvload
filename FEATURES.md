@@ -40,6 +40,13 @@
 - **Run log** written as `.jsonl` alongside the workbook
 - **Failed-rows re-run file** — failures are written to `logs/failed_<workbook>_<timestamp>.xlsx` in the same column shape as the source table; fix the cells and re-run just that file (suppress with `--no-failed-rows`)
 
+### Resilience
+
+- **Throttle-aware retry** on 429/503/504, honouring `Retry-After` (seconds or HTTP-date) with exponential backoff and a 60s cap
+- **Dropped-connection retry**: a request that throws instead of responding (machine sleeps mid-run, VPN reconnects, link blips) is retried with the same backoff rather than failing an entire `$batch` of rows. Failures are classified — a connection that was never established (`ENOTFOUND`, `ECONNREFUSED`, connect timeout) is always safe to replay; one that died mid-flight is only replayed when the operations are idempotent, so plain POST creates can't be duplicated; cancellation is never replayed
+- `--max-attempts <n>` on `run` / `run-all` (default 5) to ride out longer outages; retries are counted in the run summary and the `--json` output, and each dropped request is recorded in the run log with status 0 and its error code
+- Runs that fail with no HTTP response are called out in the summary as a connectivity problem rather than bad data
+
 ### Excel add-in (task pane)
 
 - MSAL popup sign-in (delegated flow)

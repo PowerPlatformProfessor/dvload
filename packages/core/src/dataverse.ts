@@ -31,7 +31,7 @@ export interface RequestLogEntry {
   errorBody?: unknown;
 }
 
-/** Retry policy for 429/503/504 responses. */
+/** Retry policy for throttled/unavailable responses and dropped connections. */
 export interface RetryOptions {
   /** Max attempts INCLUDING the first call. Default 5. */
   maxAttempts?: number;
@@ -47,11 +47,62 @@ export interface RetryOptions {
 
 export interface RetryInfo {
   attempt: number; // 1-based; the attempt that just failed
+  /** HTTP status, or 0 when the request never produced a response. */
   status: number;
   delayMs: number;
   url: string;
   /** Source of the delay: "retry-after-seconds", "retry-after-date", or "backoff". */
   source: "retry-after-seconds" | "retry-after-date" | "backoff";
+  /** Set when the attempt threw instead of responding (e.g. "fetch failed (ECONNRESET)"). */
+  error?: string;
+}
+
+/**
+ * How a thrown fetch error should be treated:
+ *  - "abort": the caller cancelled. Never retry.
+ *  - "not-executed": the connection was never established (DNS, refused,
+ *    connect timeout), so the server cannot have run anything. Safe to
+ *    replay even for non-idempotent POSTs.
+ *  - "ambiguous": the connection died mid-flight. The server may or may not
+ *    have executed the request, so only replay it when the caller says the
+ *    operation is idempotent.
+ */
+type NetworkFailureKind = "abort" | "not-executed" | "ambiguous";
+
+/** Node/undici error codes meaning we never reached the server. */
+const NOT_EXECUTED_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "ERR_SOCKET_CONNECTION_TIMEOUT",
+]);
+
+/** Walk the cause chain — undici wraps the real cause inside "fetch failed". */
+function errorCodes(e: unknown): string[] {
+  const out: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; cur instanceof Error && depth < 5; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    if (typeof code === "string") out.push(code);
+    if (cur.name) out.push(cur.name);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return out;
+}
+
+export function classifyNetworkError(e: unknown): NetworkFailureKind {
+  const codes = errorCodes(e);
+  if (codes.includes("AbortError") || codes.includes("ABORT_ERR")) return "abort";
+  if (codes.some((c) => NOT_EXECUTED_CODES.has(c))) return "not-executed";
+  return "ambiguous";
+}
+
+/** One-line description of a thrown fetch error, including the underlying code. */
+export function describeNetworkError(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  const codes = errorCodes(e).filter((c) => c !== "Error" && c !== "TypeError");
+  return codes.length > 0 ? `${message} (${codes[0]})` : message;
 }
 
 export interface CreateResult {
@@ -194,7 +245,12 @@ export class DataverseClient {
   private async fetchWithRetry(
     input: string | URL,
     init?: RequestInit,
-    retryableOverride?: number[]
+    retryableOverride?: number[],
+    /**
+     * Whether replaying this request is safe when a connection dies mid-flight.
+     * Defaults to true: every caller except plain POST creates is idempotent.
+     */
+    idempotent = true
   ): Promise<Response> {
     const policy = this.opts.retry ?? {};
     const maxAttempts = policy.maxAttempts ?? 5;
@@ -207,7 +263,31 @@ export class DataverseClient {
     let lastResponse: Response | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const startedAt = new Date().toISOString();
-      const res = await this.fetchFn(input as unknown as Parameters<typeof fetch>[0], init);
+
+      // A dropped connection THROWS rather than returning a status — a laptop
+      // sleeping mid-run, a VPN reconnecting, a flaky link. Without this the
+      // error escapes the whole retry loop and loses an entire batch.
+      let res: Response;
+      try {
+        res = await this.fetchFn(input as unknown as Parameters<typeof fetch>[0], init);
+      } catch (e) {
+        const kind = classifyNetworkError(e);
+        const reason = describeNetworkError(e);
+        this.opts.onRequest?.({
+          method, url, status: 0, ok: false,
+          startedAt, finishedAt: new Date().toISOString(),
+          errorBody: reason,
+        });
+        // Cancellation is deliberate; a possibly-executed POST must not be
+        // replayed or it duplicates records.
+        const replayable = kind === "not-executed" || (kind === "ambiguous" && idempotent);
+        if (kind === "abort" || !replayable || attempt === maxAttempts) throw e;
+
+        const delayMs = Math.min(baseDelay * 2 ** (attempt - 1), maxDelay);
+        policy.onRetry?.({ attempt, status: 0, delayMs, url, source: "backoff", error: reason });
+        await sleep(delayMs);
+        continue;
+      }
       const finishedAt = new Date().toISOString();
 
       // For non-ok responses that won't be retried, capture the body before
@@ -418,11 +498,19 @@ export class DataverseClient {
     body: Record<string, unknown>,
     extraHeaders?: Record<string, string>
   ): Promise<CreateResult> {
-    const res = await this.fetchWithRetry(this.url(entitySet), {
-      method: "POST",
-      headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()), ...(extraHeaders ?? {}) },
-      body: JSON.stringify(body),
-    });
+    const res = await this.fetchWithRetry(
+      this.url(entitySet),
+      {
+        method: "POST",
+        headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()), ...(extraHeaders ?? {}) },
+        body: JSON.stringify(body),
+      },
+      undefined,
+      // A plain create: if the connection dies after the server accepted it,
+      // replaying makes a second record. Only failures that provably never
+      // reached Dataverse are retried.
+      false
+    );
     if (!res.ok) await throwForResponse(res);
     return parseCreateResult(res);
   }
@@ -694,7 +782,10 @@ export class DataverseClient {
         },
         body,
       },
-      retryableOverride
+      retryableOverride,
+      // A mid-flight connection drop is ambiguous: the changesets may already
+      // have committed. Replaying is only safe when the ops are idempotent.
+      opts?.idempotent !== false
     );
 
     const text = await res.text();

@@ -2652,10 +2652,23 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
     setRunning(true);
     const requestLog: RequestLogEntry[] = [];
     const successLog: RowSuccess[] = [];
+    let retries = 0;
     const client = new DataverseClient({
       environmentUrl: mapping.environmentUrl,
       getToken: makeTokenProvider(mapping.environmentUrl),
       onRequest: (entry) => requestLog.push(entry),
+      retry: {
+        onRetry: (info) => {
+          retries++;
+          // status 0 = the request threw before responding — a dropped
+          // connection, usually the machine sleeping mid-run.
+          setStatus(
+            "info",
+            `Retrying (${info.attempt}): ${info.status === 0 ? (info.error ?? "network error") : info.status} — ` +
+              `waiting ${(info.delayMs / 1000).toFixed(1)}s…`
+          );
+        },
+      },
     });
     // Track how far we got so a cancel can be resumed.
     let processed = startOffset;
@@ -2687,14 +2700,15 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
       (result.removed > 0 ? `, ${result.removed} removed` : "") +
       `, ${result.failed} failed`;
     const prefix = dryRun ? "Dry run — nothing was written. " : "";
+    const retryNote = retries > 0 ? ` (recovered from ${retries} dropped or throttled request${retries === 1 ? "" : "s"})` : "";
     if (result.cancelled) {
       setStatus("info", `${prefix}Cancelled. ${summary} — skipped rows were not attempted.`);
     } else if (result.failed === 0) {
-      setStatus("success", `${prefix}Done. ${summary}.`);
+      setStatus("success", `${prefix}Done. ${summary}${retryNote}.`);
     } else {
       setStatus(
         "error",
-        `${prefix}Done with errors. ${summary}. First: ${result.errors[0]?.message ?? ""}`
+        `${prefix}Done with errors. ${summary}${retryNote}. First: ${result.errors[0]?.message ?? ""}`
       );
     }
 

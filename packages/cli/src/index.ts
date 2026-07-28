@@ -35,6 +35,11 @@ program
   .option("--user", "Force delegated (interactive) auth even if app-only credentials are configured.")
   .option("--max-errors <n>", "Override mapping.maxErrors", parseIntStrict)
   .option("--concurrency <n>", "Parallel $batch requests (1-8); overrides mapping.concurrency", parseIntStrict)
+  .option(
+    "--max-attempts <n>",
+    "Attempts per request, including the first (default 5). Raise it to ride out longer network outages.",
+    parseIntStrict
+  )
   .option("--resume", "Resume an interrupted run from its checkpoint (same workbook only).")
   .option("--notify-url <url>", "POST a {text} summary to this webhook after the run.")
   .option("--no-failed-rows", "Don't write the failed-rows .xlsx re-run file.")
@@ -50,6 +55,11 @@ program
   .option("--dry-run", "Coerce + plan all imports but don't call Dataverse.")
   .option("--user", "Force delegated auth for all runs.")
   .option("--notify-url <url>", "POST a {text} summary per run.")
+  .option(
+    "--max-attempts <n>",
+    "Attempts per request, including the first (default 5). Applied to every step.",
+    parseIntStrict
+  )
   .option("--no-failed-rows", "Don't write failed-rows .xlsx files.")
   .action(runAllCommand);
 
