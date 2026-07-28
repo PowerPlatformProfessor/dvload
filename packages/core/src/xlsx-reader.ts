@@ -148,6 +148,107 @@ function readByRange(sheet: any, ref: string): ReadTableResult {
   return { headers, rows };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Enumerating what's in a workbook                                            */
+/* -------------------------------------------------------------------------- */
+
+export interface WorkbookTableInfo {
+  /** Excel table (ListObject) name, or the sheet name when the sheet has none. */
+  name: string;
+  sheetName: string;
+  /**
+   * Whether `name` refers to a real table or to a whole sheet's used range.
+   * Callers need this to read the table back: a `sheet` entry has no table
+   * name to pass, only a sheet.
+   */
+  kind: "table" | "sheet";
+  /** Data rows, excluding the header. Approximate: blank rows aren't excluded. */
+  rowCount: number;
+  columns: string[];
+}
+
+/**
+ * List everything readable in a workbook, without parsing the data.
+ *
+ * `readTableFromBuffer` answers "give me *the* table", which is right for a
+ * saved mapping that already names one. This answers "what's in here?", so a
+ * UI can offer a choice — including across several files at once.
+ *
+ * Only the header row of each range is read, so this stays cheap on a large
+ * workbook. `rowCount` comes from the range dimensions rather than a scan,
+ * which means it counts blank rows the reader would later drop; it is for
+ * display, not for accounting.
+ */
+export async function listTablesFromBuffer(
+  buffer: ArrayBuffer | Uint8Array
+): Promise<WorkbookTableInfo[]> {
+  const wb = new ExcelJS.Workbook();
+  const buf = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  await wb.xlsx.load(buf as unknown as ArrayBuffer);
+  return listTables(wb);
+}
+
+export async function listTablesFromFile(path: string): Promise<WorkbookTableInfo[]> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(path);
+  return listTables(wb);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function listTables(wb: any): WorkbookTableInfo[] {
+  const out: WorkbookTableInfo[] = [];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const sheet of wb.worksheets as any[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tables = ((sheet as { tables?: Record<string, any> }).tables) ?? {};
+    const names = Object.keys(tables);
+
+    for (const name of names) {
+      const tbl = tables[name];
+      const tblDef = (tbl as { table?: unknown }).table ?? tbl;
+      const ref = (tblDef as { tableRef?: string }).tableRef;
+      if (!ref) continue;
+      const described = describeRange(sheet, ref);
+      if (described) out.push({ name, sheetName: sheet.name, kind: "table", ...described });
+    }
+
+    // A sheet with no named table is still usable — Power Query writes
+    // tables, but people paste data too. Only offered when there's no table,
+    // matching what extractTable would fall back to.
+    if (names.length === 0) {
+      const range = usedRange(sheet);
+      if (range) {
+        const described = describeRange(sheet, range);
+        if (described) {
+          out.push({ name: sheet.name, sheetName: sheet.name, kind: "sheet", ...described });
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+/** Header row and dimensions for a range, without reading the data. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function describeRange(sheet: any, ref: string): { rowCount: number; columns: string[] } | null {
+  const [start, end] = ref.split(":");
+  if (!start || !end) return null;
+  const startCell = parseAddress(start);
+  const endCell = parseAddress(end);
+
+  const columns: string[] = [];
+  for (let c = startCell.col; c <= endCell.col; c++) {
+    const cell = sheet.getRow(startCell.row).getCell(c);
+    // Same blank-header rule as readByRange, so the names a caller sees here
+    // are the ones the rows will actually be keyed by.
+    columns.push(String(cell.value ?? "").trim() || `col_${c}`);
+  }
+
+  return { rowCount: Math.max(0, endCell.row - startCell.row), columns };
+}
+
 /** Build the failed-rows workbook in memory. Shared by both writers. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildRowsWorkbook(headers: string[], rows: SourceRow[], tableName: string): any {

@@ -27,6 +27,8 @@ import {
   mappingFromPqt,
   mappingsFromPqtAll,
   readTableFromBuffer,
+  listTablesFromBuffer,
+  type WorkbookTableInfo,
   readTableFromCsvString,
   writeRowsToBuffer,
   SCHEMA_VERSION,
@@ -111,13 +113,44 @@ function renderProfilePicker(): void {
   el<HTMLButtonElement>("profileDelete").disabled = !sel.value;
 }
 
-/** Rows loaded from a picked file rather than a table in the open workbook. */
-interface FileSource {
-  fileName: string;
-  /** Table/sheet name recorded in the mapping's sourceTable. */
+/**
+ * A file the user added as a source.
+ *
+ * The bytes are kept, not the parsed rows. Several 100k-row workbooks can be
+ * loaded at once and only one is ever imported, so parsing them all up front
+ * would cost far more memory than it saves — an Office WebView can't afford
+ * it. Rows are read on demand in `readSourceRows`.
+ */
+interface LoadedFile {
+  id: string;
+  name: string;
+  kind: "xlsx" | "csv";
+  /** xlsx only. */
+  buffer?: ArrayBuffer;
+  /** csv/tsv only. */
+  text?: string;
+  delimiter?: string;
+}
+
+/**
+ * One selectable source: a table in the open workbook, or one inside an
+ * added file. Both kinds share a picker, because from the mapping's point of
+ * view they are the same thing — a named set of columns.
+ */
+interface SourceRef {
+  /** Value used in the <select>; unique across files with same-named tables. */
+  id: string;
+  /** Recorded as mapping.sourceTable. */
   tableName: string;
-  headers: string[];
-  rows: Array<Record<string, unknown>>;
+  origin: "workbook" | "file";
+  /** Set when origin === "file". */
+  fileId?: string;
+  fileName?: string;
+  sheetName: string;
+  /** Whether tableName names a real table or a whole sheet. */
+  kind: "table" | "sheet";
+  rowCount: number;
+  columns: string[];
 }
 
 /** A cancelled or partly-failed run, so it can be picked up where it stopped. */
@@ -134,7 +167,12 @@ interface AppState {
   environmentUrl: string;
   tables: TableInfo[];
   selectedTable: TableInfo | null;
-  fileSource: FileSource | null;
+  /** Files added as sources, in the order they were added. */
+  files: LoadedFile[];
+  /** Workbook tables plus every table in every added file. */
+  sources: SourceRef[];
+  /** `SourceRef.id` of the current selection. */
+  selectedSourceId: string;
   entitySet: string;
   entityLogicalName: string;
   entityAttributes: EntityAttribute[];
@@ -157,7 +195,9 @@ const state: AppState = {
   environmentUrl: "",
   tables: [],
   selectedTable: null,
-  fileSource: null,
+  files: [],
+  sources: [],
+  selectedSourceId: "",
   entitySet: "",
   entityLogicalName: "",
   entityAttributes: [],
@@ -226,15 +266,21 @@ async function bootstrap(): Promise<void> {
   }
 
   applyHostCapabilities();
-  await refreshAccountUI();
 
   state.tables = await host().workbook.listTables();
-  populateTablePicker();
+  rebuildSources();
+  // Before the auth check, not after: auth state is per environment, and
+  // restoreMapping is what tells us which environment we're in. Checking
+  // first meant asking "is anyone signed in to <nothing>?", which always
+  // answered no — so a returning user saw "Not signed in" despite a
+  // perfectly good cached session.
   restoreMapping();
   restoreRunPlan();
 
-  // If there is a cached MSAL account and a saved environment URL, auto-load
-  // entities and restore the entity selection without requiring a Sign-in click.
+  await refreshAccountUI();
+
+  // Cached session plus a known environment: load entities and restore the
+  // saved entity selection without making the user click Sign in.
   if (state.account && state.environmentUrl) {
     triggerLoadEntities();
   }
@@ -244,10 +290,8 @@ async function bootstrap(): Promise<void> {
   el<HTMLSelectElement>("profile").addEventListener("change", (e) => {
     const url = (e.target as HTMLSelectElement).value;
     if (!url) return;
-    state.environmentUrl = url;
-    el<HTMLInputElement>("env").value = url;
     el<HTMLButtonElement>("profileDelete").disabled = false;
-    if (state.account) triggerLoadEntities();
+    void setEnvironment(url);
   });
   el<HTMLButtonElement>("profileDelete").addEventListener("click", () => {
     const url = el<HTMLSelectElement>("profile").value;
@@ -280,7 +324,7 @@ async function bootstrap(): Promise<void> {
   });
 
   el<HTMLInputElement>("env").addEventListener("change", (e) => {
-    state.environmentUrl = (e.target as HTMLInputElement).value.trim();
+    void setEnvironment((e.target as HTMLInputElement).value);
   });
 
   el<HTMLButtonElement>("signin").addEventListener("click", onSignIn);
@@ -306,7 +350,6 @@ async function bootstrap(): Promise<void> {
   el<HTMLButtonElement>("planSave").addEventListener("click", onPlanSave);
   el<HTMLButtonElement>("planLoad").addEventListener("click", onPlanLoad);
   el<HTMLButtonElement>("pickFile").addEventListener("click", onPickFileSource);
-  el<HTMLButtonElement>("clearFileSource").addEventListener("click", clearFileSource);
   el<HTMLButtonElement>("resumeRun").addEventListener("click", () => void onRun({ resume: true }));
   el<HTMLButtonElement>("discardResume").addEventListener("click", () => {
     state.checkpoint = null;
@@ -314,6 +357,10 @@ async function bootstrap(): Promise<void> {
     renderCheckpoint();
   });
   el<HTMLButtonElement>("downloadFailed").addEventListener("click", () => void onDownloadFailedRows());
+  el<HTMLButtonElement>("clearLog").addEventListener("click", () => {
+    clearRunLog();
+    setStatus("info", "Log cleared.");
+  });
   el<HTMLSelectElement>("conflictMode").addEventListener("change", updateOptionsVisibility);
 
   // Plan metadata — kept in state so load → save round-trips it.
@@ -375,16 +422,18 @@ void bootstrap();
 function applyHostCapabilities(): void {
   if (host().workbook.canReadOpenWorkbook) return;
 
-  const tableSel = el<HTMLSelectElement>("table");
-  tableSel.innerHTML = '<option value="">Not available outside Excel</option>';
-  tableSel.disabled = true;
+  // Without a workbook the table picker starts empty, so adding files is the
+  // first step rather than an alternative to a step. Move that block above
+  // the picker so the panel reads in the order it has to be used.
+  const files = el<HTMLDivElement>("sourceFilesBlock");
+  const table = el<HTMLDivElement>("sourceTableBlock");
+  table.parentElement?.insertBefore(files, table);
 
   const extract = el<HTMLButtonElement>("extractPqt");
   extract.disabled = true;
   extract.title = "Only available in the Excel add-in — it reads the open workbook.";
 
   const pick = el<HTMLButtonElement>("pickFile");
-  pick.textContent = "Choose a file…";
   pick.classList.remove("secondary");
 }
 
@@ -616,79 +665,214 @@ async function onCopyPqtM(): Promise<void> {
 /* File source (another workbook, or a .csv/.tsv)                              */
 /* -------------------------------------------------------------------------- */
 
+let fileSeq = 0;
+
 /**
- * Read rows from a picked file instead of a table in the open workbook. Core
- * already ships buffer-based readers for exactly this — the pane just never
- * used them, so a CSV or a second workbook meant dropping to the CLI.
+ * Add one or more files as sources.
+ *
+ * Files are additive and every table inside each one becomes selectable, so
+ * the picker is the single place you choose what to import — previously a
+ * file *replaced* the picker and disabled it, which meant one file, one
+ * table, and no way to see what else the workbook contained.
  */
 function onPickFileSource(): void {
   const input = document.createElement("input");
   input.type = "file";
+  input.multiple = true;
   input.accept = ".xlsx,.xlsm,.csv,.tsv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    try {
-      const lower = file.name.toLowerCase();
-      let table: { headers: string[]; rows: Array<Record<string, unknown>> };
-      let tableName: string;
-      if (lower.endsWith(".csv") || lower.endsWith(".tsv")) {
-        const text = await file.text();
-        table = readTableFromCsvString(text, { delimiter: lower.endsWith(".tsv") ? "\t" : "," });
-        tableName = file.name.replace(/\.(csv|tsv)$/i, "");
-      } else {
-        // No table name: core takes the workbook's first table, or the first
-        // sheet's used range when there isn't one.
-        table = await readTableFromBuffer(await file.arrayBuffer(), {});
-        tableName = file.name.replace(/\.(xlsx|xlsm)$/i, "");
+    const picked = [...(input.files ?? [])];
+    if (picked.length === 0) return;
+
+    const added: string[] = [];
+    const problems: string[] = [];
+
+    for (const file of picked) {
+      try {
+        added.push(await addSourceFile(file));
+      } catch (e) {
+        problems.push(`${file.name}: ${(e as Error).message}`);
       }
-      if (table.rows.length === 0) {
-        setStatus("error", `${file.name} has no data rows.`);
-        return;
-      }
-      state.fileSource = { fileName: file.name, tableName, headers: table.headers, rows: table.rows };
-      // The source column pickers read selectedTable.columns, so present the
-      // file as if it were a table in the workbook.
-      state.selectedTable = {
-        name: tableName,
-        worksheetName: "",
-        columns: table.headers,
-      } as TableInfo;
-      el<HTMLSelectElement>("table").value = "";
-      renderFileSource();
-      rerenderMappings();
-      setStatus(
-        "success",
-        `Using ${file.name} — ${table.rows.length} row${table.rows.length === 1 ? "" : "s"}, ` +
-          `${table.headers.length} column${table.headers.length === 1 ? "" : "s"}.`
-      );
-    } catch (e) {
-      setStatus("error", `Couldn't read ${file.name}: ${(e as Error).message}`);
+    }
+
+    rebuildSources();
+    // Land on something usable: after adding files, the first newly added
+    // table is almost always the one wanted.
+    const firstNew = state.sources.find((s) => s.fileName === added[0]);
+    if (firstNew && !state.selectedSourceId) selectSource(firstNew.id);
+
+    if (problems.length) {
+      setStatus("error", `Couldn't read ${problems.length} file(s): ${problems.join("; ")}`);
+    } else {
+      const n = state.sources.filter((s) => s.origin === "file").length;
+      setStatus("success", `Added ${added.length} file(s) — ${n} table(s) available.`);
     }
   };
   input.click();
 }
 
-function clearFileSource(): void {
-  state.fileSource = null;
-  state.selectedTable = null;
-  renderFileSource();
-  rerenderMappings();
-  setStatus("info", "Back to reading a table in this workbook — pick one above.");
+/** Parse a file's structure (not its rows) and register it. Returns its name. */
+async function addSourceFile(file: File): Promise<string> {
+  const lower = file.name.toLowerCase();
+  const id = `f${++fileSeq}`;
+
+  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) {
+    const text = await file.text();
+    const delimiter = lower.endsWith(".tsv") ? "\t" : ",";
+    // A delimited file is one table by definition, so it's parsed now — the
+    // header row is needed either way and there's no structure to enumerate.
+    const parsed = readTableFromCsvString(text, { delimiter });
+    if (parsed.rows.length === 0) throw new Error("no data rows");
+    state.files.push({ id, name: file.name, kind: "csv", text, delimiter });
+    return file.name;
+  }
+
+  const buffer = await file.arrayBuffer();
+  const tables = await listTablesFromBuffer(buffer);
+  if (tables.length === 0) throw new Error("no tables or data found");
+  fileTablesCache.set(id, tables);
+  state.files.push({ id, name: file.name, kind: "xlsx", buffer });
+  return file.name;
 }
 
-function renderFileSource(): void {
-  const info = el<HTMLSpanElement>("fileSourceInfo");
-  const clear = el<HTMLButtonElement>("clearFileSource");
-  const tableSel = el<HTMLSelectElement>("table");
-  if (state.fileSource) {
-    info.textContent = `Using file: ${state.fileSource.fileName} (${state.fileSource.rows.length} rows)`;
-    clear.style.display = "";
-    tableSel.disabled = true;
-  } else {
-    info.textContent = "";
-    clear.style.display = "none";
-    tableSel.disabled = false;
+function removeSourceFile(fileId: string): void {
+  const removed = state.files.find((f) => f.id === fileId);
+  state.files = state.files.filter((f) => f.id !== fileId);
+  fileTablesCache.delete(fileId);
+
+  // If the current selection lived in that file, the mapping's source columns
+  // no longer exist — drop the selection rather than leave it pointing at
+  // something unreadable.
+  const current = currentSource();
+  const lost = current?.fileId === fileId;
+
+  rebuildSources();
+  if (lost) {
+    state.selectedSourceId = "";
+    state.selectedTable = null;
+    el<HTMLSelectElement>("table").value = "";
+    rerenderMappings();
+  }
+  setStatus("info", `Removed ${removed?.name ?? "file"}.`);
+}
+
+/**
+ * Recompute the selectable sources: the open workbook's tables first, then
+ * every table in every added file, in the order the files were added.
+ */
+function rebuildSources(): void {
+  const sources: SourceRef[] = [];
+
+  for (const t of state.tables) {
+    sources.push({
+      id: `w:${t.name}`,
+      tableName: t.name,
+      origin: "workbook",
+      sheetName: t.worksheetName,
+      kind: "table",
+      rowCount: t.rowCount,
+      columns: t.columns,
+    });
+  }
+
+  for (const f of state.files) {
+    if (f.kind === "csv") {
+      const parsed = readTableFromCsvString(f.text ?? "", { delimiter: f.delimiter ?? "," });
+      sources.push({
+        id: `${f.id}:0`,
+        tableName: f.name.replace(/\.(csv|tsv)$/i, ""),
+        origin: "file",
+        fileId: f.id,
+        fileName: f.name,
+        sheetName: "",
+        kind: "sheet",
+        rowCount: parsed.rows.length,
+        columns: parsed.headers,
+      });
+      continue;
+    }
+    for (const [i, t] of (fileTablesCache.get(f.id) ?? []).entries()) {
+      sources.push({
+        id: `${f.id}:${i}`,
+        tableName: t.name,
+        origin: "file",
+        fileId: f.id,
+        fileName: f.name,
+        sheetName: t.sheetName,
+        kind: t.kind,
+        rowCount: t.rowCount,
+        columns: t.columns,
+      });
+    }
+  }
+
+  state.sources = sources;
+  populateTablePicker();
+  renderFileList();
+}
+
+/**
+ * Table structure per added file. Populated by `addSourceFile`; kept out of
+ * `LoadedFile` only so `rebuildSources` stays synchronous — re-listing means
+ * re-parsing the workbook, which is far too slow to do on every re-render.
+ */
+const fileTablesCache = new Map<string, WorkbookTableInfo[]>();
+
+function currentSource(): SourceRef | null {
+  return state.sources.find((s) => s.id === state.selectedSourceId) ?? null;
+}
+
+/** Apply a source selection to the state the mapping UI reads. */
+function selectSource(id: string): void {
+  state.selectedSourceId = id;
+  const ref = currentSource();
+  // The column pickers read selectedTable.columns, so a file table is
+  // presented as if it were a workbook table.
+  state.selectedTable = ref
+    ? ({
+        name: ref.tableName,
+        worksheetName: ref.sheetName,
+        rowCount: ref.rowCount,
+        columns: ref.columns,
+      } as TableInfo)
+    : null;
+  el<HTMLSelectElement>("table").value = id;
+  renderFileList();
+  rerenderMappings();
+}
+
+/** The added-files list, with a remove button each. */
+function renderFileList(): void {
+  const wrap = el<HTMLDivElement>("fileList");
+  wrap.innerHTML = "";
+  if (state.files.length === 0) {
+    wrap.style.display = "none";
+    return;
+  }
+  wrap.style.display = "";
+
+  for (const f of state.files) {
+    const tableCount = state.sources.filter((s) => s.fileId === f.id).length;
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.cssText = "gap:6px; padding:1px 0;";
+
+    const label = document.createElement("span");
+    label.style.cssText =
+      "flex:1; font-size:11px; color:#605e5c; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+    label.textContent = `${f.name} — ${tableCount} table${tableCount === 1 ? "" : "s"}`;
+    label.title = f.name;
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary icon";
+    remove.style.fontSize = "11px";
+    remove.textContent = "✕";
+    remove.title = `Remove ${f.name}`;
+    remove.addEventListener("click", () => removeSourceFile(f.id));
+
+    row.append(label, remove);
+    wrap.appendChild(row);
   }
 }
 
@@ -822,6 +1006,106 @@ function renderDevModeBanner(): void {
   banner.textContent = text + ".";
 }
 
+/**
+ * The single path for "the environment changed".
+ *
+ * Two things have to happen together, and previously neither did: loading a
+ * mapping or picking a profile assigned `state.environmentUrl` directly.
+ *
+ * 1. Re-check auth. Sign-in is per environment — the token scope is the
+ *    environment's own origin, and a different environment may be in a
+ *    different tenant entirely. Carrying `state.account` across the switch
+ *    left the pane claiming to be signed in to somewhere it wasn't.
+ *
+ * 2. Drop the metadata caches. They're keyed by entity and attribute name
+ *    but scoped to an environment, so `account`/`name` from the old one
+ *    would answer for the new one. That's the more dangerous half: it fails
+ *    silently and produces a mapping built against the wrong schema, rather
+ *    than an error.
+ */
+async function setEnvironment(url: string): Promise<void> {
+  const next = url.trim();
+  if (next === state.environmentUrl) return;
+
+  state.environmentUrl = next;
+  el<HTMLInputElement>("env").value = next;
+  clearEnvironmentScopedState();
+
+  await refreshAccountUI();
+  if (!next) return;
+
+  if (state.account) {
+    triggerLoadEntities();
+  } else {
+    let where = next;
+    try {
+      where = new URL(next).host;
+    } catch {
+      // not a URL yet — the user may still be typing
+    }
+    setStatus("info", `Not signed in to ${where}. Click Sign in to continue.`);
+  }
+}
+
+/**
+ * Keep the sticky footer in step with the environment and the account.
+ *
+ * These two facts decide where every record lands and who owns it, and the
+ * controls that set them scroll off the top of a task pane long before you
+ * reach Run. Repeating them at the bottom is cheap; discovering afterwards
+ * that you imported into the wrong org is not.
+ */
+function renderConnBar(): void {
+  let envHost = "";
+  if (state.environmentUrl) {
+    try {
+      envHost = new URL(state.environmentUrl).host;
+    } catch {
+      envHost = state.environmentUrl; // mid-typing, show it raw
+    }
+  }
+
+  const envSpan = el<HTMLSpanElement>("connEnv");
+  envSpan.textContent = envHost || "No environment";
+  envSpan.title = state.environmentUrl || "No environment selected";
+
+  const userSpan = el<HTMLSpanElement>("connUser");
+  userSpan.textContent = state.account ? state.account.username : "Not signed in";
+  userSpan.title = userSpan.textContent;
+
+  el<HTMLSpanElement>("connSep").style.display = envHost ? "" : "none";
+  el<HTMLSpanElement>("connDot").style.color =
+    envHost && state.account ? "#107c10" : "#d13438";
+}
+
+/**
+ * Forget everything derived from the previous environment.
+ *
+ * `state.entitySet` is deliberately kept: a mapping being loaded names its
+ * target entity, and that selection is restored once the new environment's
+ * entity list arrives. Clearing it here would silently drop the target from
+ * every mapping opened against a different environment.
+ */
+function clearEnvironmentScopedState(): void {
+  state.entities = [];
+  state.entityAttributes = [];
+  state.entityLogicalName = "";
+
+  lookupTargetsCache.clear();
+  optionLabelsCache.clear();
+  solutionEntityIdsCache.clear();
+  boundEntityMetaCache.clear();
+  navPropCache.clear();
+
+  const entSel = el<HTMLSelectElement>("entity");
+  entSel.innerHTML = `<option value="">Sign in to load entities…</option>`;
+  entSel.disabled = true;
+
+  const solSel = el<HTMLSelectElement>("solution");
+  solSel.innerHTML = `<option value="">All entities (Default solution)</option>`;
+  solSel.disabled = true;
+}
+
 async function refreshAccountUI(): Promise<void> {
   // Ask the sidecar only once an environment is known — auth state is
   // per-environment, and there is nothing meaningful to report before then.
@@ -840,6 +1124,7 @@ async function refreshAccountUI(): Promise<void> {
   state.account = acc ? { username: acc.username } : null;
   // Depends on the status fetched above, so it has to come after it.
   renderDevModeBanner();
+  renderConnBar();
   el<HTMLSpanElement>("authDot").style.color = acc ? "#107c10" : "#d13438";
   el<HTMLSpanElement>("who").textContent = acc ? acc.username : "Not signed in";
   const entSel = el<HTMLSelectElement>("entity");
@@ -1425,29 +1710,38 @@ function onSuggest(): void {
 function populateTablePicker(): void {
   const sel = el<HTMLSelectElement>("table");
   sel.innerHTML = "";
-  if (state.tables.length === 0) {
-    sel.innerHTML = `<option value="">No tables found in this workbook</option>`;
+  sel.disabled = false;
+
+  if (state.sources.length === 0) {
+    sel.innerHTML = host().workbook.canReadOpenWorkbook
+      ? `<option value="">No tables found — add a file below</option>`
+      : `<option value="">Add a file to choose a table</option>`;
+    sel.disabled = true;
     return;
   }
+
   sel.appendChild(new Option("Select a table…", ""));
-  for (const t of state.tables) {
-    sel.appendChild(new Option(`${t.name} (${t.worksheetName}, ${t.rowCount} rows)`, t.name));
+  for (const s of state.sources) {
+    // Table name first, then where it came from: the table is what you're
+    // looking for, the file is how you tell two same-named tables apart.
+    const where = s.origin === "file" ? s.fileName : "this workbook";
+    const rows = `${s.rowCount} row${s.rowCount === 1 ? "" : "s"}`;
+    sel.appendChild(new Option(`${s.tableName} (${where}, ${rows})`, s.id));
+  }
+  // Restore the previous selection when it survived a rebuild.
+  if (state.selectedSourceId && state.sources.some((s) => s.id === state.selectedSourceId)) {
+    sel.value = state.selectedSourceId;
   }
 }
 
 function onPickTable(e: Event): void {
-  const name = (e.target as HTMLSelectElement).value;
-  // Picking a workbook table supersedes any file that was loaded.
-  state.fileSource = null;
-  renderFileSource();
-  state.selectedTable = state.tables.find((t) => t.name === name) ?? null;
+  selectSource((e.target as HTMLSelectElement).value);
   // The create-table panel is seeded from the source table — a stale panel
   // for a different table would create the wrong columns.
   if (createMode) {
     exitCreateTableMode();
     el<HTMLSelectElement>("entity").value = "";
   }
-  rerenderMappings();
 }
 
 function addMapping(seed?: ColumnMapping): void {
@@ -2503,7 +2797,8 @@ function applyRunPlan(plan: RunPlan): void {
 }
 
 function buildMapping(): Mapping {
-  const sourceName = state.fileSource?.tableName ?? state.selectedTable?.name ?? "";
+  const ref = currentSource();
+  const sourceName = ref?.tableName ?? state.selectedTable?.name ?? "";
   const m: Mapping = {
     // Anything the pane has no control for (createdAt, logDir, future schema
     // additions) is carried over from the mapping that was loaded.
@@ -2513,7 +2808,9 @@ function buildMapping(): Mapping {
     environmentUrl: state.environmentUrl,
     targetEntitySet: state.entitySet,
     sourceTable: sourceName,
-    sourceSheet: state.fileSource ? undefined : state.selectedTable?.worksheetName,
+    // Only meaningful for the open workbook: a file's sheet is an internal
+    // detail of this session, not something the CLI could resolve later.
+    sourceSheet: ref?.origin === "file" ? undefined : state.selectedTable?.worksheetName,
     columns: state.mappings,
     conflictMode: "insert",
     batchSize: 100,
@@ -2669,8 +2966,11 @@ async function onResetAll(): Promise<void> {
   impersonate.dataset.guid = "";
   impersonate.dataset.label = "";
   state.mappingExtras = {};
-  state.fileSource = null;
-  renderFileSource();
+  // Added files survive a reset: re-picking them is tedious, and Reset is
+  // about the mapping, not about what you loaded to build it against.
+  state.selectedSourceId = "";
+  el<HTMLSelectElement>("table").value = "";
+  renderFileList();
   updateOptionsVisibility();
 
   // Forget the remembered mapping so it doesn't restore on reload.
@@ -2684,10 +2984,10 @@ async function onResetAll(): Promise<void> {
   state.checkpoint = null;
   persistCheckpoint();
   renderCheckpoint();
-  lastFailedRows = null;
+  // Releases the retained run log too, not just the failed rows.
+  clearRunLog();
 
   el<HTMLDivElement>("progressWrap").style.display = "none";
-  el<HTMLDivElement>("logWrap").style.display = "none";
   rerenderMappings();
   setStatus("info", "Reset. Pick a source table and target entity to start again.");
 }
@@ -2721,7 +3021,7 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
     }
     const dryRun = el<HTMLInputElement>("dryRun").checked;
 
-    setStatus("info", state.fileSource ? "Reading file…" : "Reading table…");
+    setStatus("info", currentSource()?.origin === "file" ? "Reading file…" : "Reading table…");
     const { rows, headers } = await readSourceRows(mapping.sourceTable);
 
     // Resume picks up at the checkpoint the last interrupted run left behind.
@@ -2747,6 +3047,9 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
     );
     runController = new AbortController();
     setRunning(true);
+    // Drop the previous run's log before accumulating a new one, so two
+    // large runs in a row don't hold two full logs at once.
+    clearRunLog();
     const requestLog: RequestLogEntry[] = [];
     const successLog: RowSuccess[] = [];
     let retries = 0;
@@ -2843,12 +3146,33 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
 }
 
 /** Rows from the picked file if there is one, else the open workbook's table. */
+/**
+ * Read the selected source's rows.
+ *
+ * This is where a file's bytes finally get parsed — deliberately at run time
+ * rather than at add time, so adding several large workbooks costs their
+ * compressed size rather than their expanded row count.
+ */
 async function readSourceRows(
   tableName: string
 ): Promise<{ rows: Array<Record<string, unknown>>; headers: string[] }> {
-  if (state.fileSource) {
-    return { rows: state.fileSource.rows, headers: state.fileSource.headers };
+  const ref = currentSource();
+
+  if (ref?.origin === "file") {
+    const file = state.files.find((f) => f.id === ref.fileId);
+    if (!file) throw new Error(`${ref.fileName ?? "The source file"} is no longer loaded.`);
+
+    if (file.kind === "csv") {
+      return readTableFromCsvString(file.text ?? "", { delimiter: file.delimiter ?? "," });
+    }
+    // A "sheet" entry has no table to name — pass the sheet instead and let
+    // core fall back to its used range, exactly as it does for the CLI.
+    return await readTableFromBuffer(file.buffer!, {
+      tableName: ref.kind === "table" ? ref.tableName : undefined,
+      sheetName: ref.sheetName || undefined,
+    });
   }
+
   const { rows } = await host().workbook.readTable(tableName);
   const headers = state.selectedTable?.columns ?? Object.keys(rows[0] ?? {});
   return { rows, headers };
@@ -2963,12 +3287,47 @@ function triggerLoadEntities(): void {
     });
 }
 
+/**
+ * The last run's log, held at module scope rather than captured in the
+ * download button's closure.
+ *
+ * That distinction is the whole point of being able to clear it: a 100k-row
+ * run produces a request entry per batch and a success entry per row, and an
+ * Office WebView has a modest memory budget. If the only reference lived
+ * inside an event handler, "Clear log" could blank the display while the
+ * arrays stayed reachable and nothing was actually released.
+ */
+let lastRun: {
+  requestLog: RequestLogEntry[];
+  successLog: RowSuccess[];
+  result: LoadResult;
+  mapping: Mapping;
+} | null = null;
+
+/** Discard the retained run log. Safe to call when there isn't one. */
+function clearRunLog(): void {
+  lastRun = null;
+  lastFailedRows = null;
+
+  el<HTMLDivElement>("logWrap").style.display = "none";
+  const errorDiv = el<HTMLDivElement>("errorDetails");
+  errorDiv.style.display = "none";
+  // Emptied, not just hidden: 18k lines of error text in the DOM costs the
+  // same whether or not it's visible.
+  errorDiv.textContent = "";
+  el<HTMLSpanElement>("logSummary").textContent = "";
+  el<HTMLButtonElement>("downloadFailed").style.display = "none";
+  el<HTMLButtonElement>("downloadLog").onclick = null;
+}
+
 function showRunLog(
   requestLog: RequestLogEntry[],
   successLog: RowSuccess[],
   result: LoadResult,
   mapping: Mapping
 ): void {
+  lastRun = { requestLog, successLog, result, mapping };
+
   el<HTMLDivElement>("logWrap").style.display = "";
   const errorDiv = el<HTMLDivElement>("errorDetails");
   if (result.errors.length > 0) {
@@ -2978,9 +3337,19 @@ function showRunLog(
       .join("\n");
   } else {
     errorDiv.style.display = "none";
+    errorDiv.textContent = "";
   }
-  el<HTMLButtonElement>("downloadLog").onclick = () =>
-    downloadRunLog(requestLog, successLog, result, mapping);
+
+  // Say what's being held, so "Clear log" is an informed choice rather than
+  // a button that discards something unquantified.
+  const parts = [`${requestLog.length} request${requestLog.length === 1 ? "" : "s"}`];
+  if (result.errors.length) parts.push(`${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`);
+  el<HTMLSpanElement>("logSummary").textContent = `Log held in memory: ${parts.join(", ")}.`;
+
+  el<HTMLButtonElement>("downloadLog").onclick = () => {
+    if (!lastRun) return;
+    downloadRunLog(lastRun.requestLog, lastRun.successLog, lastRun.result, lastRun.mapping);
+  };
   // The CLI writes a failed-rows workbook next to its logs; the pane can only
   // hand it over as a download.
   const failedBtn = el<HTMLButtonElement>("downloadFailed");
@@ -3025,11 +3394,13 @@ function restoreMapping(): void {
     state.entitySet = m.targetEntitySet;
     state.mappings = m.columns;
     state.mappingExtras = { createdAt: m.createdAt, logDir: m.logDir };
-    const tableSel = el<HTMLSelectElement>("table");
-    if ([...tableSel.options].some((o) => o.value === m.sourceTable)) {
-      tableSel.value = m.sourceTable;
-      state.selectedTable = state.tables.find((t) => t.name === m.sourceTable) ?? null;
-    }
+    // A mapping names a table, not a source id — ids are per-session and
+    // depend on which files happen to be loaded. Match by name, preferring
+    // the open workbook when a file supplies a table of the same name.
+    const match =
+      state.sources.find((s) => s.origin === "workbook" && s.tableName === m.sourceTable) ??
+      state.sources.find((s) => s.tableName === m.sourceTable);
+    if (match) selectSource(match.id);
     writeOptionsFromMapping(m);
     rerenderMappings();
   } catch {
@@ -3107,8 +3478,6 @@ function onLoad(): void {
     const text = await file.text();
     try {
       const m = parseMapping(JSON.parse(text));
-      state.environmentUrl = m.environmentUrl;
-      el<HTMLInputElement>("env").value = m.environmentUrl;
       state.entitySet = m.targetEntitySet;
       state.mappings = m.columns;
       // Keep the fields the pane has no control for so re-saving doesn't
@@ -3117,6 +3486,9 @@ function onLoad(): void {
       writeOptionsFromMapping(m);
       rerenderMappings();
       setStatus("success", `Loaded ${m.name}.`);
+      // After the mapping is applied, so the entity selection it names is
+      // waiting to be matched against the new environment's entity list.
+      await setEnvironment(m.environmentUrl);
     } catch (e) {
       setStatus("error", `Couldn't parse mapping: ${(e as Error).message}`);
     }

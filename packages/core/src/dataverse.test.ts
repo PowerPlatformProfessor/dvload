@@ -51,6 +51,79 @@ function multipartResponse(parts: Array<{ contentId: number; status: string; hea
 }
 
 /* -------------------------------------------------------------------------- */
+/* create() — reading the new record's id back                                 */
+/* -------------------------------------------------------------------------- */
+
+// These go through the real client rather than a stubbed `create`, because
+// that is exactly where the bug lived: load.test.ts asserted the contract
+// ("createIfMissing uses the returned id") against a mock that always
+// returned one, while the implementation could only read an OData-EntityId
+// header — which Dataverse omits whenever `Prefer: return=representation` is
+// sent, i.e. always. Every create silently produced an empty id.
+
+const NEW_GUID = "11111111-2222-3333-4444-555555555555";
+
+test("create reads the id from the OData-EntityId header (204 No Content)", async () => {
+  const client = clientWithFetch(async () =>
+    new Response(null, {
+      status: 204,
+      headers: { "OData-EntityId": `${ENV}/api/data/v9.2/accounts(${NEW_GUID})` },
+    })
+  );
+  const r = await client.create("accounts", { name: "X" });
+  assert.equal(r.id, NEW_GUID);
+});
+
+test("create reads the id from the body when the server returns a representation", async () => {
+  // The real-world shape: 201 + the record, and NO OData-EntityId header.
+  const client = clientWithFetch(async () =>
+    new Response(JSON.stringify({ accountid: NEW_GUID, name: "X" }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+  const r = await client.create("accounts", { name: "X" }, undefined, "accountid");
+  assert.equal(r.id, NEW_GUID);
+});
+
+test("create falls back to the @odata.id annotation", async () => {
+  const client = clientWithFetch(async () =>
+    new Response(
+      JSON.stringify({ "@odata.id": `${ENV}/api/data/v9.2/teams(${NEW_GUID})`, name: "X" }),
+      { status: 201, headers: { "Content-Type": "application/json" } }
+    )
+  );
+  // No primaryIdAttribute passed: the annotation is the only source.
+  const r = await client.create("teams", { name: "X" });
+  assert.equal(r.id, NEW_GUID);
+});
+
+test("create never guesses an id from a lookup field", async () => {
+  // A created record is full of *id properties. Binding a lookup to
+  // `ownerid` instead of the primary key would corrupt data silently, so an
+  // unreadable id must stay empty and let the caller fail loudly.
+  const client = clientWithFetch(async () =>
+    new Response(
+      JSON.stringify({ ownerid: NEW_GUID, _createdby_value: NEW_GUID, name: "X" }),
+      { status: 201, headers: { "Content-Type": "application/json" } }
+    )
+  );
+  const r = await client.create("accounts", { name: "X" }, undefined, "accountid");
+  assert.equal(r.id, "");
+});
+
+test("create ignores a non-GUID value in the primary id attribute", async () => {
+  const client = clientWithFetch(async () =>
+    new Response(JSON.stringify({ accountid: "not-a-guid", name: "X" }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+  const r = await client.create("accounts", { name: "X" }, undefined, "accountid");
+  assert.equal(r.id, "");
+});
+
+/* -------------------------------------------------------------------------- */
 /* Validation helpers                                                          */
 /* -------------------------------------------------------------------------- */
 

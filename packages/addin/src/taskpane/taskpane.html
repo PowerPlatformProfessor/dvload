@@ -10,7 +10,25 @@
 
   <style>
     :root { color-scheme: light dark; font-family: "Segoe UI", system-ui, sans-serif; }
-    body { margin: 0; padding: 12px; font-size: 13px; }
+    /* Bottom padding clears the sticky connection bar so the last control
+       is never trapped underneath it. */
+    body { margin: 0; padding: 12px 12px 40px 12px; font-size: 13px; }
+
+    #connBar {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      display: flex; gap: 6px; align-items: center;
+      padding: 5px 10px; font-size: 11px;
+      background: #faf9f8; border-top: 1px solid #e1dfdd; color: #605e5c;
+      white-space: nowrap;
+    }
+    /* The environment truncates before the username: if only one can fit,
+       "which org" matters more than "which me". */
+    #connEnv { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    #connUser { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+    #connDot { font-size: 13px; line-height: 1; flex-shrink: 0; }
+    @media (prefers-color-scheme: dark) {
+      #connBar { background: #292827; border-top-color: #484644; color: #c8c6c4; }
+    }
     h1 { font-size: 16px; margin: 0 0 8px 0; }
     label { display: block; font-weight: 600; margin-top: 10px; margin-bottom: 4px; }
     select, input, button { font: inherit; padding: 4px 6px; box-sizing: border-box; width: 100%; }
@@ -113,16 +131,27 @@
 
   <hr />
 
-  <label for="table">Source table</label>
-  <select id="table"><option value="">Loading…</option></select>
-  <div class="row" style="margin-top:4px;">
-    <button id="pickFile" class="secondary" type="button" style="font-size:11px; width:auto;"
-      title="Read rows from another .xlsx workbook or a .csv/.tsv file instead of a table in this workbook">
-      Use a file instead…
-    </button>
-    <span id="fileSourceInfo" style="font-size:11px; color:#605e5c; flex:1;"></span>
-    <button id="clearFileSource" class="secondary icon" type="button"
-      style="display:none; font-size:11px;" title="Go back to reading a table in this workbook">✕</button>
+  <!--
+    Two blocks, reordered at runtime by applyHostCapabilities(): in the
+    browser there is no open workbook, so the picker is empty until a file is
+    added and the file block has to come first. In Excel the picker already
+    has the workbook's tables, so it leads.
+  -->
+  <div id="sourceFilesBlock">
+    <label>Source files</label>
+    <div class="row">
+      <button id="pickFile" class="secondary" type="button" style="width:auto;"
+        title="Add .xlsx workbooks or .csv/.tsv files. Every table inside them becomes selectable below.">
+        Add files…
+      </button>
+      <span id="fileSourceInfo" style="font-size:11px; color:#605e5c; flex:1;"></span>
+    </div>
+    <div id="fileList" style="display:none; margin-top:4px;"></div>
+  </div>
+
+  <div id="sourceTableBlock">
+    <label for="table">Source table</label>
+    <select id="table"><option value="">Loading…</option></select>
   </div>
 
   <label for="solution">Solution</label>
@@ -288,9 +317,26 @@
             title="The source rows that failed, as a workbook you can fix and re-import">
       Download failed rows…
     </button>
+    <div class="row" style="margin-top:4px;">
+      <span id="logSummary" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <button id="clearLog" class="secondary icon" type="button" style="font-size:11px;"
+              title="Discard this run's log and free the memory it's holding">Clear log</button>
+    </div>
     <div id="errorDetails" style="display:none; margin-top:4px; max-height:140px; overflow-y:auto;
          font-size:11px; font-family:monospace; white-space:pre-wrap;
          background:#fde7e9; color:#5c0011; padding:6px; border-radius:4px;"></div>
+  </div>
+
+  <!--
+    Sticky connection bar. Which environment and which identity you're about
+    to write to is the highest-stakes thing on screen, and the controls that
+    set it scroll off the top long before the Run button is reached.
+  -->
+  <div id="connBar">
+    <span id="connDot">&#9679;</span>
+    <span id="connEnv">No environment</span>
+    <span id="connSep">&middot;</span>
+    <span id="connUser">Not signed in</span>
   </div>
 </body>
 </html>

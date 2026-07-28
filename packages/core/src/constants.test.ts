@@ -13,7 +13,7 @@ import {
 } from "./mapping.js";
 import type { Mapping, ColumnMapping } from "./mapping.js";
 import { coerceRow } from "./coerce.js";
-import { writeRowsToBuffer, readTableFromBuffer } from "./xlsx-reader.js";
+import { writeRowsToBuffer, readTableFromBuffer, listTablesFromBuffer } from "./xlsx-reader.js";
 import { loadRows } from "./load.js";
 import type { DataverseClient, BatchOperation, BatchResultItem } from "./dataverse.js";
 
@@ -201,6 +201,40 @@ test("readTableFromBuffer without a table name falls back to the first table", a
   assert.deepEqual(back.headers, ["A", "B"]);
   assert.equal(back.rows.length, 1);
   assert.equal(back.rows[0].A, 1);
+});
+
+test("listTablesFromBuffer describes a table without reading its rows", async () => {
+  // Backs the UI's source picker: adding several large workbooks must cost
+  // structure, not rows, so this reports headers and a row count while the
+  // data stays unparsed until something is actually selected.
+  const buf = await writeRowsToBuffer(
+    ["Name", "Email"],
+    [
+      { Name: "Ada", Email: "ada@example.com" },
+      { Name: "Grace", Email: "grace@example.com" },
+    ],
+    "Contacts"
+  );
+  const tables = await listTablesFromBuffer(buf);
+  assert.equal(tables.length, 1);
+  assert.equal(tables[0].name, "Contacts");
+  assert.equal(tables[0].kind, "table");
+  assert.equal(tables[0].rowCount, 2);
+  assert.deepEqual(tables[0].columns, ["Name", "Email"]);
+});
+
+test("a table listed by listTablesFromBuffer can be read back by name", async () => {
+  // The picker's job is to produce arguments for readTableFromBuffer, so the
+  // two have to agree on the name — otherwise selecting a table yields
+  // "Table not found" at run time.
+  const buf = await writeRowsToBuffer(["A"], [{ A: 1 }], "Oddly_Named_Table");
+  const [info] = await listTablesFromBuffer(buf);
+  const back = await readTableFromBuffer(buf, {
+    tableName: info.kind === "table" ? info.name : undefined,
+    sheetName: info.sheetName,
+  });
+  assert.deepEqual(back.headers, info.columns);
+  assert.equal(back.rows.length, info.rowCount);
 });
 
 test("validateColumn reports the same lookup errors validateMapping does", () => {

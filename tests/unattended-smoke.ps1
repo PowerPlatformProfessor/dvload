@@ -35,11 +35,20 @@
 .PARAMETER Force
   Skip the confirmation prompt for -Write. For CI.
 
+.PARAMETER RequireAppOnly
+  Fail instead of falling back to a delegated partial pass. Use in CI, where
+  "it passed as whoever was signed in" is not the thing being tested.
+
 .PARAMETER KeepCredentials
   Leave the app-only credentials in the secure store afterwards. By default
   the script runs `app-logout` at the end if it was the thing that stored
   them, so a test run doesn't silently change how later `dvload run`
   invocations authenticate.
+
+.NOTES
+  Run it, don't dot-source it: `.\tests\unattended-smoke.ps1`, not
+  `. .\tests\unattended-smoke.ps1`. Dot-sourcing works, but it executes in
+  your session's scope, so the exit code is returned rather than set.
 
 .EXAMPLE
   $env:DVLOAD_SECRET = "<secret>"
@@ -62,7 +71,8 @@ param(
   [string] $Dvload    = "dvload",
   [switch] $Write,
   [switch] $Force,
-  [switch] $KeepCredentials
+  [switch] $KeepCredentials,
+  [switch] $RequireAppOnly
 )
 
 Set-StrictMode -Version Latest
@@ -98,29 +108,35 @@ function Add-Result {
 function Invoke-Dvload {
   param([string[]] $Arguments)
 
-  # Start-Process wants string paths, and Get-Content returns $null for an
-  # empty file — normalised to "" here so every caller can string-match
-  # without null checks.
-  $outFile = (New-TemporaryFile).FullName
+  # The call operator, NOT Start-Process.
+  #
+  # On Windows `dvload` is an npm shim — `dvload.ps1`, `dvload.cmd` and an
+  # extensionless shell script sit side by side, and `Get-Command` usually
+  # resolves the .ps1. Start-Process passes whatever it's given to the Win32
+  # loader, which can only execute real binaries, so a shim fails with
+  # "%1 is not a valid Win32 application". `&` goes through PowerShell's own
+  # command resolution, which understands all three.
   $errFile = (New-TemporaryFile).FullName
   try {
-    $p = Start-Process -FilePath $Dvload -ArgumentList $Arguments -NoNewWindow -Wait -PassThru `
-      -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    # Redirect stderr to a file so the two streams stay separable; stdout
+    # comes back as the pipeline value. Merging them would corrupt the JSON
+    # that --json emits on stdout.
+    $stdoutLines = & $Dvload @Arguments 2> $errFile
+    $code = $LASTEXITCODE
 
-    # Assigned before the literal: an `if` expression as a hashtable value
-    # parses in PowerShell 7 but not in Windows PowerShell 5.1.
-    $out = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+    $out = if ($null -eq $stdoutLines) { "" } else { ($stdoutLines | Out-String) }
     $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-    if ($null -eq $out) { $out = "" }
     if ($null -eq $err) { $err = "" }
+    # A shim that fails before exec leaves $LASTEXITCODE unset.
+    if ($null -eq $code) { $code = 0 }
 
     [pscustomobject]@{
-      ExitCode = $p.ExitCode
+      ExitCode = $code
       Stdout   = $out
       Stderr   = $err
     }
   } finally {
-    Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -130,10 +146,11 @@ function Invoke-Dvload {
 
 Write-Host "`n=== 0. Preflight ===" -ForegroundColor Cyan
 
-if (-not (Get-Command $Dvload -ErrorAction SilentlyContinue)) {
-  throw "'$Dvload' not found on PATH. Pass -Dvload with a full path, or use: -Dvload 'node' with the dist entry point."
+$cmd = Get-Command $Dvload -ErrorAction SilentlyContinue
+if (-not $cmd) {
+  throw "'$Dvload' not found on PATH. Pass -Dvload with a full path, or point it at the built entry point."
 }
-Add-Result "0.1" "dvload on PATH" "PASS" (Get-Command $Dvload).Source
+Add-Result "0.1" "dvload on PATH" "PASS" $cmd.Source
 
 foreach ($f in @($Mapping, $Workbook)) {
   if (-not (Test-Path $f)) {
@@ -180,16 +197,49 @@ if ($ClientId -and $TenantId) {
   Add-Result "4.5" "app-login" "SKIP" "no -ClientId/-TenantId; reusing stored credentials"
 }
 
-# whoami must report app-only, and its token probe must succeed. This is the
-# single most informative check here: it proves the secret, the tenant, the
-# Application User and its security roles are all correct before any data moves.
+# whoami is the most informative check here: it proves the credentials, the
+# tenant and the security roles are all correct before any data moves.
+#
+# Three outcomes, deliberately distinguished — an earlier version collapsed
+# them and reported "cannot acquire an app-only token" when the token probe
+# had actually succeeded, just as a delegated user. Being unable to tell "no
+# credentials" from "different credentials" is exactly the confusion this
+# script exists to remove.
 $r = Invoke-Dvload @("whoami", "--env", $EnvUrl)
 $who = "$($r.Stdout)$($r.Stderr)"
-if ($r.ExitCode -eq 0 -and $who -match "appOnly") {
-  Add-Result "4.2" "whoami reports app-only + token OK" "PASS"
+# Greedy `.*` so it binds to the LAST colon on the line: the environment URL
+# contains "https:", and a lazy match would stop there and capture nothing.
+$mode = if ($who -match "Auth mode for .*:\s*(\w+)") { $Matches[1] } else { "unknown" }
+$tokenOk = $who -match "Token acquisition: OK"
+
+$script:AppOnly = $false
+
+if ($r.ExitCode -ne 0 -or $mode -eq "none" -or -not $tokenOk) {
+  Add-Result "4.2" "whoami + token probe" "FAIL" $who.Trim()
+  throw @"
+Aborting: no usable credentials for $EnvUrl.
+
+  Unattended (app-only):  dvload app-login --env $EnvUrl --client-id <id> --tenant-id <id> --secret-env $SecretEnv
+                          (needs an app registration + Application User — docs/SCHEDULED-RUNS.md steps 1-2)
+  Interactive:            dvload login --env $EnvUrl
+"@
+}
+
+if ($mode -eq "appOnly") {
+  $script:AppOnly = $true
+  Add-Result "4.2" "whoami: app-only + token OK" "PASS"
 } else {
-  Add-Result "4.2" "whoami reports app-only + token OK" "FAIL" $who.Trim()
-  throw "Aborting: cannot acquire an app-only token."
+  # Delegated works unattended — the refresh token lasts ~90 days idle — it
+  # is just fragile, which is why `dvload schedule` recommends app-login.
+  # So this is a real partial pass: the whole load pipeline gets exercised,
+  # only the unattended *identity* doesn't.
+  if ($RequireAppOnly) {
+    Add-Result "4.2" "whoami: app-only + token OK" "FAIL" "mode is '$mode', -RequireAppOnly was set"
+    throw "Aborting: -RequireAppOnly was specified but no app-only credentials are stored for $EnvUrl."
+  }
+  Add-Result "4.2" "whoami: token OK (mode: $mode)" "PASS" "no app-only credentials — partial pass"
+  Write-Host "  Running as the signed-in user, not an Application User." -ForegroundColor Yellow
+  Write-Host "  Pass -ClientId/-TenantId to cover the real unattended identity." -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
@@ -233,16 +283,23 @@ Write-Host "`n=== 4. Identity precedence ===" -ForegroundColor Cyan
 # delegated. This matters more since the UI moved behind `dvload serve`: the
 # sidecar pins delegated, so the pane writes as you while an unattended run
 # writes as the Application User. Same mapping, two identities, by design.
-$r = Invoke-Dvload @("run", $Mapping, "-w", $Workbook, "--dry-run", "--json", "--user", "--non-interactive")
-if ($r.ExitCode -eq 0) {
-  Add-Result "4.7" "--user forces delegated" "PASS" "delegated token acquired alongside app-only"
+#
+# Only meaningful when both are configured — with delegated alone there is no
+# precedence to test, because everything is already delegated.
+if ($script:AppOnly) {
+  $r = Invoke-Dvload @("run", $Mapping, "-w", $Workbook, "--dry-run", "--json", "--user", "--non-interactive")
+  if ($r.ExitCode -eq 0) {
+    Add-Result "4.7" "--user forces delegated" "PASS" "both identities available; --user selected delegated"
+  } else {
+    # Expected when nobody has run `dvload login` on this machine.
+    Add-Result "4.7" "--user forces delegated" "SKIP" "no delegated session (run 'dvload login' to cover this)"
+  }
+  Write-Host "  Records created by the task pane are owned by the signed-in user;" -ForegroundColor DarkGray
+  Write-Host "  records created by a scheduled run are owned by the Application User." -ForegroundColor DarkGray
 } else {
-  # Expected when nobody has run `dvload login` on this machine.
-  Add-Result "4.7" "--user forces delegated" "SKIP" "no delegated session (run 'dvload login' to cover this)"
+  Add-Result "4.7" "--user forces delegated" "SKIP" "delegated only — no app-only credentials to take precedence over"
+  Write-Host "  Only one identity configured, so the pane and unattended runs write as the same user." -ForegroundColor DarkGray
 }
-
-Write-Host "  Note: records created by the task pane are owned by the signed-in user;" -ForegroundColor DarkGray
-Write-Host "        records created by a scheduled run are owned by the Application User." -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------------------
 # 5. Write pass (opt-in)
@@ -250,10 +307,12 @@ Write-Host "        records created by a scheduled run are owned by the Applicat
 
 $doWrite = [bool] $Write
 
+$identity = if ($script:AppOnly) { "the Application User" } else { "the signed-in user" }
+
 if ($doWrite -and -not $Force) {
   Write-Host "`n=== 5. Write pass ===" -ForegroundColor Cyan
   $expectedHost = ([uri] $EnvUrl).Host
-  Write-Host "About to CREATE records in $EnvUrl as the Application User." -ForegroundColor Yellow
+  Write-Host "About to CREATE records in $EnvUrl as $identity." -ForegroundColor Yellow
   # Typing the host, rather than y/N, so this can't be waved through by
   # reflex on the wrong environment.
   $answer = Read-Host "Type '$expectedHost' to confirm"
@@ -272,7 +331,7 @@ if ($doWrite) {
     $run = $r.Stdout | ConvertFrom-Json
     if ($run.failed -eq 0 -and $run.succeeded -gt 0) {
       Add-Result "6.2" "run (insert)" "PASS" "$($run.succeeded) succeeded, $($run.created) created"
-      Write-Host "  Verify ownership: the new contacts' 'Created By' should be the Application User." -ForegroundColor DarkGray
+      Write-Host "  Verify ownership: the new contacts' 'Created By' should be $identity." -ForegroundColor DarkGray
     } else {
       Add-Result "6.2" "run (insert)" "FAIL" "$($run.succeeded) succeeded, $($run.failed) failed"
     }
@@ -311,6 +370,14 @@ $skipped = @($script:Results | Where-Object Status -eq "SKIP").Count
 
 Write-Host "$passed passed, $failed failed, $skipped skipped." -ForegroundColor $(if ($failed) { "Red" } else { "Green" })
 
+if (-not $script:AppOnly) {
+  Write-Host "`nPARTIAL PASS: ran as the signed-in user, not an Application User." -ForegroundColor Yellow
+  Write-Host "The load pipeline is covered; the unattended identity is not. To cover it:" -ForegroundColor Yellow
+  Write-Host "  `$env:$SecretEnv = '<secret>'" -ForegroundColor Yellow
+  Write-Host "  .\tests\unattended-smoke.ps1 -ClientId <app-id> -TenantId <tenant-id>" -ForegroundColor Yellow
+  Write-Host "  (app registration + Application User setup: docs/SCHEDULED-RUNS.md steps 1-2)" -ForegroundColor Yellow
+}
+
 if (-not $doWrite) {
   Write-Host "`nNothing was written to $EnvUrl." -ForegroundColor DarkGray
 }
@@ -318,5 +385,15 @@ if (-not $doWrite) {
 # escape character, so "`dvload schedule`" would silently lose both marks.
 Write-Host 'Not covered here (needs Excel + Task Scheduler): --refresh, dvload schedule, and the task pane.' -ForegroundColor DarkGray
 Write-Host "See TEST-PROTOCOL.md sections 18 and 19.`n" -ForegroundColor DarkGray
+
+# Dot-sourcing (`. .\unattended-smoke.ps1`) runs this in the caller's scope,
+# where `exit` would terminate their PowerShell session. Detect it and return
+# instead — losing the exit code is a far smaller cost than closing the window
+# someone is working in.
+if ($MyInvocation.InvocationName -eq ".") {
+  Write-Host "(dot-sourced: returning instead of exiting. Run as '.\tests\unattended-smoke.ps1' for a real exit code.)" -ForegroundColor DarkGray
+  $global:LASTEXITCODE = $(if ($failed) { 1 } else { 0 })
+  return
+}
 
 if ($failed) { exit 1 } else { exit 0 }

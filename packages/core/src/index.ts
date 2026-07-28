@@ -16,8 +16,11 @@ export * from "./tablegen.js";
 export {
   readTableFromBuffer,
   readTableFromFile,
+  listTablesFromBuffer,
+  listTablesFromFile,
   writeRowsToFile,
   writeRowsToBuffer,
+  type WorkbookTableInfo,
 } from "./xlsx-reader.js";
 export { parseCsv, readTableFromCsvString } from "./csv-reader.js";
 // (CSV/TSV sources supported since v0.2)

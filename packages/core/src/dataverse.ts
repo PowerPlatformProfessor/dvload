@@ -106,9 +106,9 @@ export function describeNetworkError(e: unknown): string {
 }
 
 export interface CreateResult {
-  /** GUID of the created record (read from the OData-EntityId header). */
+  /** GUID of the created record. Empty only if the server returned neither a header nor a parseable body. */
   id: string;
-  /** Full entity URL returned by the server. */
+  /** Full entity URL, when the server sent one. */
   entityUrl: string;
 }
 
@@ -493,10 +493,17 @@ export class DataverseClient {
   }
 
   /** Create a single record. Slow for many rows — prefer batch(). */
+  /**
+   * @param primaryIdAttribute Primary key attribute name from entity metadata.
+   *   Needed to read the id back when the server answers `Prefer:
+   *   return=representation` with a body instead of an `OData-EntityId`
+   *   header — which, given DEFAULT_HEADERS, is the normal case.
+   */
   async create(
     entitySet: string,
     body: Record<string, unknown>,
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    primaryIdAttribute?: string
   ): Promise<CreateResult> {
     const res = await this.fetchWithRetry(
       this.url(entitySet),
@@ -512,7 +519,7 @@ export class DataverseClient {
       false
     );
     if (!res.ok) await throwForResponse(res);
-    return parseCreateResult(res);
+    return await parseCreateResult(res, primaryIdAttribute);
   }
 
   /**
@@ -855,10 +862,62 @@ function throwForResponseText(res: Response, text: string): never {
   throw new DataverseError(res.status, code, message, raw);
 }
 
-function parseCreateResult(res: Response): CreateResult {
-  const entityUrl = res.headers.get("OData-EntityId") ?? "";
-  const m = /\(([0-9a-f-]{36})\)/i.exec(entityUrl);
-  return { id: m?.[1] ?? "", entityUrl };
+const GUID_IN_PARENS = /\(([0-9a-f-]{36})\)/i;
+const BARE_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Pull the new record's id out of a create response.
+ *
+ * There are two response shapes, and which one you get depends on a header
+ * this client always sends:
+ *
+ *   204 No Content  →  id is in the `OData-EntityId` header
+ *   201 Created     →  body IS the record, and Dataverse omits
+ *                      `OData-EntityId` entirely
+ *
+ * `DEFAULT_HEADERS` sets `Prefer: return=representation`, so in practice we
+ * always get the second shape. Reading only the header therefore returned
+ * `id: ""` for *every* create. That surfaced far downstream as
+ * "create-if-missing returned no id" — while the records were being created
+ * perfectly well, which is the worst version of this bug: it looks like a
+ * failure and leaves data behind.
+ *
+ * Note what this deliberately does NOT do: guess the id by scanning the body
+ * for a property named like `*id`. A Dataverse record is full of them —
+ * `ownerid`, `businessunitid`, `_createdby_value` — and binding a lookup to
+ * the wrong GUID is far worse than failing loudly.
+ */
+async function parseCreateResult(res: Response, primaryIdAttribute?: string): Promise<CreateResult> {
+  const headerUrl = res.headers.get("OData-EntityId") ?? res.headers.get("Location") ?? "";
+  const fromHeader = GUID_IN_PARENS.exec(headerUrl)?.[1];
+  if (fromHeader) return { id: fromHeader, entityUrl: headerUrl };
+
+  // 204 with no header: nothing else to read.
+  if (res.status === 204) return { id: "", entityUrl: headerUrl };
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await res.json()) as Record<string, unknown>;
+  } catch {
+    return { id: "", entityUrl: headerUrl };
+  }
+  if (!payload || typeof payload !== "object") return { id: "", entityUrl: headerUrl };
+
+  // Preferred: the caller knows the primary key's name from entity metadata.
+  if (primaryIdAttribute) {
+    const value = payload[primaryIdAttribute];
+    if (typeof value === "string" && BARE_GUID.test(value)) {
+      const odataId = typeof payload["@odata.id"] === "string" ? payload["@odata.id"] : headerUrl;
+      return { id: value, entityUrl: odataId };
+    }
+  }
+
+  // Fallback: the @odata.id annotation carries the canonical record URL.
+  const odataId = typeof payload["@odata.id"] === "string" ? payload["@odata.id"] : "";
+  const fromOdataId = odataId ? GUID_IN_PARENS.exec(odataId)?.[1] : undefined;
+  if (fromOdataId) return { id: fromOdataId, entityUrl: odataId };
+
+  return { id: "", entityUrl: headerUrl };
 }
 
 function extractLocalizedLabel(displayName: unknown): string {

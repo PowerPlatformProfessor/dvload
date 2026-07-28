@@ -357,10 +357,23 @@ async function buildLookupCache(
           const created = await client.create(
             col.bindEntitySet!,
             { [col.keyAttribute!]: value },
-            extraHeaders
+            extraHeaders,
+            // Without this the id can't be recovered from a
+            // `return=representation` response, and every create looks like
+            // a failure while still creating the record.
+            info.primaryIdAttribute
           );
-          if (created.id) inner.set(value, { guid: created.id });
-          else inner.set(value, { failure: "create-if-missing returned no id" });
+          if (created.id) {
+            inner.set(value, { guid: created.id });
+          } else {
+            inner.set(value, {
+              failure:
+                `create-if-missing: ${col.bindEntitySet} record was created for ` +
+                `${JSON.stringify(value)} but the server returned no id ` +
+                `(no OData-EntityId header, no ${info.primaryIdAttribute} in the body). ` +
+                `The record exists — re-running will create another.`,
+            });
+          }
         }
         // else: no match, no create → left unset; row errors as unresolved.
       } catch (e) {
