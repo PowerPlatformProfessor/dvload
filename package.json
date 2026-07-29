@@ -35,7 +35,7 @@
     "verify": "npm run lint && npm run typecheck && npm run test:coverage && npm run coverage:gate && npm run test:docs"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
+    "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
     "@vitest/ui": "^4.1.10",
     "@stryker-mutator/core": "^9.6.1",
