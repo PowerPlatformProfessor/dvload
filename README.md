@@ -16,6 +16,11 @@ auth stack:
 The mapping is portable: build it in whichever UI suits, save it next to
 your workbook, and have the CLI run it nightly.
 
+New here? **[docs/RECIPES.md](./docs/RECIPES.md)** has worked examples for
+the common tasks — lookups (including customer/owner), upsert, choice
+columns, parent-then-child loads, scheduling, and what the error messages
+mean.
+
 ## Repo layout
 
 ```
@@ -36,6 +41,7 @@ dvload/
 | Document | What it covers |
 |---|---|
 | this file | user-facing reference: install, auth, commands, mapping fields |
+| [docs/RECIPES.md](./docs/RECIPES.md) | **worked examples** — lookups, upsert, choices, run plans, scheduling, troubleshooting |
 | [FEATURES.md](./FEATURES.md) | full feature inventory and planned work |
 | [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | module boundaries, the load pipeline, invariants, extension points |
 | [docs/DATA-FORMATS.md](./docs/DATA-FORMATS.md) | coercion rules, `$batch` wire format, QDEFF layout, on-disk state, log formats |

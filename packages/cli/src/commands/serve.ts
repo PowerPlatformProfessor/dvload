@@ -82,18 +82,24 @@ export interface ServeOptions {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Find the built add-in bundle. Ordered most-explicit-first so a developer
- * can always override, and so an installed CLI finds its shipped copy before
- * it goes looking for a repo checkout.
+ * Find the built add-in bundle.
+ *
+ * Order matters, and it is not the obvious one. A repo checkout's live
+ * `packages/addin/dist` is preferred over the bundled `build/web` copy,
+ * because otherwise running `npm run bundle` once would pin the UI forever:
+ * every later `npm run build --workspace=@dvload/addin` would rebuild a
+ * directory the server had stopped reading, and the pane would silently keep
+ * serving the stale copy. Losing an afternoon to that is easy.
+ *
+ * This costs installed users nothing — an installed CLI has no
+ * `packages/addin/dist` anywhere above it, so the walk falls through to the
+ * shipped `build/web` immediately.
  */
 async function resolveWebRoot(explicit?: string): Promise<string> {
   const candidates: string[] = [];
   if (explicit) candidates.push(path.resolve(explicit));
   if (process.env.DVLOAD_WEB_ROOT) candidates.push(path.resolve(process.env.DVLOAD_WEB_ROOT));
-  // Installed layout: bundle.mjs copies the add-in dist to build/web,
-  // alongside build/dvload.cjs.
-  candidates.push(path.join(HERE, "web"));
-  candidates.push(path.join(HERE, "..", "build", "web"));
+
   // Repo checkout: walk up looking for packages/addin/dist.
   let dir = HERE;
   for (let i = 0; i < 6; i++) {
@@ -102,6 +108,11 @@ async function resolveWebRoot(explicit?: string): Promise<string> {
     if (parent === dir) break;
     dir = parent;
   }
+
+  // Installed layout: bundle.mjs copies the add-in dist to build/web,
+  // alongside build/dvload.cjs.
+  candidates.push(path.join(HERE, "web"));
+  candidates.push(path.join(HERE, "..", "build", "web"));
 
   for (const c of candidates) {
     try {

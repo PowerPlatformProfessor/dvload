@@ -15,7 +15,8 @@
     "serve": "npm run dev --workspace=dvload -- serve",
     "gui": "npm run dev --workspace=dvload -- gui",
     "lint": "eslint \"packages/*/src/**/*.ts\"",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present && npm run test:docs",
+    "test:docs": "node tests/recipes-parity.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
