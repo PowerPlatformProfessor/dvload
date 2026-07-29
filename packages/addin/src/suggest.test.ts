@@ -1,12 +1,6 @@
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
-import {
-  normalize,
-  levenshtein,
-  similarity,
-  suggestMappings,
-  suggestionsToMappings,
-} from "./suggest.js";
+import { normalize, levenshtein, similarity, suggestMappings, suggestionsToMappings } from "./suggest.js";
 
 // ─── normalize ────────────────────────────────────────────────────────────────
 
@@ -98,14 +92,7 @@ describe("similarity", () => {
 
 describe("suggestMappings", () => {
   const sources = ["Email", "First Name", "Last Name", "Birthday", "Phone"];
-  const targets = [
-    "emailaddress1",
-    "firstname",
-    "lastname",
-    "birthdate",
-    "telephone1",
-    "accountid",
-  ];
+  const targets = ["emailaddress1", "firstname", "lastname", "birthdate", "telephone1", "accountid"];
 
   it("matches common contact columns to Dataverse attributes", () => {
     const suggestions = suggestMappings(sources, targets);

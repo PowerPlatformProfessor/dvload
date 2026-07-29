@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   inferColumnKind,
@@ -45,10 +45,7 @@ test("suggestColumns marks the first string column as primary name and dedupes s
 });
 
 test("payloads carry the right OData types and names", () => {
-  const cols = suggestColumns(
-    ["Email", "Credit Limit"],
-    [{ Email: "a@x", "Credit Limit": 1.5 }]
-  );
+  const cols = suggestColumns(["Email", "Credit Limit"], [{ Email: "a@x", "Credit Limit": 1.5 }]);
   const [email, credit] = cols;
 
   const entity = buildEntityPayload({

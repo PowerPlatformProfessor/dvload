@@ -21,3 +21,9 @@ logs/
 tests/dummy-data/contacts_*.xlsx
 tests/dummy-data/contacts_*.csv
 tests/dummy-data/edge-cases.xlsx
+
+# Test & quality tooling output
+coverage/
+reports/
+.stryker-tmp/
+*.tsbuildinfo

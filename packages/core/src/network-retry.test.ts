@@ -4,7 +4,7 @@
 // reject with `TypeError: fetch failed` instead of producing a 503. That used
 // to escape the retry loop entirely and fail a whole batch of rows.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   DataverseClient,

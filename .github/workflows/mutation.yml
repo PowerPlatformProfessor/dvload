@@ -1,0 +1,95 @@
+name: Mutation testing
+
+# Coverage says a line ran. Mutation testing says the tests would have NOTICED
+# if that line were wrong — which is the property you actually want from a
+# suite that gates writes to production data.
+#
+# This is deliberately NOT a PR gate: a full run takes minutes, and a surviving
+# mutant is a conversation ("is this worth asserting?"), not a merge blocker.
+# It runs nightly, incrementally, and on demand.
+#
+# First run: the score will be whatever it is. Read the report, then raise
+# `thresholds.break` in stryker.config.json to just below it, so the score can
+# only go up. Leaving break at a number nobody meets gets the job disabled,
+# and a disabled gate is worse than a modest one.
+
+on:
+  schedule:
+    # 03:00 UTC daily — after the working day in most contributor timezones,
+    # so a red result is waiting in the morning rather than mid-review.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      mutate:
+        description: "Glob to mutate (default: all of packages/core)"
+        required: false
+        default: "packages/core/src/**/*.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation
+  cancel-in-progress: true
+
+jobs:
+  stryker:
+    name: Stryker (core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=@dvload/core
+
+      # Incremental mode only re-tests mutants whose code or tests changed
+      # since the last run, turning a 40-minute job into a few minutes on a
+      # quiet day. The cache is best-effort: a miss just means a full run.
+      - name: Restore incremental state
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .stryker-tmp
+          key: stryker-${{ github.sha }}
+          restore-keys: |
+            stryker-
+
+      - name: Run Stryker
+        run: npx stryker run --mutate "${{ inputs.mutate || 'packages/core/src/**/*.ts' }}"
+
+      - name: Publish report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 30
+
+      - name: Summarise the score
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f reports/mutation/mutation.json ]; then
+            node -e '
+              const r = require("./reports/mutation/mutation.json");
+              const all = Object.values(r.files).flatMap(f => f.mutants);
+              const killed = all.filter(m => m.status === "Killed").length;
+              const survived = all.filter(m => m.status === "Survived");
+              const covered = all.filter(m => m.status !== "NoCoverage" && m.status !== "Ignored").length;
+              const score = covered ? (100 * killed / covered).toFixed(2) : "n/a";
+              console.log(`## Mutation score: ${score}%\n`);
+              console.log(`${killed} killed / ${covered} covered mutants, ${survived.length} survived\n`);
+              if (survived.length) {
+                console.log("### Survived mutants (code that runs but is not asserted on)\n");
+                console.log("| File | Line | Mutator | Replacement |");
+                console.log("|---|---|---|---|");
+                for (const m of survived.slice(0, 40)) {
+                  const file = Object.entries(r.files).find(([, f]) => f.mutants.includes(m))[0];
+                  const repl = String(m.replacement ?? "").replace(/\|/g, "\\|").slice(0, 60);
+                  console.log(`| ${file} | ${m.location.start.line} | ${m.mutatorName} | \`${repl}\` |`);
+                }
+              }
+            ' >> "$GITHUB_STEP_SUMMARY"
+          fi

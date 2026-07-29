@@ -4,11 +4,14 @@
   "description": "Mapping engine and Dataverse OData client. Used by both the Excel add-in and the CLI.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rimraf dist",
-    "test": "node --test --import tsx \"src/**/*.test.ts\""
+    "test": "vitest run --root ../.. --project core --project core-int --project core-property"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it, beforeAll as before, afterAll as after } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -27,58 +27,64 @@ describe("run-all plan orchestration", () => {
         { id: "contacts", mapping: "./c.dvmap.json", workbook: "./x.xlsx", dependsOn: ["accounts"] },
       ],
     });
+    const batches = buildExecutionBatches(plan);
+    assert.equal(batches.length, 2);
+    assert.deepEqual(batches[0].map((s) => s.id).sort(), ["accounts", "owners"]);
+    assert.deepEqual(
+      batches[1].map((s) => s.id),
+      ["contacts"]
+    );
+  });
 
-    it("treats alternateKeyLinks as execution dependencies", () => {
-      const plan = parseRunPlan({
-        schemaVersion: 1,
-        name: "nightly",
-        steps: [
-          { id: "accounts", mapping: "./a.dvmap.json", workbook: "./x.xlsx", stage: 1 },
-          {
-            id: "contacts",
-            mapping: "./c.dvmap.json",
-            workbook: "./x.xlsx",
-            alternateKeyLinks: [
-              {
-                fromStep: "accounts",
-                lookupTarget: "parentcustomerid_account",
-                keyAttribute: "accountnumber",
-              },
-            ],
-          },
-        ],
-      });
-      const batches = buildExecutionBatches(plan);
-      assert.equal(batches.length, 2);
-      assert.deepEqual(batches[0].map((s) => s.id), ["accounts"]);
-      assert.deepEqual(batches[1].map((s) => s.id), ["contacts"]);
-    });
-
-    it("handles mixed stage and non-stage steps", () => {
-      const plan = parseRunPlan({
-        schemaVersion: 1,
-        name: "nightly",
-        steps: [
-          { id: "accounts", mapping: "./a.dvmap.json", workbook: "./x.xlsx", stage: 1 },
-          { id: "contacts", mapping: "./c.dvmap.json", workbook: "./x.xlsx" },
-          { id: "leads", mapping: "./l.dvmap.json", workbook: "./x.xlsx", stage: 2 },
-        ],
-      });
-      const batches = buildExecutionBatches(plan);
-      assert.equal(batches.length, 2);
-      assert.deepEqual(
-        batches[0].map((s) => s.id).sort(),
-        ["accounts", "contacts"]
-      );
-      assert.deepEqual(batches[1].map((s) => s.id), ["leads"]);
+  it("treats alternateKeyLinks as execution dependencies", () => {
+    const plan = parseRunPlan({
+      schemaVersion: 1,
+      name: "nightly",
+      steps: [
+        { id: "accounts", mapping: "./a.dvmap.json", workbook: "./x.xlsx", stage: 1 },
+        {
+          id: "contacts",
+          mapping: "./c.dvmap.json",
+          workbook: "./x.xlsx",
+          alternateKeyLinks: [
+            {
+              fromStep: "accounts",
+              lookupTarget: "parentcustomerid_account",
+              keyAttribute: "accountnumber",
+            },
+          ],
+        },
+      ],
     });
     const batches = buildExecutionBatches(plan);
     assert.equal(batches.length, 2);
     assert.deepEqual(
-      batches[0].map((s) => s.id).sort(),
-      ["accounts", "owners"]
+      batches[0].map((s) => s.id),
+      ["accounts"]
     );
-    assert.deepEqual(batches[1].map((s) => s.id), ["contacts"]);
+    assert.deepEqual(
+      batches[1].map((s) => s.id),
+      ["contacts"]
+    );
+  });
+
+  it("handles mixed stage and non-stage steps", () => {
+    const plan = parseRunPlan({
+      schemaVersion: 1,
+      name: "nightly",
+      steps: [
+        { id: "accounts", mapping: "./a.dvmap.json", workbook: "./x.xlsx", stage: 1 },
+        { id: "contacts", mapping: "./c.dvmap.json", workbook: "./x.xlsx" },
+        { id: "leads", mapping: "./l.dvmap.json", workbook: "./x.xlsx", stage: 2 },
+      ],
+    });
+    const batches = buildExecutionBatches(plan);
+    assert.equal(batches.length, 2);
+    assert.deepEqual(batches[0].map((s) => s.id).sort(), ["accounts", "contacts"]);
+    assert.deepEqual(
+      batches[1].map((s) => s.id),
+      ["leads"]
+    );
   });
 
   it("validates alternate-key cross-step wiring", async () => {

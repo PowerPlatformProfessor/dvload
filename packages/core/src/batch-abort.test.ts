@@ -5,7 +5,7 @@
 // makes a re-run duplicate them. batch() must parse the body instead of
 // throwing, and must send Prefer: odata.continue-on-error.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { DataverseClient, type BatchOperation } from "./dataverse.js";
 
@@ -47,9 +47,7 @@ function makeClient(onFetch: (url: string, init: RequestInit) => Response): {
     environmentUrl: "https://unit.crm.dynamics.com",
     getToken: async () => "token",
     fetch: (async (url: string | URL | Request, init?: RequestInit) => {
-      captured = Object.fromEntries(
-        Object.entries((init?.headers ?? {}) as Record<string, string>)
-      );
+      captured = Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>));
       return onFetch(String(url), init ?? {});
     }) as typeof fetch,
   });
@@ -91,9 +89,7 @@ test("outer 400 with a NON-multipart body still throws", async () => {
 });
 
 test("$batch requests send Prefer: odata.continue-on-error", async () => {
-  const { client, headers } = makeClient(
-    () => new Response(multipartBody(), { status: 200 })
-  );
+  const { client, headers } = makeClient(() => new Response(multipartBody(), { status: 200 }));
   await client.batch(OPS);
   assert.equal(headers()["Prefer"], "odata.continue-on-error");
 });

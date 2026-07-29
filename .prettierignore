@@ -1,0 +1,52 @@
+node_modules
+dist
+build
+coverage
+reports
+.stryker-tmp
+package-lock.json
+tests/dummy-data
+packages/addin/dist
+packages/cli/build
+*.md
+
+# ---------------------------------------------------------------------------
+# Existing source is not yet Prettier-formatted.
+#
+# Reformatting ~35 files in one go would bury this repo's real diffs and
+# conflict with every branch currently in flight. Everything NEW is formatted
+# and checked (see the `format:check` script), so the formatted surface grows
+# rather than arriving as one unreviewable commit.
+#
+# To adopt Prettier repo-wide, in one deliberate change:
+#   1. delete this block
+#   2. change `format:check` back to `prettier --check .`
+#   3. npm run format
+#   4. commit on its own, then add the SHA to .git-blame-ignore-revs
+# ---------------------------------------------------------------------------
+packages/core/src/coerce.ts
+packages/core/src/dataverse.ts
+packages/core/src/index.ts
+packages/core/src/load.ts
+packages/core/src/mapping.ts
+packages/core/src/pqt.ts
+packages/core/src/run-plan.ts
+packages/core/src/tablegen.ts
+packages/core/src/xlsx-reader.ts
+packages/core/src/csv-reader.ts
+packages/core/src/types.ts
+packages/cli/src/**/*.ts
+packages/addin/src/**/*.ts
+tests/recipes-parity.mjs
+tests/schema-parity.mjs
+
+# ...but the migrated test files ARE formatted, so un-ignore them.
+!packages/core/src/**/*.test.ts
+!packages/cli/src/**/*.test.ts
+!packages/addin/src/**/*.test.ts
+
+# Hand-formatted JSON Schema and the add-in's HTML: Prettier rewraps these in
+# ways that make the diffs harder to read than the originals.
+docs/schema/*.json
+packages/*/src/**/*.html
+packages/addin/manifest*.xml

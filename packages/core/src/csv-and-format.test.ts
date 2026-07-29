@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { parseCsv, readTableFromCsvString } from "./csv-reader.js";
 import { coerceValue, parseWithFormat } from "./coerce.js";
@@ -14,7 +14,10 @@ test("parseCsv handles quoted fields, embedded delimiters, quotes, and newlines"
 
 test("parseCsv strips a UTF-8 BOM and tolerates a missing final newline", () => {
   const rows = parseCsv("﻿h1,h2\nv1,v2");
-  assert.deepEqual(rows, [["h1", "h2"], ["v1", "v2"]]);
+  assert.deepEqual(rows, [
+    ["h1", "h2"],
+    ["v1", "v2"],
+  ]);
 });
 
 test("readTableFromCsvString maps headers, nulls empties, drops blank rows", () => {
@@ -28,14 +31,23 @@ test("readTableFromCsvString maps headers, nulls empties, drops blank rows", () 
 
 test("parseWithFormat parses dd/MM/yyyy and rejects impossible dates", () => {
   assert.deepEqual(parseWithFormat("03/04/2025", "dd/MM/yyyy"), {
-    y: 2025, mo: 4, d: 3, h: 0, mi: 0, s: 0,
+    y: 2025,
+    mo: 4,
+    d: 3,
+    h: 0,
+    mi: 0,
+    s: 0,
   });
   assert.equal(parseWithFormat("30/02/2025", "dd/MM/yyyy"), null);
   assert.equal(parseWithFormat("2025-04-03", "dd/MM/yyyy"), null);
 });
 
 const col = (kind: ColumnMapping["kind"], format?: string): ColumnMapping => ({
-  source: "s", target: "t", kind, treatEmptyAsNull: true, ...(format ? { format } : {}),
+  source: "s",
+  target: "t",
+  kind,
+  treatEmptyAsNull: true,
+  ...(format ? { format } : {}),
 });
 
 test("datetime honors an explicit format as UTC", () => {

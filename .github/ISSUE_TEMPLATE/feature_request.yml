@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a capability dvload doesn't have yet
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: |
+        What are you trying to accomplish, and what stops you today?
+        Describe the situation rather than the feature — the best solution is
+        often not the one people arrive with.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: If you already have a shape in mind, describe it here.
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How you work around it now
+      description: Manual steps, another tool, a Power Automate flow, giving up.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface?
+      multiple: true
+      options:
+        - CLI
+        - Excel add-in
+        - Both
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to open a PR for this

@@ -4,7 +4,7 @@
 // the batch. Correct behavior: omit the attribute on plain creates; clear
 // via the plain navigation property (`nav: null`) on upsert/sync.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { loadRows } from "./load.js";
 import { parseMapping } from "./mapping.js";

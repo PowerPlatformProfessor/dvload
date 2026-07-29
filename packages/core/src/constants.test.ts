@@ -1,7 +1,7 @@
 // Tests for constant-value columns: schema parsing, sourceValue resolution,
 // payload coercion, and lookup binding of fixed values.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   parseMapping,
@@ -48,10 +48,7 @@ test("parseMapping accepts a constant column without source", () => {
 
 test("parseMapping rejects a column with both source and constant", () => {
   assert.throws(
-    () =>
-      parseMapping(
-        baseMapping([{ source: "A", constant: "x", target: "description", kind: "string" }])
-      ),
+    () => parseMapping(baseMapping([{ source: "A", constant: "x", target: "description", kind: "string" }])),
     MappingParseError
   );
 });
@@ -65,8 +62,7 @@ test("parseMapping rejects a column with neither source nor constant", () => {
 
 test("parseMapping rejects non-scalar constants", () => {
   assert.throws(
-    () =>
-      parseMapping(baseMapping([{ constant: { a: 1 }, target: "description", kind: "string" }])),
+    () => parseMapping(baseMapping([{ constant: { a: 1 }, target: "description", kind: "string" }])),
     MappingParseError
   );
 });
@@ -126,10 +122,7 @@ test("a constant GUID lookup binds on every record", async () => {
 
   assert.equal(result.failed, 0);
   for (const op of batches.flat()) {
-    assert.equal(
-      (op.body as Record<string, unknown>)["ownerid@odata.bind"],
-      `/systemusers(${GUID_A})`
-    );
+    assert.equal((op.body as Record<string, unknown>)["ownerid@odata.bind"], `/systemusers(${GUID_A})`);
   }
 });
 

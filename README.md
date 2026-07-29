@@ -641,12 +641,27 @@ single-table mapping unchanged. Schema:
 
 ## Contributing
 
-Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) first — particularly the
+Start with [CONTRIBUTING.md](./CONTRIBUTING.md) — setup, the workflow, and
+what gets a PR merged.
+
+Then read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — particularly the
 [invariants](./docs/ARCHITECTURE.md#invariants) and
 [extension points](./docs/ARCHITECTURE.md#extension-points) sections, which
 list the steps a change usually needs to touch. Docs are treated as part of
 the change, not a follow-up; see
 [.github/copilot-instructions.md](./.github/copilot-instructions.md).
+
+```bash
+npm ci && npm run build
+npm test          # unit + integration + property, no Dataverse needed
+npm run verify    # exactly what CI runs
+```
+
+[TESTING.md](./TESTING.md) explains how the suite is structured and how to
+write tests that belong here — in particular the in-process fake Dataverse
+Web API that the integration tests run against.
+
+Security issues: please report privately, see [SECURITY.md](./SECURITY.md).
 
 ## License
 

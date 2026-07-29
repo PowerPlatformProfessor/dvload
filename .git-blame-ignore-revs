@@ -1,0 +1,10 @@
+# Commits that only reformatted code. `git blame` skips these so the useful
+# history isn't buried under a whitespace pass.
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub reads this file automatically.
+#
+# Add the SHA of the repo-wide Prettier adoption commit here when it happens
+# (see the note in .prettierignore).

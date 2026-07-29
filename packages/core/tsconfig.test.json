@@ -1,0 +1,13 @@
+{
+  // Type-check only: covers the test tree as well as src, emits nothing.
+  // `npm run typecheck` uses this so a type error in a test fails CI just
+  // like a type error in production code.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

@@ -1,6 +1,6 @@
 // Tests for the DeleteExistingDataOnLoad / conflictMode semantics fix.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   buildWorkbookWithQueries,
@@ -15,7 +15,7 @@ import type { Mapping } from "./mapping.js";
 
 function archive(deleteExisting: boolean): PqtArchive {
   return {
-    mashupDocument: 'section Section1;\nshared Contacts = let x = 1 in x;',
+    mashupDocument: "section Section1;\nshared Contacts = let x = 1 in x;",
     mashupMetadata: {
       QueryGroups: [],
       DocumentLocale: "en-US",
@@ -113,8 +113,5 @@ test("EXPERIMENTAL: pqt → workbook → extract round-trips the M document", as
   // The workbook must contain a DataMashup part our own parser accepts.
   const roundTripped = await extractPqtFromXlsx(xlsxBytes);
   assert.equal(roundTripped.mashupDocument, a.mashupDocument);
-  assert.deepEqual(
-    Object.keys(roundTripped.mashupMetadata.QueriesMetadata).sort(),
-    ["Contacts", "My Query"]
-  );
+  assert.deepEqual(Object.keys(roundTripped.mashupMetadata.QueriesMetadata).sort(), ["Contacts", "My Query"]);
 });

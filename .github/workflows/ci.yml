@@ -1,24 +1,211 @@
 name: CI
 
+# The merge gate. Every job here is required for a PR to land (point branch
+# protection at the single "CI passed" check; see CONTRIBUTING.md).
+#
+# Design notes:
+#  - Fast feedback first. `static` fails in about a minute on a typo; nobody
+#    should wait for the Windows matrix to learn they broke a type.
+#  - The engine is platform-agnostic and is tested on Linux *and* Windows.
+#    "It worked on my machine" for a tool whose users are all on Windows is a
+#    support ticket waiting to happen.
+#  - Fork PRs get identical treatment. No job here needs a secret; anything
+#    that does lives in e2e-live.yml and is gated separately.
+#  - Third-party actions are pinned to a commit SHA. A tag is mutable, and a
+#    compromised action tag is how supply-chain attacks on CI actually happen.
+
 on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+
+# Least privilege: CI only ever reads the repo.
+permissions:
+  contents: read
+
+# A new push supersedes the previous run for the same ref: saves minutes and
+# stops a stale red X sitting on an already-fixed PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The add-in build refuses the dev client id unless this is set. Real
+  # releases supply DATAVERSE_LOAD_CLIENT_ID instead — see
+  # packages/addin/webpack.config.js.
+  DVLOAD_ALLOW_DEV_CLIENT: "1"
+  FORCE_COLOR: "1"
 
 jobs:
-  build-test:
-    runs-on: windows-latest # CLI targets Windows (DPAPI, schtasks, Excel COM)
+  # ---------------------------------------------------------------------------
+  # 1. Cheap checks. Linux only — formatting and types don't vary by OS.
+  # ---------------------------------------------------------------------------
+  static:
+    name: Lint, format & types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run build
-        env:
-          # CI builds the add-in with the dev client id; real releases must
-          # set DATAVERSE_LOAD_CLIENT_ID instead (see webpack.config.js guard).
-          DVLOAD_ALLOW_DEV_CLIENT: "1"
-      - run: npm test
+      - name: Build core (the CLI and add-in type-check against its output)
+        run: npm run build --workspace=@dvload/core
       - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+
+  # ---------------------------------------------------------------------------
+  # 2. The suite, on both platforms.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (${{ matrix.os }}, node ${{ matrix.node }})
+    needs: static
+    timeout-minutes: 25
+    strategy:
+      # One failing platform must not hide a different failure on the other:
+      # reviewers need the full picture from a single run.
+      fail-fast: false
+      matrix:
+        include:
+          # The platform users actually run the CLI on: DPAPI token storage,
+          # schtasks scheduling, Excel COM. The authoritative run, and the one
+          # that measures coverage.
+          - os: windows-latest
+            node: 20
+            coverage: true
+          # Linux catches path-separator and line-ending assumptions, and is
+          # several times faster.
+          - os: ubuntu-latest
+            node: 20
+            coverage: false
+          # Forward-looking: the release binary is built on Node 22 (SEA).
+          - os: ubuntu-latest
+            node: 22
+            coverage: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: Run tests
+        if: ${{ !matrix.coverage }}
+        run: npm test
+
+      - name: Run tests with coverage
+        if: ${{ matrix.coverage }}
+        run: npm run test:coverage
+
+      # The ratchet: fails if coverage dropped below the recorded baseline.
+      # See scripts/coverage-gate.mjs for why this beats a fixed threshold.
+      # Only one matrix leg runs it, so the number is measured consistently
+      # and cannot drift between platforms.
+      - name: Coverage ratchet
+        if: ${{ matrix.coverage }}
+        run: npm run coverage:gate
+
+      - name: Report the baseline change, if coverage improved
+        if: ${{ matrix.coverage && !cancelled() }}
+        shell: bash
+        run: |
+          if ! git diff --quiet -- .github/coverage-baseline.json; then
+            {
+              echo "### Coverage improved"
+              echo
+              echo "The baseline was raised. Commit the updated file so the next PR is held to it:"
+              echo
+              echo '```diff'
+              git diff -- .github/coverage-baseline.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage report
+        if: ${{ matrix.coverage && !cancelled() }}
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: coverage-html
+          path: coverage/
+          retention-days: 14
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: junit-${{ matrix.os }}-node${{ matrix.node }}
+          path: reports/junit.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 3. Documentation must describe the code that exists.
+  # ---------------------------------------------------------------------------
+  docs:
+    name: Docs & schema parity
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=@dvload/core
+      # The JSON schemas and README recipes must still match the mapping
+      # parser. A schema that has drifted from the code is worse than none:
+      # editors validate against it and tell users the wrong thing.
+      - run: npm run test:docs
+
+  # ---------------------------------------------------------------------------
+  # 4. The release artifact must build on every PR, not just on tag day.
+  # ---------------------------------------------------------------------------
+  package:
+    name: Bundle CLI
+    needs: static
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22 # matches release.yml; SEA is more mature on 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run bundle --workspace=dvload
+      # A bundle that builds but cannot start is a broken release found by
+      # users. Catch it here instead.
+      - name: Smoke-test the bundle
+        run: node packages/cli/build/dvload.cjs --version
+
+  # ---------------------------------------------------------------------------
+  # 5. One required status. Branch protection points at this job, so adding or
+  #    renaming a matrix leg never means editing protection rules — and a
+  #    skipped job can never be mistaken for a passing one.
+  # ---------------------------------------------------------------------------
+  ci-ok:
+    name: CI passed
+    if: ${{ always() }}
+    needs: [static, test, docs, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every required job succeeded
+        run: |
+          echo "static:  ${{ needs.static.result }}"
+          echo "test:    ${{ needs.test.result }}"
+          echo "docs:    ${{ needs.docs.result }}"
+          echo "package: ${{ needs.package.result }}"
+          [ "${{ needs.static.result }}"  = "success" ] || exit 1
+          [ "${{ needs.test.result }}"    = "success" ] || exit 1
+          [ "${{ needs.docs.result }}"    = "success" ] || exit 1
+          [ "${{ needs.package.result }}" = "success" ] || exit 1

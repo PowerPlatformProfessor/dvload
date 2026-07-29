@@ -2,7 +2,7 @@
 // duplicate handling), skipUnchanged delta detection, sync mode, concurrency,
 // and bypass/impersonation headers.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { loadRows, valuesEqual } from "./load.js";
 import { parseMapping } from "./mapping.js";
@@ -194,7 +194,7 @@ test("skipUnchanged drops unchanged rows and strips unchanged attributes", async
     rows: [
       { Email: "same@x.com", First: "Ann" }, // identical → skip
       { Email: "diff@x.com", First: "NEW" }, // firstname differs → send only firstname... plus key
-      { Email: "new@x.com", First: "Zed" },  // 404 → full payload
+      { Email: "new@x.com", First: "Zed" }, // 404 → full payload
     ],
     client,
   });

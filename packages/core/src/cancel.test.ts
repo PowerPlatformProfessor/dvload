@@ -2,7 +2,7 @@
 // completed batches keep their real outcome, the rest count as skipped, and
 // the result is flagged cancelled. Sync-mode removal must not run.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { loadRows } from "./load.js";
 import { parseMapping } from "./mapping.js";

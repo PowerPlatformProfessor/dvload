@@ -1,0 +1,124 @@
+name: Security
+
+# Supply chain and static analysis. Split from ci.yml because these jobs have
+# different permissions, different schedules, and different failure meanings:
+# a CodeQL finding is a review conversation, a failing test is a broken build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly-disclosed CVE in a dependency surfaces even when the
+    # repo is quiet. Most vulnerabilities are published long after the code
+    # that depends on them was merged.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Semantic static analysis. Finds injection, path traversal and unsafe
+  # deserialisation patterns that lint rules cannot see.
+  # ---------------------------------------------------------------------------
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # required to upload the SARIF results
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: github/codeql-action/init@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          languages: javascript-typescript
+          # security-extended adds the query pack that covers request
+          # smuggling and improper URL construction — directly relevant to a
+          # tool that builds OData batch bodies from spreadsheet cells.
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@f09c1c0a94de965c15400f5634aa42fac8fb8f88 # v3.27.5
+        with:
+          category: "/language:javascript-typescript"
+
+  # ---------------------------------------------------------------------------
+  # Known vulnerabilities in the dependency tree.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Production dependencies are what ships to users; these block.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      # Dev dependencies run only in CI and on maintainer machines. A finding
+      # still matters (CI runs with a token) but shouldn't block an unrelated
+      # PR at 2am, so it reports instead.
+      - name: Audit dev dependencies (advisory)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+  # ---------------------------------------------------------------------------
+  # What a PR is about to ADD to the dependency tree. Catches the case audit
+  # misses: a brand-new dependency with a bad licence or a known-malicious
+  # package that hasn't been advisory-listed yet.
+  # ---------------------------------------------------------------------------
+  dependency-review:
+    name: Dependency review
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # to leave the summary comment
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/dependency-review-action@3b139cfc5fae8b618d3eae3675e383bb1769c019 # v4.5.0
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: on-failure
+          # This project is MIT. Copyleft licences in the dependency tree
+          # would change the terms users receive it under.
+          deny-licenses: GPL-3.0, AGPL-3.0, LGPL-3.0, SSPL-1.0
+
+  # ---------------------------------------------------------------------------
+  # Workflow hygiene: every third-party action must be pinned to a SHA.
+  # A mutable tag is a standing invitation to a supply-chain attack, and it
+  # only takes one un-reviewed PR to reintroduce one.
+  # ---------------------------------------------------------------------------
+  pinned-actions:
+    name: Actions are SHA-pinned
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check for unpinned third-party actions
+        run: |
+          # `actions/*` and `github/*` are first-party and still pinned here,
+          # but the check focuses on anything referencing a bare tag.
+          bad=$(grep -rEn '^\s*(-\s+)?uses:\s*[^ ]+@(v?[0-9]+([.][0-9]+)*|main|master)\s*$' \
+                  .github/workflows/ || true)
+          if [ -n "$bad" ]; then
+            echo "::error::These actions are pinned to a mutable tag. Pin them to a full commit SHA"
+            echo "$bad"
+            exit 1
+          fi
+          echo "All actions are pinned to a commit SHA."

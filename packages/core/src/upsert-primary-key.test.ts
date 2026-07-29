@@ -5,7 +5,7 @@
 // no alternate key exists on the id. PATCHing that URL creates the row with
 // the given id if it's absent and updates it if it's present.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { parseMapping } from "./mapping.js";
 import type { Mapping } from "./mapping.js";

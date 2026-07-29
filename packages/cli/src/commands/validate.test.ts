@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it, beforeAll as before, afterAll as after } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -80,8 +80,8 @@ describe("validateCommand", () => {
     });
 
     it("missing file → rejects", async () => {
-      await assert.rejects(
-        () => validateCommand(path.join(tmpDir, "nonexistent.dvmap.json"), { remote: false })
+      await assert.rejects(() =>
+        validateCommand(path.join(tmpDir, "nonexistent.dvmap.json"), { remote: false })
       );
     });
   });

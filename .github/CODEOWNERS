@@ -1,0 +1,35 @@
+# Code owners are requested for review automatically and, with branch
+# protection set to "require review from Code Owners", must approve before a
+# PR can merge.
+#
+# The paths below are ordered least- to most-specific; the LAST matching rule
+# wins. The specific entries exist because those files decide whether wrong
+# data reaches a production Dataverse, or whether a credential leaks.
+#
+# Replace @PowerPlatformProfessor with a team handle (e.g. @org/dvload-maintainers)
+# once there is more than one maintainer.
+
+* @PowerPlatformProfessor
+
+# --- The engine. A bug here silently writes wrong data. --------------------
+/packages/core/src/load.ts        @PowerPlatformProfessor
+/packages/core/src/coerce.ts      @PowerPlatformProfessor
+/packages/core/src/dataverse.ts   @PowerPlatformProfessor
+/packages/core/src/mapping.ts     @PowerPlatformProfessor
+
+# --- Credentials. ----------------------------------------------------------
+/packages/cli/src/auth.ts         @PowerPlatformProfessor
+/packages/cli/src/secure-store.ts @PowerPlatformProfessor
+/packages/addin/src/auth.ts       @PowerPlatformProfessor
+
+# --- The file format users have already committed to. ----------------------
+/docs/schema/                     @PowerPlatformProfessor
+
+# --- CI, release and anything that can touch secrets. ----------------------
+/.github/                         @PowerPlatformProfessor
+/vitest.config.ts                 @PowerPlatformProfessor
+/vitest.e2e.config.ts             @PowerPlatformProfessor
+/stryker.config.json              @PowerPlatformProfessor
+/scripts/                         @PowerPlatformProfessor
+/package.json                     @PowerPlatformProfessor
+/package-lock.json                @PowerPlatformProfessor

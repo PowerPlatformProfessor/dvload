@@ -8,5 +8,9 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"]
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  // Tests run from source under Vitest; they must never be emitted into
+  // dist/. This package publishes both "dist" and "src", so a compiled
+  // test would ship to consumers along with its dev-only imports.
+  "exclude": ["src/**/*.test.ts", "test", "dist", "node_modules"]
 }

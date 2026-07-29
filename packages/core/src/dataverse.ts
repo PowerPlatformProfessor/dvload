@@ -309,9 +309,15 @@ export class DataverseClient {
 
       const retryAfter = res.headers.get("Retry-After");
       const parsed = parseRetryAfter(retryAfter);
-      const delayMs = parsed
-        ? parsed.value
-        : Math.min(baseDelay * 2 ** (attempt - 1), maxDelay);
+      // maxDelayMs is documented as a hard cap on ANY single sleep, so it has
+      // to bound the server-supplied Retry-After too. Dataverse can legally
+      // ask for several minutes, and a misbehaving proxy can ask for hours —
+      // either way, honouring it unbounded turns a throttle into a hang with
+      // no output and no way to tell it apart from a wedged process.
+      const delayMs = Math.min(
+        parsed ? parsed.value : baseDelay * 2 ** (attempt - 1),
+        maxDelay
+      );
 
       policy.onRetry?.({
         attempt,
@@ -803,7 +809,9 @@ export class DataverseClient {
     // would be reported failed (and a naive re-run would duplicate them).
     // Only treat it as a whole-batch failure when there's no batch body.
     if (!res.ok && !/^--batchresponse/m.test(text)) {
-      await throwForResponseText(res, text);
+      // Synchronous (returns never) — unlike throwForResponse, the body has
+      // already been read into `text`.
+      throwForResponseText(res, text);
     }
     return parseBatchResponse(text, operations);
   }

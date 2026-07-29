@@ -1,0 +1,85 @@
+name: Bug report
+description: Something dvload did wrong — wrong data, a crash, a confusing error
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please don't paste anything from a production environment: no real
+        environment URLs, tenant ids, GUIDs, customer names or email
+        addresses. Redact them — the shape of the data is what matters.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did dvload do, and what did you expect instead?
+      placeholder: |
+        Ran `dvload run contacts.dvmap.json -w data.xlsx`.
+        Expected 1000 updated; got 1000 created, so every record is duplicated.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands, in order.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: mapping
+    attributes:
+      label: Mapping file (redacted)
+      description: |
+        The `.dvmap.json`, with `environmentUrl` and any GUIDs replaced.
+        This is usually the single most useful thing in a bug report.
+      render: json
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did this happen?
+      options:
+        - CLI
+        - Excel add-in
+        - Scheduled run (Task Scheduler)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: dvload version
+      description: "`dvload --version`, or the add-in version from the task pane"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and Node version
+      placeholder: "Windows 11 23H2, Node 20.11.0 (or: single-exe build)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Run log
+      description: |
+        The relevant part of `logs/*.jsonl` from the failing run, redacted.
+        Include the final `done` entry — the counters in it are diagnostic.
+      render: shell
+
+  - type: checkboxes
+    id: data-loss
+    attributes:
+      label: Impact
+      options:
+        - label: This wrote incorrect data to a Dataverse environment
+        - label: This deleted or deactivated records unexpectedly
+        - label: This involves credentials or token storage

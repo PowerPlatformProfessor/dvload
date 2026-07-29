@@ -1,6 +1,6 @@
 // Tests for the $batch codec, input validation, and load accounting.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   DataverseClient,
@@ -24,7 +24,9 @@ function clientWithFetch(fetchImpl: typeof fetch): DataverseClient {
 }
 
 /** Build a Dataverse-style multipart batch response. */
-function multipartResponse(parts: Array<{ contentId: number; status: string; headers?: string[]; body?: string }>): string {
+function multipartResponse(
+  parts: Array<{ contentId: number; status: string; headers?: string[]; body?: string }>
+): string {
   const lines: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
@@ -64,11 +66,12 @@ function multipartResponse(parts: Array<{ contentId: number; status: string; hea
 const NEW_GUID = "11111111-2222-3333-4444-555555555555";
 
 test("create reads the id from the OData-EntityId header (204 No Content)", async () => {
-  const client = clientWithFetch(async () =>
-    new Response(null, {
-      status: 204,
-      headers: { "OData-EntityId": `${ENV}/api/data/v9.2/accounts(${NEW_GUID})` },
-    })
+  const client = clientWithFetch(
+    async () =>
+      new Response(null, {
+        status: 204,
+        headers: { "OData-EntityId": `${ENV}/api/data/v9.2/accounts(${NEW_GUID})` },
+      })
   );
   const r = await client.create("accounts", { name: "X" });
   assert.equal(r.id, NEW_GUID);
@@ -76,22 +79,24 @@ test("create reads the id from the OData-EntityId header (204 No Content)", asyn
 
 test("create reads the id from the body when the server returns a representation", async () => {
   // The real-world shape: 201 + the record, and NO OData-EntityId header.
-  const client = clientWithFetch(async () =>
-    new Response(JSON.stringify({ accountid: NEW_GUID, name: "X" }), {
-      status: 201,
-      headers: { "Content-Type": "application/json" },
-    })
+  const client = clientWithFetch(
+    async () =>
+      new Response(JSON.stringify({ accountid: NEW_GUID, name: "X" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
   );
   const r = await client.create("accounts", { name: "X" }, undefined, "accountid");
   assert.equal(r.id, NEW_GUID);
 });
 
 test("create falls back to the @odata.id annotation", async () => {
-  const client = clientWithFetch(async () =>
-    new Response(
-      JSON.stringify({ "@odata.id": `${ENV}/api/data/v9.2/teams(${NEW_GUID})`, name: "X" }),
-      { status: 201, headers: { "Content-Type": "application/json" } }
-    )
+  const client = clientWithFetch(
+    async () =>
+      new Response(JSON.stringify({ "@odata.id": `${ENV}/api/data/v9.2/teams(${NEW_GUID})`, name: "X" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
   );
   // No primaryIdAttribute passed: the annotation is the only source.
   const r = await client.create("teams", { name: "X" });
@@ -102,22 +107,24 @@ test("create never guesses an id from a lookup field", async () => {
   // A created record is full of *id properties. Binding a lookup to
   // `ownerid` instead of the primary key would corrupt data silently, so an
   // unreadable id must stay empty and let the caller fail loudly.
-  const client = clientWithFetch(async () =>
-    new Response(
-      JSON.stringify({ ownerid: NEW_GUID, _createdby_value: NEW_GUID, name: "X" }),
-      { status: 201, headers: { "Content-Type": "application/json" } }
-    )
+  const client = clientWithFetch(
+    async () =>
+      new Response(JSON.stringify({ ownerid: NEW_GUID, _createdby_value: NEW_GUID, name: "X" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
   );
   const r = await client.create("accounts", { name: "X" }, undefined, "accountid");
   assert.equal(r.id, "");
 });
 
 test("create ignores a non-GUID value in the primary id attribute", async () => {
-  const client = clientWithFetch(async () =>
-    new Response(JSON.stringify({ accountid: "not-a-guid", name: "X" }), {
-      status: 201,
-      headers: { "Content-Type": "application/json" },
-    })
+  const client = clientWithFetch(
+    async () =>
+      new Response(JSON.stringify({ accountid: "not-a-guid", name: "X" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
   );
   const r = await client.create("accounts", { name: "X" }, undefined, "accountid");
   assert.equal(r.id, "");
@@ -223,9 +230,7 @@ test("parses multi-changeset responses with mixed outcomes", async () => {
     },
     { contentId: 3, status: "200 OK", body: JSON.stringify({ contactid: guid }) },
   ]);
-  const client = clientWithFetch(
-    (async () => new Response(responseText, { status: 200 })) as typeof fetch
-  );
+  const client = clientWithFetch((async () => new Response(responseText, { status: 200 })) as typeof fetch);
 
   const results = await client.batch([
     { contentId: 1, method: "POST", url: "contacts", body: {} },
@@ -257,9 +262,7 @@ function mapping(overrides: Partial<Mapping> = {}): Mapping {
     environmentUrl: ENV,
     targetEntitySet: "contacts",
     sourceTable: "T",
-    columns: [
-      { source: "Email", target: "emailaddress1", kind: "string", treatEmptyAsNull: true },
-    ],
+    columns: [{ source: "Email", target: "emailaddress1", kind: "string", treatEmptyAsNull: true }],
     conflictMode: "insert",
     batchSize: 100,
     maxErrors: 0,

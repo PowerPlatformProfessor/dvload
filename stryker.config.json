@@ -1,0 +1,74 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+
+  "_comment": [
+    "Mutation testing answers the question coverage cannot: do the tests",
+    "actually FAIL when the code is wrong? Stryker changes one operator or",
+    "literal at a time and reruns the suite. A mutant that survives means",
+    "some line is executed but not verified.",
+    "",
+    "Scope is deliberately narrow. Only packages/core is mutated: it holds",
+    "the coercion, mapping and load logic where a silently-wrong result",
+    "writes bad data to production. Mutating the CLI shell would mostly",
+    "produce mutants nobody should care about, at several times the runtime.",
+    "",
+    "This does NOT run on every PR — a full mutation run is minutes, not",
+    "seconds. It runs nightly and on demand (.github/workflows/mutation.yml)",
+    "with incremental mode, so a normal night only re-tests what changed."
+  ],
+
+  "packageManager": "npm",
+  "testRunner": "vitest",
+  "_vitest_comment": [
+    "Related mode reruns only the tests that import the mutated file.",
+    "Because only packages/core is mutated, that resolves to the core,",
+    "core-int and core-property projects and never spends time spawning",
+    "the CLI binary as a child process."
+  ],
+  "vitest": {
+    "configFile": "vitest.config.ts",
+    "related": true
+  },
+
+  "mutate": [
+    "packages/core/src/**/*.ts",
+    "!packages/core/src/**/*.test.ts",
+    "!packages/core/src/types.ts",
+    "!packages/core/src/index.ts",
+    "!packages/core/src/exceljs-shim.d.ts"
+  ],
+
+  "checkers": ["typescript"],
+  "tsconfigFile": "packages/core/tsconfig.json",
+
+  "incremental": true,
+  "incrementalFile": ".stryker-tmp/incremental.json",
+
+  "reporters": ["html", "clear-text", "progress", "json"],
+  "htmlReporter": { "fileName": "reports/mutation/index.html" },
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+
+  "_thresholds_comment": [
+    "high  — the aspiration; the badge turns green here.",
+    "low   — below this the report is flagged red in review.",
+    "break — the build fails. Start where the suite actually is and raise it",
+    "        deliberately; a break threshold nobody can meet gets disabled,",
+    "        and a disabled gate is worse than a modest one."
+  ],
+  "thresholds": { "high": 85, "low": 70, "break": 55 },
+
+  "timeoutMS": 20000,
+  "timeoutFactor": 2.5,
+  "concurrency": 4,
+
+  "disableTypeChecks": "packages/core/src/**/*.ts",
+
+  "ignorers": [],
+  "_ignore_comment": [
+    "Some mutants are equivalent by construction and only add noise:",
+    "  - retry backoff arithmetic is asserted on behaviour, not exact ms",
+    "  - log/telemetry string building has no observable contract",
+    "Prefer a targeted // Stryker disable next-line comment at the site,",
+    "with a reason, over a broad exclusion here."
+  ]
+}

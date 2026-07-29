@@ -1,0 +1,54 @@
+version: 2
+
+# Dependency updates. Grouped aggressively on purpose: twelve separate PRs
+# bumping patch versions is noise that trains reviewers to rubber-stamp, which
+# is exactly the habit a supply-chain attack relies on.
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      # Test tooling moves together and breaks together.
+      testing:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+          - "fast-check"
+          - "@stryker-mutator/*"
+      linting:
+        patterns:
+          - "eslint"
+          - "eslint-*"
+          - "typescript-eslint"
+          - "@typescript-eslint/*"
+          - "prettier"
+      # Everything else, minor and patch only. Majors get their own PR so the
+      # breaking-change notes actually get read.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # TypeScript majors change type-checking behaviour across the whole
+      # repo; that upgrade should be deliberate, not automated.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "chore(actions)"
+    groups:
+      actions:
+        patterns: ["*"]

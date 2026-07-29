@@ -11,7 +11,7 @@
     "start": "office-addin-debugging start manifest.xml",
     "stop": "office-addin-debugging stop manifest.xml",
     "validate": "office-addin-manifest validate manifest.xml",
-    "test": "node --test --import tsx \"src/**/*.test.ts\""
+    "test": "vitest run --root ../.. --project addin"
   },
   "dependencies": {
     "@dvload/core": "0.1.0"

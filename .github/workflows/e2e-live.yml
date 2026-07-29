@@ -1,0 +1,110 @@
+name: E2E (live Dataverse)
+
+# Runs the load engine against a REAL Dataverse sandbox.
+#
+# This workflow is intentionally NOT part of the PR gate:
+#
+#  - It needs credentials. `pull_request` runs from a fork have no access to
+#    secrets, so making it required would permanently block every outside
+#    contribution.
+#  - Using `pull_request_target` to hand secrets to fork code would let any
+#    PR exfiltrate them. That trade is never worth it; the mock-server
+#    integration suite (packages/core/test/integration) is what gates PRs.
+#
+# It therefore runs: nightly, on demand, and on release tags.
+#
+# ---------------------------------------------------------------------------
+# ONE-TIME SETUP
+# ---------------------------------------------------------------------------
+# 1. Create a SANDBOX Dataverse environment. The suite refuses to run unless
+#    the hostname contains dev/test/sandbox/uat/sit/qa.
+# 2. Register an Entra app, add a client secret, and create an Application
+#    User in the sandbox with a role that can create/write/delete contacts.
+# 3. Create an active alternate key on contact.emailaddress1
+#    (TEST-PROTOCOL.md §1.2) — the upsert test depends on it.
+# 4. Settings → Environments → New environment named `dataverse-sandbox`.
+#    Add required reviewers if you want a human in the loop for manual runs.
+# 5. Add these secrets to that environment:
+#      DVLOAD_E2E_ENV_URL, DVLOAD_E2E_CLIENT_ID,
+#      DVLOAD_E2E_TENANT_ID, DVLOAD_E2E_SECRET
+#
+# Until step 5 is done the job runs and self-skips with a clear message, so
+# nothing is red and nothing is silently missing.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to test"
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# Serialise: two runs against one environment interfere with each other's
+# cleanup and produce failures nobody can reproduce.
+concurrency:
+  group: e2e-live
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Live load
+    runs-on: windows-latest
+    # Environment protection is the real access control here: secrets are
+    # scoped to it, and reviewers/branch rules apply to manual dispatches.
+    environment: dataverse-sandbox
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Report configuration status
+        shell: bash
+        env:
+          ENV_URL: ${{ secrets.DVLOAD_E2E_ENV_URL }}
+        run: |
+          if [ -z "$ENV_URL" ]; then
+            echo "::notice::Live E2E is not configured yet — every test will self-skip." \
+                 "See the setup steps at the top of .github/workflows/e2e-live.yml."
+          fi
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Run live E2E
+        env:
+          DVLOAD_E2E_ENV_URL: ${{ secrets.DVLOAD_E2E_ENV_URL }}
+          DVLOAD_E2E_CLIENT_ID: ${{ secrets.DVLOAD_E2E_CLIENT_ID }}
+          DVLOAD_E2E_TENANT_ID: ${{ secrets.DVLOAD_E2E_TENANT_ID }}
+          DVLOAD_E2E_SECRET: ${{ secrets.DVLOAD_E2E_SECRET }}
+        run: npm run test:e2e
+
+      - name: Upload results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: e2e-results
+          path: packages/core/reports/junit-e2e.xml
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # The suite cleans up after itself in afterAll, but a cancelled or
+      # crashed run can leave records behind. Surface that loudly instead of
+      # letting the sandbox silently fill with junk.
+      - name: Warn on possible leftovers
+        if: ${{ failure() || cancelled() }}
+        run: |
+          echo "::warning::The E2E run did not finish cleanly. Check the sandbox for contacts" \
+               "with lastname 'DVLT-E2E' and delete them (TEST-PROTOCOL.md §22)."

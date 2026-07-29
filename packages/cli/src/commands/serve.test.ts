@@ -10,12 +10,38 @@
 // The token routes themselves need a tenant and a signed-in user, so they
 // belong in TEST-PROTOCOL.md, not here.
 
-import { test, before, after } from "node:test";
+import { test, beforeAll as before, afterAll as after, vi } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { request } from "node:http";
+
+// Stub the auth layer.
+//
+// Without this, POST /api/token reaches makeDelegatedProvider with an empty
+// token cache, which escalates to an INTERACTIVE login: on Windows it opens a
+// browser window and blocks for DVLOAD_AUTH_TIMEOUT_MS (3 minutes by default).
+// A unit test must never do that — it hangs CI, pops a browser on a
+// contributor's machine, and makes the result depend on the platform's
+// default login flow.
+//
+// Stubbing here also makes the identity assertion below *stronger*: instead of
+// inferring "it didn't go app-only" from the text of a network failure, the
+// test can look at the arguments the route actually passed.
+const getTokenProvider = vi.hoisted(() =>
+  vi.fn(
+    // Typed to match the real export so a signature change breaks this test
+    // rather than silently making the assertions below meaningless.
+    (_opts: { environmentUrl: string; forceUser?: boolean }): Promise<() => Promise<string>> =>
+      Promise.resolve(() => Promise.reject(new Error("no cached token in tests")))
+  )
+);
+
+vi.mock("../auth.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../auth.js")>();
+  return { ...actual, getTokenProvider };
+});
 
 import { startServer, type RunningServer } from "./serve.js";
 
@@ -64,9 +90,7 @@ function call(
         let body = "";
         res.setEncoding("utf8");
         res.on("data", (c) => (body += c));
-        res.on("end", () =>
-          resolve({ status: res.statusCode ?? 0, body, headers: res.headers })
-        );
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body, headers: res.headers }));
       }
     );
     req.on("error", reject);
@@ -213,8 +237,8 @@ test("the UI is delegated-only and a request cannot ask for app-only", async () 
   // quietly interfere — setting up a nightly run would change who the
   // interactive UI writes as, with nothing on screen to say so.
   //
-  // No tenant here, so this asserts the contract rather than the token: the
-  // route must not accept an identity switch from the request body.
+  getTokenProvider.mockClear();
+
   const res = await call("POST", "/api/token", {
     headers: ours(),
     body: JSON.stringify({
@@ -223,7 +247,16 @@ test("the UI is delegated-only and a request cannot ask for app-only", async () 
       appOnly: true,
     }),
   });
-  // Fails for want of a real environment, not because it honoured appOnly.
+
+  // The request asked for app-only in three different ways. The route must
+  // have ignored all of them and asked for a delegated token regardless.
+  assert.equal(getTokenProvider.mock.calls.length, 1);
+  assert.deepEqual(getTokenProvider.mock.calls[0][0], {
+    environmentUrl: "https://example.invalid",
+    forceUser: true,
+  });
+
+  // And the failure surfaces as a server error, not as a token.
   assert.equal(res.status, 500);
   assert.doesNotMatch(res.body, /client_credentials|clientSecret/i);
 });

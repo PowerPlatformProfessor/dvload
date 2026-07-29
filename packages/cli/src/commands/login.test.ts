@@ -1,6 +1,6 @@
 // Hermetic CLI tests: point HOME/USERPROFILE at a temp dir so nothing on
 // the machine (secure store, MSAL caches, profiles) leaks into assertions.
-import { describe, it, before, after } from "node:test";
+import { describe, it, beforeAll as before, afterAll as after } from "vitest";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";

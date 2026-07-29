@@ -1,0 +1,82 @@
+name: PR hygiene
+
+# Checks that are about the pull request rather than the code. Kept out of
+# ci.yml so a title typo doesn't sit next to a real test failure and dilute it.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-hygiene-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: Conventional Commit title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      # The squash-merge commit takes the PR title, so the title IS the commit
+      # message that ends up in the changelog. Checking it here means release
+      # notes are generated from something structured.
+      - uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775554c415e1fc1483d9 # v5.5.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert
+          # Optional scope, but if present it must name a real area of the repo.
+          scopes: |
+            core
+            cli
+            addin
+            docs
+            deps
+            ci
+            schema
+          requireScope: false
+          subjectPattern: ^(?![A-Z])(?!.*\.$).+$
+          subjectPatternError: |
+            The subject "{subject}" is invalid: start with a lowercase letter
+            and don't end with a period. Example: `fix(core): cap Retry-After at maxDelayMs`
+
+  size:
+    name: Reviewable size
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # Advisory, never blocking. A large PR is sometimes unavoidable (a
+      # rename, a generated file); the point is to prompt a conversation about
+      # splitting it, not to refuse the work.
+      - name: Warn on very large diffs
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --numstat "$BASE" "$HEAD" \
+            -- . ':(exclude)package-lock.json' ':(exclude)**/dist/**' ':(exclude)tests/dummy-data/**' \
+            | awk '{a+=$1; d+=$2} END {print a+d+0}')
+          echo "Non-generated lines changed: $changed"
+          if [ "$changed" -gt 1500 ]; then
+            echo "::warning::This PR changes $changed lines. Large PRs get shallower reviews —" \
+                 "consider splitting it, or say in the description why it has to land as one piece."
+          fi

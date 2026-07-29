@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import {
   isSharedMicrosoftClient,
@@ -192,10 +192,7 @@ describe("defaultLoginFlow", () => {
   });
 
   it("uses the browser on Linux under Wayland", () => {
-    assert.equal(
-      defaultLoginFlow({ platform: "linux", WAYLAND_DISPLAY: "wayland-0" }),
-      "interactive"
-    );
+    assert.equal(defaultLoginFlow({ platform: "linux", WAYLAND_DISPLAY: "wayland-0" }), "interactive");
   });
 
   it("uses device code over SSH, where the browser would open on the wrong machine", () => {
@@ -206,10 +203,7 @@ describe("defaultLoginFlow", () => {
   });
 
   it("honours DVLOAD_AUTH_FLOW=device-code", () => {
-    assert.equal(
-      defaultLoginFlow({ platform: "win32", DVLOAD_AUTH_FLOW: "device-code" }),
-      "deviceCode"
-    );
+    assert.equal(defaultLoginFlow({ platform: "win32", DVLOAD_AUTH_FLOW: "device-code" }), "deviceCode");
   });
 
   it("honours DVLOAD_AUTH_FLOW=interactive even over SSH", () => {
@@ -280,10 +274,7 @@ describe("conditionalAccessHint", () => {
 
 describe("dataverseScope", () => {
   it("appends /.default to the origin", () => {
-    assert.equal(
-      dataverseScope("https://org.crm.dynamics.com"),
-      "https://org.crm.dynamics.com/.default"
-    );
+    assert.equal(dataverseScope("https://org.crm.dynamics.com"), "https://org.crm.dynamics.com/.default");
   });
 
   it("uses origin only, ignoring any path segment", () => {
@@ -318,7 +309,10 @@ describe("noteSharedClient", () => {
   });
 
   it("is silent for dvload's own app", () => {
-    assert.equal(captureStderr(() => noteSharedClient(DVLOAD)), "");
+    assert.equal(
+      captureStderr(() => noteSharedClient(DVLOAD)),
+      ""
+    );
   });
 
   it("is silent for an unknown client id", () => {

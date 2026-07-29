@@ -1,6 +1,7 @@
 {
   "name": "dvload-monorepo",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "description": "Map Excel/Power Query output to Dataverse tables and load via the OData Web API. Excel add-in + CLI.",
   "workspaces": [
@@ -14,17 +15,40 @@
     "watch:addin": "npm run watch --workspace=@dvload/addin",
     "serve": "npm run dev --workspace=dvload -- serve",
     "gui": "npm run dev --workspace=dvload -- gui",
-    "lint": "eslint \"packages/*/src/**/*.ts\"",
-    "test": "npm run test --workspaces --if-present && npm run test:docs",
-    "test:docs": "node tests/recipes-parity.mjs"
+    "typecheck": "tsc -p packages/core/tsconfig.test.json && tsc -p packages/cli/tsconfig.test.json && tsc -p packages/addin/tsconfig.test.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:unit": "vitest run --project core --project cli --project addin",
+    "test:integration": "vitest run --project core-int",
+    "test:property": "vitest run --project core-property",
+    "test:coverage": "vitest run --coverage",
+    "test:docs": "node tests/recipes-parity.mjs && node tests/schema-parity.mjs",
+    "test:mutation": "stryker run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "coverage:gate": "node scripts/coverage-gate.mjs",
+    "coverage:accept": "node scripts/coverage-gate.mjs --accept",
+    "verify": "npm run lint && npm run typecheck && npm run test:coverage && npm run coverage:gate && npm run test:docs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "eslint": "^8.57.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/ui": "^4.1.10",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/typescript-checker": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-vitest": "^0.5.4",
+    "fast-check": "^4.9.0",
+    "prettier": "^3.4.2",
     "rimraf": "^5.0.5",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20.0.0"
