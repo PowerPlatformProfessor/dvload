@@ -1,0 +1,16 @@
+# winget "version" manifest — the root of the three-file set.
+#
+# These live here as the source of truth; the actual submission is a PR that
+# copies all three into microsoft/winget-pkgs under
+# manifests/p/PowerPlatformProfessor/dvload/<version>/.
+#
+# Version and InstallerSha256 are stamped by `node packaging/stamp-release.mjs
+# <version> <sha256>` after the GitHub release exists — the hash has to be of
+# the exact published artifact, so it cannot be known before then.
+#
+# Validate before submitting:  winget validate --manifest packaging/winget
+PackageIdentifier: PowerPlatformProfessor.dvload
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

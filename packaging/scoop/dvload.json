@@ -1,23 +1,26 @@
 {
   "version": "0.1.0",
   "description": "Map Excel/Power Query output to Microsoft Dataverse and load via the OData Web API.",
-  "homepage": "https://github.com/OWNER/dvload",
+  "homepage": "https://github.com/PowerPlatformProfessor/dvload",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/OWNER/dvload/releases/download/v0.1.0/dvload.exe",
-      "hash": "REPLACE_WITH_SHA256"
+      "url": "https://github.com/PowerPlatformProfessor/dvload/releases/download/v0.1.0/dvload.exe",
+      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
   "bin": "dvload.exe",
   "checkver": {
-    "github": "https://github.com/OWNER/dvload"
+    "github": "https://github.com/PowerPlatformProfessor/dvload"
   },
   "autoupdate": {
     "architecture": {
       "64bit": {
-        "url": "https://github.com/OWNER/dvload/releases/download/v$version/dvload.exe"
+        "url": "https://github.com/PowerPlatformProfessor/dvload/releases/download/v$version/dvload.exe"
       }
+    },
+    "hash": {
+      "url": "$url.sha256"
     }
   }
 }

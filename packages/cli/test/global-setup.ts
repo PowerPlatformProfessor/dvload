@@ -44,7 +44,7 @@ function build(workspace: string): void {
   });
 }
 
-export async function setup(): Promise<void> {
+export function setup(): void {
   // core first: the CLI imports @dvload/core's compiled output.
   const coreSrc = newestMtime(path.join(repoRoot, "packages", "core", "src"));
   const coreDist = newestMtime(path.join(repoRoot, "packages", "core", "dist"));

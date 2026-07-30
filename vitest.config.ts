@@ -177,18 +177,24 @@ export default defineConfig({
         // The mapping/coercion/load engine. Every bug here writes wrong data
         // to somebody's production Dataverse, so it carries the strict bar.
         "packages/core/src/**/*.ts": {
-          lines: 78,
-          statements: 75,
-          functions: 82,
-          branches: 68,
+          lines: 80,
+          statements: 77,
+          functions: 85,
+          branches: 69,
         },
-        // CLI: auth, profiles, secure storage, scheduling. Lower because a
-        // meaningful chunk is only reachable through a spawned process.
+        // CLI: auth, profiles, secure storage, telemetry, scheduling. Lower
+        // than core because a meaningful chunk is only reachable through a
+        // spawned process, which V8 in-process coverage cannot see.
+        //
+        // TODO: auth.ts is 295 lines of credential handling at ~27% — by far
+        // the biggest remaining gap in the repo. Token-provider selection
+        // (app-only vs delegated precedence), client-id resolution and the
+        // login-flow decision table are all pure enough to test directly.
         "packages/cli/src/**/*.ts": {
-          lines: 45,
-          statements: 44,
-          functions: 43,
-          branches: 40,
+          lines: 52,
+          statements: 52,
+          functions: 57,
+          branches: 47,
         },
         // Add-in: only the pure suggestion/combobox logic is in scope.
         "packages/addin/src/**/*.ts": {

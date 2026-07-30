@@ -43,7 +43,7 @@ vi.mock("../auth.js", async (importOriginal) => {
   return { ...actual, getTokenProvider };
 });
 
-import { startServer, type RunningServer } from "./serve.js";
+import { startServer, resolveWebSource, checkUi, type RunningServer } from "./serve.js";
 
 let server: RunningServer;
 let webRoot: string;
@@ -143,6 +143,93 @@ test("never serves files outside the web root", async () => {
     assert.doesNotMatch(res.body, /secret/, `${attempt} leaked the file`);
   }
 });
+
+test("a malformed percent-escape is a client error, not a crash", async () => {
+  // decodeURIComponent throws on a lone '%'. Before the web source was
+  // factored out this went through fs.readFile's try/catch and surfaced as a
+  // 404; it is a bad request, and either way it must not take the server down.
+  const res = await call("GET", "/%");
+  assert.equal(res.status, 400);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Web source resolution                                                       */
+/* -------------------------------------------------------------------------- */
+//
+// The exe embeds the UI as SEA assets and the npm install ships it as a
+// directory, so resolution has two backends. Only the disk one is reachable
+// from a test process — a SEA binary cannot be built in-process — so the
+// embedded path is covered by the release smoke test (`dvload gui --check-ui`
+// from a directory holding nothing but the exe). What is worth pinning here
+// is that the precedence and the validation still behave.
+
+test("an explicit web root wins over everything else", async () => {
+  const web = await resolveWebSource(webRoot);
+  assert.equal(web.label, path.resolve(webRoot));
+  assert.match((await web.read("taskpane.html"))?.toString() ?? "", /pane/);
+});
+
+test("DVLOAD_WEB_ROOT is honoured when no explicit root is given", async () => {
+  vi.stubEnv("DVLOAD_WEB_ROOT", webRoot);
+  try {
+    const web = await resolveWebSource();
+    assert.equal(web.label, path.resolve(webRoot));
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+test("a web source refuses to read outside itself", async () => {
+  const web = await resolveWebSource(webRoot);
+  for (const attempt of ["../dvload-secret.txt", "assets/../../dvload-secret.txt"]) {
+    assert.equal(await web.read(attempt), null, attempt);
+  }
+});
+
+test("--check-ui accepts a complete UI and names the source", async () => {
+  const complete = await mkdtemp(path.join(tmpdir(), "dvload-web-ok-"));
+  for (const f of ["taskpane.html", "taskpane.js", "commands.html"]) {
+    await writeFile(path.join(complete, f), "x");
+  }
+
+  // The release smoke test reads this line to tell "served from the embedded
+  // assets" apart from "found a directory lying around next to the exe",
+  // which is the distinction the whole check exists to make.
+  const lines: string[] = [];
+  const log = vi.spyOn(console, "log").mockImplementation((...args) => void lines.push(args.join(" ")));
+  try {
+    await assert.doesNotReject(() => checkUi(complete));
+  } finally {
+    log.mockRestore();
+  }
+  assert.ok(
+    lines.some((l) => l.includes(path.resolve(complete))),
+    lines.join("\n")
+  );
+});
+
+test("--check-ui rejects a UI that is present but incomplete", async () => {
+  // The failure this guards against: a bundle that stages taskpane.html but
+  // drops the script, which starts fine and only breaks when a user opens
+  // the pane. Naming the missing files is the whole point.
+  const partial = await mkdtemp(path.join(tmpdir(), "dvload-web-partial-"));
+  await writeFile(path.join(partial, "taskpane.html"), "<html>pane</html>");
+
+  await assert.rejects(
+    () => checkUi(partial),
+    (err: Error) => {
+      assert.match(err.message, /taskpane\.js/);
+      assert.match(err.message, /commands\.html/);
+      assert.doesNotMatch(err.message, /taskpane\.html,/);
+      return true;
+    }
+  );
+});
+
+// Deliberately not tested here: the "no UI anywhere" throw. Resolution falls
+// back to walking up for packages/addin/dist, which exists in a checkout
+// whenever the add-in has been built — so the assertion would pass or fail
+// depending on whether someone had run a build, which is worse than no test.
 
 /* -------------------------------------------------------------------------- */
 /* Guard                                                                       */

@@ -40,8 +40,15 @@ jobs:
         run: npx webpack --mode production
         working-directory: packages/addin
         env:
-          # Optional override; defaults to the registered dataverse-load app.
-          DATAVERSE_LOAD_CLIENT_ID: ${{ vars.DATAVERSE_LOAD_CLIENT_ID }}
+          # The only build-time input the add-in bundle actually has (see
+          # webpack.config.js DefinePlugin). Unset means empty, which turns
+          # telemetry off.
+          #
+          # DATAVERSE_LOAD_CLIENT_ID is deliberately NOT passed here: since
+          # the UI moved behind the local sidecar it never talks to Entra, so
+          # there is no client id to bake in. The CLI reads that variable at
+          # runtime instead.
+          DVLOAD_AI_CONNECTION_STRING: ${{ vars.DVLOAD_AI_CONNECTION_STRING }}
 
       - name: Include production manifest
         run: cp packages/addin/manifest.prod.xml packages/addin/dist/manifest.prod.xml

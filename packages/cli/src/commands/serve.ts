@@ -40,6 +40,7 @@ import { createServer as createHttpsServer } from "node:https";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import kleur from "kleur";
 
@@ -71,6 +72,8 @@ export interface ServeOptions {
   open?: boolean;
   /** Override the directory containing taskpane.html. */
   webRoot?: string;
+  /** Resolve and validate the UI, print where it came from, then exit. */
+  checkUi?: boolean;
   cert?: string;
   key?: string;
 }
@@ -82,6 +85,94 @@ export interface ServeOptions {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Where the UI's files come from.
+ *
+ * There are two genuinely different backing stores — a directory on disk and
+ * assets embedded in a single-file executable — and the request handler
+ * should not care which it got. `label` is for logs only; never join paths
+ * onto it, because in the SEA case it does not name a real directory.
+ */
+export interface WebSource {
+  label: string;
+  /** Read a file relative to the web root. `null` means "not found". */
+  read(rel: string): Promise<Buffer | null>;
+}
+
+/** Reject traversal before it reaches any store. Encoded `..` is already
+ *  decoded by the caller, so a segment check is sufficient and works for the
+ *  SEA case too, where there is no filesystem to resolve against. */
+function safeSegments(rel: string): string[] | null {
+  const parts = rel.split(/[/\\]+/).filter((p) => p.length > 0 && p !== ".");
+  if (parts.some((p) => p === "..")) return null;
+  return parts;
+}
+
+function diskWebSource(dir: string): WebSource {
+  const root = path.resolve(dir);
+  return {
+    label: root,
+    async read(rel) {
+      const parts = safeSegments(rel);
+      if (!parts) return null;
+      const full = path.resolve(root, ...parts);
+      // Belt and braces: symlinks inside the root could still point out of
+      // it, so confirm the resolved path is contained before reading.
+      if (full !== root && !full.startsWith(root + path.sep)) return null;
+      try {
+        return await fs.readFile(full);
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+/**
+ * Node's SEA API, or null when unavailable.
+ *
+ * `node:sea` landed in 20.12, and the CLI supports Node 20.0, so a bare
+ * import would break the floor it advertises. It also must not be a static
+ * import: esbuild would resolve it at bundle time and the require would then
+ * run on every startup, including on Node versions that lack the module.
+ */
+function seaApi(): { isSea(): boolean; getRawAsset(key: string): ArrayBuffer } | null {
+  try {
+    const req = createRequire(import.meta.url);
+    const sea = req("node:sea") as { isSea?: () => boolean; getRawAsset?: (k: string) => ArrayBuffer };
+    if (typeof sea.isSea !== "function" || typeof sea.getRawAsset !== "function") return null;
+    if (!sea.isSea()) return null;
+    return sea as { isSea(): boolean; getRawAsset(key: string): ArrayBuffer };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The UI as embedded in `dvload.exe`.
+ *
+ * `scripts/bundle.mjs` writes every file under `build/web` into the SEA
+ * config as an asset keyed `web/<posix-relative-path>`. Without this the exe
+ * would ship the CLI alone and `serve`/`gui` would die on a missing
+ * taskpane.html — the single-file release exists precisely so users don't
+ * have to assemble a directory next to it.
+ */
+function seaWebSource(sea: { getRawAsset(key: string): ArrayBuffer }): WebSource {
+  return {
+    label: "embedded in this executable",
+    read(rel) {
+      const parts = safeSegments(rel);
+      if (!parts) return Promise.resolve(null);
+      try {
+        // getRawAsset throws when the key is absent; there is no has().
+        return Promise.resolve(Buffer.from(sea.getRawAsset(`web/${parts.join("/")}`)));
+      } catch {
+        return Promise.resolve(null);
+      }
+    },
+  };
+}
+
+/**
  * Find the built add-in bundle.
  *
  * Order matters, and it is not the obvious one. A repo checkout's live
@@ -91,37 +182,43 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
  * directory the server had stopped reading, and the pane would silently keep
  * serving the stale copy. Losing an afternoon to that is easy.
  *
+ * Embedded SEA assets come after the explicit overrides and the repo walk
+ * (both are deliberate acts by someone who wants that copy served) but
+ * before the `build/web` directory probes, because a stray extracted `web/`
+ * next to an upgraded exe would otherwise silently outrank the UI that
+ * actually matches the binary.
+ *
  * This costs installed users nothing — an installed CLI has no
- * `packages/addin/dist` anywhere above it, so the walk falls through to the
- * shipped `build/web` immediately.
+ * `packages/addin/dist` anywhere above it, so the walk falls through
+ * immediately.
  */
-async function resolveWebRoot(explicit?: string): Promise<string> {
-  const candidates: string[] = [];
-  if (explicit) candidates.push(path.resolve(explicit));
-  if (process.env.DVLOAD_WEB_ROOT) candidates.push(path.resolve(process.env.DVLOAD_WEB_ROOT));
+export async function resolveWebSource(explicit?: string): Promise<WebSource> {
+  const dirs: string[] = [];
+  if (explicit) dirs.push(path.resolve(explicit));
+  if (process.env.DVLOAD_WEB_ROOT) dirs.push(path.resolve(process.env.DVLOAD_WEB_ROOT));
 
   // Repo checkout: walk up looking for packages/addin/dist.
   let dir = HERE;
   for (let i = 0; i < 6; i++) {
-    candidates.push(path.join(dir, "packages", "addin", "dist"));
+    dirs.push(path.join(dir, "packages", "addin", "dist"));
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
 
-  // Installed layout: bundle.mjs copies the add-in dist to build/web,
-  // alongside build/dvload.cjs.
-  candidates.push(path.join(HERE, "web"));
-  candidates.push(path.join(HERE, "..", "build", "web"));
+  const found = await firstWithPane(dirs);
+  if (found) return found;
 
-  for (const c of candidates) {
-    try {
-      await fs.access(path.join(c, "taskpane.html"));
-      return c;
-    } catch {
-      // keep looking
-    }
+  const sea = seaApi();
+  if (sea) {
+    const embedded = seaWebSource(sea);
+    if (await embedded.read("taskpane.html")) return embedded;
   }
+
+  // Installed npm layout: bundle.mjs copies the add-in dist to build/web,
+  // alongside build/dvload.cjs.
+  const installed = await firstWithPane([path.join(HERE, "web"), path.join(HERE, "..", "build", "web")]);
+  if (installed) return installed;
 
   throw new Error(
     "Could not find the built add-in UI (no taskpane.html).\n" +
@@ -129,6 +226,14 @@ async function resolveWebRoot(explicit?: string): Promise<string> {
       "  npm run build --workspace=@dvload/addin\n" +
       "or point at an existing build with --web-root <dir> or DVLOAD_WEB_ROOT."
   );
+}
+
+async function firstWithPane(dirs: string[]): Promise<WebSource | null> {
+  for (const d of dirs) {
+    const source = diskWebSource(d);
+    if (await source.read("taskpane.html")) return source;
+  }
+  return null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -328,23 +433,30 @@ function guard(req: IncomingMessage, allowedOrigins: string[], allowedHosts: str
   return null;
 }
 
-async function serveStatic(res: ServerResponse, webRoot: string, urlPath: string): Promise<void> {
-  const rel = urlPath === "/" ? "taskpane.html" : decodeURIComponent(urlPath).replace(/^\/+/, "");
-  const full = path.resolve(webRoot, rel);
+async function serveStatic(res: ServerResponse, web: WebSource, urlPath: string): Promise<void> {
+  let rel: string;
+  try {
+    rel = urlPath === "/" ? "taskpane.html" : decodeURIComponent(urlPath).replace(/^\/+/, "");
+  } catch {
+    // decodeURIComponent throws on a malformed escape (e.g. "/%").
+    send(res, 400, "Bad request", "text/plain; charset=utf-8");
+    return;
+  }
 
-  // Path traversal: resolve first, then confirm the result is still inside
-  // the web root. Checking the raw string for ".." misses encoded forms.
-  if (full !== webRoot && !full.startsWith(webRoot + path.sep)) {
+  // Path traversal is rejected by the source itself, which is where the
+  // knowledge of what "inside the root" means lives — a directory and a set
+  // of embedded asset keys answer that question differently.
+  if (safeSegments(rel) === null) {
     send(res, 403, "Forbidden", "text/plain; charset=utf-8");
     return;
   }
 
-  try {
-    const body = await fs.readFile(full);
-    send(res, 200, body, MIME[path.extname(full).toLowerCase()] ?? "application/octet-stream");
-  } catch {
+  const body = await web.read(rel);
+  if (!body) {
     send(res, 404, `Not found: ${rel}`, "text/plain; charset=utf-8");
+    return;
   }
+  send(res, 200, body, MIME[path.extname(rel).toLowerCase()] ?? "application/octet-stream");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -434,6 +546,8 @@ export interface RunningServer {
   server: import("node:http").Server;
   port: number;
   url: string;
+  /** Where the UI is being served from. A directory, or a note that it is
+   *  embedded in the executable — for display, not for path joining. */
   webRoot: string;
   close(): Promise<void>;
 }
@@ -445,7 +559,7 @@ export interface RunningServer {
  */
 export async function startServer(opts: ServeOptions): Promise<RunningServer> {
   const requestedPort = opts.port ?? DEFAULT_PORT;
-  const webRoot = path.resolve(await resolveWebRoot(opts.webRoot));
+  const web = await resolveWebSource(opts.webRoot);
   const scheme = opts.http ? "http" : "https";
 
   // Filled in after listen(), because port 0 (used by tests) isn't known
@@ -488,7 +602,7 @@ export async function startServer(opts: ServeOptions): Promise<RunningServer> {
       return;
     }
 
-    await serveStatic(res, webRoot, urlPath);
+    await serveStatic(res, web, urlPath);
   };
 
   const server = opts.http
@@ -523,7 +637,7 @@ export async function startServer(opts: ServeOptions): Promise<RunningServer> {
   return {
     server,
     port,
-    webRoot,
+    webRoot: web.label,
     url: `${scheme}://localhost:${port}/taskpane.html`,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
@@ -553,5 +667,34 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
 
 /** `dvload gui` — same server, opens a browser at it. */
 export async function guiCommand(opts: ServeOptions): Promise<void> {
+  if (opts.checkUi) {
+    await checkUi(opts.webRoot);
+    return;
+  }
   await serveCommand({ ...opts, open: true });
+}
+
+/**
+ * Resolve the UI and exit — no listener, no browser, no certificate.
+ *
+ * Exists for the release smoke test. The single-file exe embeds the task
+ * pane as SEA assets, and the only way that can break is silently: the exe
+ * runs, `--version` prints, and the failure surfaces the first time a user
+ * opens the pane. This makes it a build-time error instead.
+ */
+export async function checkUi(webRoot?: string): Promise<void> {
+  const web = await resolveWebSource(webRoot);
+  const required = ["taskpane.html", "taskpane.js", "commands.html"];
+  const missing: string[] = [];
+  for (const f of required) {
+    if (!(await web.read(f))) missing.push(f);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `UI found at "${web.label}" but incomplete — missing: ${missing.join(", ")}.\n` +
+        "Rebuild the add-in and re-bundle before releasing."
+    );
+  }
+  console.log(kleur.green("UI OK"));
+  console.log(kleur.gray(`  source: ${web.label}`));
 }

@@ -1,0 +1,17 @@
+PackageIdentifier: PowerPlatformProfessor.dvload
+PackageVersion: 0.1.0
+MinimumOSVersion: 10.0.17763.0
+# "portable" is the right type for a bare exe: winget puts a shim on PATH and
+# handles upgrade/uninstall itself. An installer type would mean authoring an
+# MSI for a single self-contained file that needs no install-time work.
+InstallerType: portable
+Commands:
+  - dvload
+ReleaseDate: 1970-01-01
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/PowerPlatformProfessor/dvload/releases/download/v0.1.0/dvload.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    PortableCommandAlias: dvload
+ManifestType: installer
+ManifestVersion: 1.6.0

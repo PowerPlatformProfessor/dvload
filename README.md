@@ -52,11 +52,70 @@ dvload/
 | [TELEMETRY.md](./TELEMETRY.md) | what is collected, and how to turn it off |
 | [PRE-RELEASE-CHECKLIST.md](./PRE-RELEASE-CHECKLIST.md) | what must be done before shipping |
 
+## Install
+
+```powershell
+winget install dvload
+```
+
+That is the whole install. `dvload.exe` is self-contained — the browser UI
+and the Excel task pane are embedded in the binary, so there is nothing to
+host and nothing to extract.
+
+<details>
+<summary>Other ways in</summary>
+
+**Direct download** — grab `dvload.exe` from the
+[latest release](https://github.com/PowerPlatformProfessor/dvload/releases)
+and put it anywhere on your PATH. Each release ships a `dvload.exe.sha256`
+if you want to check it:
+
+```powershell
+(Get-FileHash dvload.exe -Algorithm SHA256).Hash.ToLower()
+```
+
+**Scoop**
+
+```powershell
+scoop install dvload
+```
+
+**npm** — for anyone who already has Node 20+ and would rather track it
+with their other global tools:
+
+```bash
+npm i -g dvload
+```
+
+**From source** — see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+</details>
+
+Then confirm it took:
+
+```powershell
+dvload --version
+```
+
+Upgrades are `winget upgrade dvload` (or `scoop update dvload` /
+`npm i -g dvload@latest`).
+
+### Excel add-in
+
+The task pane is not installed separately and is not sideloaded from a
+website — `dvload serve` serves it from your own machine. See
+[The UI and the sidecar](#the-ui-and-the-sidecar) below, and
+[packaging/README.md](./packaging/README.md) if you are rolling it out
+across an organisation.
+
 ## Prerequisites
 
-- Node.js 20+
 - Windows 10/11 (CLI scheduling and Power Query refresh are Windows-only in v1)
-- Excel desktop, signed in to the same Microsoft 365 tenant as your Dataverse environment
+- Excel desktop, signed in to the same Microsoft 365 tenant as your Dataverse
+  environment — only needed for the task pane and for Power Query refresh;
+  `dvload gui` and `dvload run` work against `.xlsx`/`.csv`/`.tsv` without it
+- Node.js 20+ **only** if you install via npm or build from source. The
+  winget/Scoop/direct-download exe bundles its own runtime.
 
 No Entra ID app registration and no admin approval are needed for
 interactive use, in either front end. Unattended scheduled runs need a
@@ -304,8 +363,11 @@ dvload app-logout --env <url>                                   # clears
 
 ## First run
 
+Nothing to build if you installed via winget, Scoop, or the direct
+download — go straight to the commands below. Working from a clone
+instead:
+
 ```bash
-# from the repo root
 npm install
 npm run build
 ```

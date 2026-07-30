@@ -201,6 +201,7 @@ program
   .option("--port <n>", `Port to listen on (default ${DEFAULT_PORT})`, parseIntStrict)
   .option("--http", "Serve plain HTTP instead of HTTPS (no certificate needed).")
   .option("--web-root <dir>", "Directory containing the built taskpane.html (default: the bundled UI).")
+  .option("--check-ui", "Report where the UI would be served from, then exit without starting a server.")
   .option("--cert <path>", "TLS certificate (default: the office-addin-dev-certs localhost cert).")
   .option("--key <path>", "TLS private key.")
   .action(guiCommand);

@@ -91,12 +91,20 @@ console.table(
 const regressions = rows.filter((r) => r.regressed);
 
 if (accept) {
-  const next = {
-    tolerance,
-    ...Object.fromEntries(rows.map((r) => [r.metric, Math.max(r.baseline, r.current)])),
-  };
+  // Record the CURRENT numbers verbatim, including a decrease. That is the
+  // entire point of --accept: it is the deliberate, reviewable act of saying
+  // "this drop is intended". Clamping to Math.max here would make the flag a
+  // no-op on exactly the case it exists for.
+  const next = { tolerance, ...Object.fromEntries(rows.map((r) => [r.metric, r.current])) };
   writeFileSync(BASELINE, `${JSON.stringify(next, null, 2)}\n`);
-  console.log("coverage-gate: baseline updated.");
+  const drops = rows.filter((r) => r.current < r.baseline);
+  console.log(
+    drops.length > 0
+      ? `coverage-gate: baseline LOWERED (${drops
+          .map((r) => `${r.metric} ${r.baseline}% → ${r.current}%`)
+          .join(", ")}). Explain why in the PR description.`
+      : "coverage-gate: baseline updated."
+  );
   process.exit(0);
 }
 

@@ -3,19 +3,53 @@ name: Release (single-exe CLI)
 # Builds dvload.exe via Node's Single Executable Application pipeline and
 # attaches it to the GitHub release. Trigger by pushing a tag like v0.2.0.
 #
+# The exe is self-contained: scripts/bundle.mjs embeds the built add-in UI as
+# SEA assets, so `dvload serve` and `dvload gui` work from the single file
+# with nothing extracted alongside it.
+#
+# No Entra client id is baked in at build time. The CLI resolves one at
+# runtime (shared Microsoft client → dvload's own registered app), and users
+# who want their own registration set DATAVERSE_LOAD_CLIENT_ID or pass
+# --client-id. See resolveClientIdChain in packages/cli/src/auth.ts.
+#
 # BEFORE the first public release:
-#   1. Set DATAVERSE_LOAD_CLIENT_ID as a repo variable (your own Entra app).
-#   2. Add code signing (Azure Trusted Signing or a conventional cert) at
-#      the marked step — an unsigned exe will trip SmartScreen for users.
-#   3. After the release exists, submit the winget manifest
-#      (packaging/winget/) and update packaging/scoop/dvload.json hashes.
+#   1. Add code signing — set the AZURE_* secrets and variables used below.
+#      An unsigned exe trips SmartScreen, which loses exactly the
+#      semi-technical Dataverse admins this tool targets. The build still
+#      succeeds without them, but warns.
+#   2. After the release exists, submit the winget manifest (see
+#      packaging/winget/) and update packaging/scoop/dvload.json.
 
 on:
   push:
     tags: ["v*"]
+  # Lets you exercise the whole pipeline, signing included, without burning a
+  # version number. Produces a build artifact but no release.
+  workflow_dispatch:
+
+# softprops/action-gh-release creates a release and uploads assets, neither
+# of which the default read-only GITHUB_TOKEN can do.
+permissions:
+  contents: write
 
 jobs:
+  verify:
+    # A tag is not a promise that the commit was ever green — tags get pushed
+    # from branches, and a bad release is far more expensive to retract than
+    # to prevent. Linux because it is faster and the suite is
+    # platform-agnostic; Windows-specific paths are covered by ci.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+
   exe:
+    needs: verify
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,30 +59,104 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
 
-      - name: Bundle CLI to a single CJS file
-        run: npm run bundle --workspace=dvload
+      - name: Build all workspaces
+        run: npm run build
+        env:
+          # Baked into the add-in bundle by webpack's DefinePlugin. Unset
+          # means empty, which disables telemetry — the right default.
+          DVLOAD_AI_CONNECTION_STRING: ${{ vars.DVLOAD_AI_CONNECTION_STRING }}
+
+      - name: Bundle CLI and embed the UI as SEA assets
+        # --require-web fails the build rather than shipping an exe whose
+        # task pane 404s. A UI-less release is worse than no release.
+        run: npm run bundle --workspace=dvload -- --require-web
 
       - name: Build SEA blob and inject into node.exe
         shell: pwsh
         working-directory: packages/cli
         run: |
-          node --experimental-sea-config sea-config.json
+          node --experimental-sea-config build/sea-config.json
           node -e "require('fs').copyFileSync(process.execPath, 'build/dvload.exe')"
           npx postject build/dvload.exe NODE_SEA_BLOB build/sea-prep.blob `
             --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
 
-      # --- CODE SIGNING GOES HERE ------------------------------------------
-      # Example (Azure Trusted Signing):
-      # - uses: azure/trusted-signing-action@v0
-      #   with: { files-folder: packages/cli/build, files-folder-filter: exe, ... }
-      # ----------------------------------------------------------------------
+      - name: Sign
+        # Skipped on forks and before the secrets are configured, so the
+        # pipeline stays runnable. The smoke test then reports the exe as
+        # unsigned rather than letting it pass silently.
+        if: ${{ vars.AZURE_SIGNING_ENDPOINT != '' }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\packages\cli\build
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Smoke test
-        run: packages/cli/build/dvload.exe --version
+        shell: pwsh
+        working-directory: packages/cli
+        run: |
+          ./build/dvload.exe --version
+
+          # The point of embedding the UI is that it resolves with nothing
+          # extracted next to the exe, so prove it from a directory holding
+          # only the binary — running in place would find build/web on disk
+          # and pass even if the assets were missing from the blob.
+          $probe = Join-Path $env:RUNNER_TEMP 'sea-probe'
+          New-Item -ItemType Directory -Force -Path $probe | Out-Null
+          Copy-Item ./build/dvload.exe $probe
+          Push-Location $probe
+          ./dvload.exe gui --check-ui
+          Pop-Location
+
+          $sig = (Get-AuthenticodeSignature ./build/dvload.exe).Status
+          Write-Host "Signature status: $sig"
+          if ($sig -ne 'Valid') {
+            Write-Warning "dvload.exe is unsigned — users will hit SmartScreen. See packaging/README.md."
+          }
+
+      - name: Checksum
+        id: hash
+        shell: pwsh
+        working-directory: packages/cli/build
+        run: |
+          $h = (Get-FileHash dvload.exe -Algorithm SHA256).Hash.ToLower()
+          # Consumed by packaging/scoop/dvload.json and the winget manifest,
+          # both of which need the hash of the exact published artifact.
+          "$h  dvload.exe" | Out-File -Encoding ascii dvload.exe.sha256
+          "sha256=$h" >> $env:GITHUB_OUTPUT
+          Write-Host "sha256: $h"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dvload-exe
+          path: |
+            packages/cli/build/dvload.exe
+            packages/cli/build/dvload.exe.sha256
 
       - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: packages/cli/build/dvload.exe
+          files: |
+            packages/cli/build/dvload.exe
+            packages/cli/build/dvload.exe.sha256
+          body: |
+            ## Install
+
+            ```
+            winget install dvload
+            ```
+
+            Or download `dvload.exe` below and run it — nothing else needed.
+            SHA-256: `${{ steps.hash.outputs.sha256 }}`
+
+            Developers can instead `npm i -g dvload` (requires Node 20+).

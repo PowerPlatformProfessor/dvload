@@ -30,6 +30,7 @@
     "test:docs": "node tests/recipes-parity.mjs && node tests/schema-parity.mjs",
     "test:mutation": "stryker run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "stamp-release": "node packaging/stamp-release.mjs",
     "coverage:gate": "node scripts/coverage-gate.mjs",
     "coverage:accept": "node scripts/coverage-gate.mjs --accept",
     "verify": "npm run lint && npm run typecheck && npm run test:coverage && npm run coverage:gate && npm run test:docs"

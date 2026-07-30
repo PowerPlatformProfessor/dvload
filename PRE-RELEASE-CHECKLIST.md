@@ -92,15 +92,22 @@ AppSource submission:
 
 ## 4. CLI distribution
 
-- Bundle as a single executable: `npm run bundle --workspace=@dvload/cli`,
-  then the Node SEA steps in `.github/workflows/release.yml` (keytar is
-  gone, so the bundle has no native addons and SEA works cleanly).
-- Code-sign the .exe so Windows SmartScreen doesn't yell at users.
-  EV certs are nice but not strictly required for personal-scale distribution.
-- Publish to GitHub Releases with checksums (SHA-256) in the release notes.
-- Document the install path (suggested: drop into `%USERPROFILE%\bin`
-  which most users already have on PATH, or use `winget` if you want to
-  set that up).
+Mechanics are automated — `.github/workflows/release.yml` verifies, builds
+the SEA exe with the UI embedded, signs it, smoke-tests it, and attaches it
+plus a SHA-256 to the release. Full detail in
+[packaging/README.md](./packaging/README.md). What still needs a human:
+
+- **Set up code signing before the first public tag.** The `Sign` step is
+  wired for Azure Trusted Signing but skips itself until the `AZURE_*`
+  secrets and variables exist, and an unsigned exe means SmartScreen for
+  every user. Check the workflow log said `Signature status: Valid`.
+- Push the tag (`v<x.y.z>`) — nothing releases without one.
+- After the release exists: `npm run stamp-release -- <x.y.z>`, then submit
+  the winget PR and update the Scoop bucket. Neither hash can be filled in
+  beforehand.
+- `npm publish --workspace=dvload` if the npm path is being kept in sync.
+- Confirm the README's install instructions still match reality — they say
+  `winget install dvload`, which is only true once the manifest lands.
 
 ## 5. Reproducible builds
 
