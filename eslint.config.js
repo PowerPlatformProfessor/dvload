@@ -26,6 +26,10 @@ export default tseslint.config(
       "**/dist/**",
       "**/build/**",
       "**/node_modules/**",
+      // Stray sibling installs left behind by npm troubleshooting. Gitignored
+      // too; this entry stops a fresh one from failing the lint run before
+      // anyone notices it exists.
+      "**/node_modules_tmp*/**",
       "**/coverage/**",
       "**/reports/**",
       ".stryker-tmp/**",

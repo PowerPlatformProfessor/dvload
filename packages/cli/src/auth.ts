@@ -305,6 +305,17 @@ export interface DelegatedAuthOptions {
   clientId?: string;
   /** Override the sign-in flow. Default: see `defaultLoginFlow()`. */
   flow?: LoginFlow;
+  /**
+   * Username to pre-fill on the Entra sign-in page (`login_hint`).
+   *
+   * The token cache is keyed per environment host, so signing in to a second
+   * environment is always a fresh interactive login even when it is the same
+   * person in the same tenant. Passing the username they already used turns
+   * that into a redirect they usually never see, instead of an account picker
+   * they have to answer again. Purely a hint: Entra ignores it if the browser
+   * has no matching session, and it never grants anything on its own.
+   */
+  loginHint?: string;
 }
 
 export interface AppOnlyCredentials {
@@ -371,6 +382,41 @@ export async function getSignedInAccount(env: string): Promise<AccountInfo | nul
   } catch {
     return null;
   }
+}
+
+/** One environment this machine already has a delegated session for. */
+export interface DelegatedSession {
+  /** The environment host the session is keyed by, e.g. `contoso.crm.dynamics.com`. */
+  host: string;
+  /** Reconstructed from the host — the store only keeps the host. */
+  environmentUrl: string;
+  /** UPN of the cached account, or null when the MSAL cache no longer has it. */
+  username: string | null;
+}
+
+/**
+ * Every environment with a cached delegated session, and who it belongs to.
+ *
+ * Exists for the task pane's account-first flow: it asks "who am I already?"
+ * before an environment has been chosen, which no per-environment call can
+ * answer. Each entry costs an MSAL cache read, so callers should treat this
+ * as a startup query rather than something to poll.
+ *
+ * Read-only and non-throwing, like `getSignedInAccount`: an unreadable cache
+ * yields a null username, not an error, because the caller is rendering a
+ * picker and a missing name is not worth failing over.
+ */
+export async function listDelegatedSessions(): Promise<DelegatedSession[]> {
+  const keys = await listAccounts("delegated:").catch(() => [] as string[]);
+  const out: DelegatedSession[] = [];
+  for (const key of keys) {
+    const host = key.slice("delegated:".length);
+    if (!host) continue;
+    const environmentUrl = `https://${host}`;
+    const account = await getSignedInAccount(environmentUrl);
+    out.push({ host, environmentUrl, username: account?.username ?? null });
+  }
+  return out;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -794,6 +840,7 @@ async function acquireInteractive(opts: DelegatedAuthOptions): Promise<Authentic
   const attempt = app.acquireTokenInteractive({
     scopes: [dataverseScope(opts.environmentUrl)],
     ...(loopbackClient && { loopbackClient }),
+    ...(opts.loginHint && { loginHint: opts.loginHint }),
     openBrowser: async (url: string) => {
       assertUsableAuthorizeUrl(url);
       console.log("");

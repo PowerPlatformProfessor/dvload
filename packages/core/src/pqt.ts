@@ -36,7 +36,25 @@ export interface PqtArchive {
   metadata: PqtTopMetadata;
   /** [Content_Types].xml. Stored verbatim so we can round-trip. */
   contentTypes: string;
+  /**
+   * Wire shape `MashupMetadata.QueriesMetadata` had when this archive was read.
+   * In memory it is always a name-keyed object; this records what to emit on
+   * write so a .pqt that came in as an array goes back out as one.
+   */
+  queriesMetadataShape?: QueriesMetadataShape;
 }
+
+/**
+ * The two shapes `QueriesMetadata` appears in on disk. Both are valid .pqt.
+ *
+ *   "object"  Dataverse Dataflows: { "Contacts": { QueryName: "Contacts", … } }
+ *   "array"   Power Query Online / Excel: [ { QueryName: "Contacts", … } ]
+ *
+ * Treating the array form as an object is the bug this type exists to prevent:
+ * `Object.keys([{…}])` yields `["0"]`, so every query silently gets named "0"
+ * and lookups by real query name miss.
+ */
+export type QueriesMetadataShape = "object" | "array";
 
 export interface PqtTopMetadata {
   Name: string;
@@ -60,7 +78,8 @@ export interface MashupMetadata {
 }
 
 export interface QueryMetadata {
-  QueryId: string;
+  /** Absent in Power Query Online exports; minted when we inject a mapping. */
+  QueryId?: string;
   QueryName: string;
   QueryGroupId: string | null;
   EntityName?: string | null;
@@ -170,14 +189,63 @@ export async function extractPqtFromXlsx(
       Version: opts.version ?? "1.0.0.0",
     },
     contentTypes: STANDARD_CONTENT_TYPES,
+    // We synthesize the metadata ourselves, so it's always the keyed form.
+    queriesMetadataShape: "object",
   };
+}
+
+/**
+ * Coerce `QueriesMetadata` from either wire shape into a name-keyed object,
+ * reporting which shape it came from.
+ *
+ * Array entries are keyed by their `QueryName`. Entries with no usable name are
+ * keyed positionally as a last resort so they aren't silently dropped — but
+ * that path also means the .pqt is malformed, since a query without a name
+ * can't be matched to anything in the M document.
+ */
+export function normalizeQueriesMetadata(raw: unknown): {
+  queriesMetadata: Record<string, QueryMetadata>;
+  shape: QueriesMetadataShape;
+} {
+  if (Array.isArray(raw)) {
+    const out: Record<string, QueryMetadata> = {};
+    raw.forEach((entry, i) => {
+      const q = entry as QueryMetadata;
+      const name =
+        typeof q?.QueryName === "string" && q.QueryName.length > 0
+          ? q.QueryName
+          : `Query${i + 1}`;
+      out[name] = q;
+    });
+    return { queriesMetadata: out, shape: "array" };
+  }
+  if (raw && typeof raw === "object") {
+    return { queriesMetadata: raw as Record<string, QueryMetadata>, shape: "object" };
+  }
+  // null / undefined / a scalar: treat as "no queries described". Callers fall
+  // back to parsing `shared` declarations out of the M document.
+  return { queriesMetadata: {}, shape: "object" };
+}
+
+/**
+ * Render `mashupMetadata` back to the shape it was read in. Unknown top-level
+ * keys survive because they're still on the parsed object.
+ */
+function serializeMashupMetadata(archive: PqtArchive): string {
+  const { queriesMetadataShape = "object", mashupMetadata } = archive;
+  const payload: Record<string, unknown> = { ...mashupMetadata };
+  payload.QueriesMetadata =
+    queriesMetadataShape === "array"
+      ? Object.values(mashupMetadata.QueriesMetadata)
+      : mashupMetadata.QueriesMetadata;
+  return JSON.stringify(payload);
 }
 
 /** Serialize a PqtArchive to a .pqt file (ZIP buffer). */
 export async function writePqt(archive: PqtArchive): Promise<Uint8Array> {
   const zip = new JSZip();
   zip.file("MashupDocument.pq", archive.mashupDocument);
-  zip.file("MashupMetadata.json", JSON.stringify(archive.mashupMetadata));
+  zip.file("MashupMetadata.json", serializeMashupMetadata(archive));
   zip.file("Metadata.json", JSON.stringify(archive.metadata));
   zip.file("[Content_Types].xml", archive.contentTypes);
   return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
@@ -197,11 +265,16 @@ export async function readPqt(pqtBytes: Uint8Array | ArrayBuffer): Promise<PqtAr
     must("Metadata.json").async("string"),
     must("[Content_Types].xml").async("string"),
   ]);
+
+  const parsedMeta = JSON.parse(meta) as MashupMetadata & { QueriesMetadata: unknown };
+  const { queriesMetadata, shape } = normalizeQueriesMetadata(parsedMeta.QueriesMetadata);
+
   return {
     mashupDocument: doc,
-    mashupMetadata: JSON.parse(meta) as MashupMetadata,
+    mashupMetadata: { ...parsedMeta, QueriesMetadata: queriesMetadata },
     metadata: JSON.parse(top) as PqtTopMetadata,
     contentTypes: ct,
+    queriesMetadataShape: shape,
   };
 }
 
@@ -225,6 +298,12 @@ export function injectMappingIntoPqt(archive: PqtArchive, mapping: Mapping): voi
   // for an upsert mapping would make the Dataflow wipe the table each run.
   q.DeleteExistingDataOnLoad = false;
   q.EntityName = q.EntityName ?? mapping.targetEntitySet;
+  // A .pqt carrying FieldsMetadata is bound for Dataverse Dataflows, which
+  // emit and expect the name-keyed object shape. Power Query Online's array
+  // form has no QueryId either, so mint one. Promote regardless of the shape
+  // this archive was read in.
+  archive.queriesMetadataShape = "object";
+  q.QueryId = q.QueryId ?? cryptoUuid();
   q.FieldsMetadata = q.FieldsMetadata ?? {};
   for (const col of mapping.columns) {
     // Constant columns have no Power Query source column to map.
@@ -300,6 +379,15 @@ export function mappingFromPqt(
 /* "Load To…" per query). Excel is strict about these parts — treat output    */
 /* as experimental and keep the paste-into-Advanced-Editor fallback in mind.  */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * JSZip writes an explicit directory entry for every path segment. Excel does
+ * not: an OOXML package written by Office contains only file entries, and the
+ * Power Query engine's OPC reader is stricter about this than Excel's own
+ * reader for the outer workbook. Passing this to every `file()` call keeps the
+ * archives shaped the way Office writes them.
+ */
+const NO_FOLDER_ENTRIES = { createFolders: false } as const;
 
 const QDEFF_PACKAGE_XML =
   '<?xml version="1.0" encoding="utf-8"?>' +
@@ -385,9 +473,9 @@ function buildMetadataXml(queryNames: string[]): string {
 export async function writeDataMashup(archive: PqtArchive): Promise<Uint8Array> {
   // Inner OPC package with the M document.
   const pkg = new JSZip();
-  pkg.file("[Content_Types].xml", QDEFF_PACKAGE_CONTENT_TYPES);
-  pkg.file("Config/Package.xml", QDEFF_PACKAGE_XML);
-  pkg.file("Formulas/Section1.m", archive.mashupDocument);
+  pkg.file("[Content_Types].xml", QDEFF_PACKAGE_CONTENT_TYPES, NO_FOLDER_ENTRIES);
+  pkg.file("Config/Package.xml", QDEFF_PACKAGE_XML, NO_FOLDER_ENTRIES);
+  pkg.file("Formulas/Section1.m", archive.mashupDocument, NO_FOLDER_ENTRIES);
   const pkgBytes = await pkg.generateAsync({ type: "uint8array", compression: "DEFLATE" });
 
   const permissions = utf8.encode(QDEFF_PERMISSIONS_XML);
@@ -494,14 +582,14 @@ export async function buildWorkbookWithQueries(archive: PqtArchive): Promise<Uin
     "</DataMashup>";
 
   const zip = new JSZip();
-  zip.file("[Content_Types].xml", XLSX_CONTENT_TYPES);
-  zip.file("_rels/.rels", XLSX_RELS_ROOT);
-  zip.file("xl/workbook.xml", XLSX_WORKBOOK);
-  zip.file("xl/_rels/workbook.xml.rels", XLSX_WORKBOOK_RELS);
-  zip.file("xl/worksheets/sheet1.xml", XLSX_SHEET1);
-  zip.file("customXml/item1.xml", item1);
-  zip.file("customXml/itemProps1.xml", customXmlItemProps());
-  zip.file("customXml/_rels/item1.xml.rels", CUSTOMXML_ITEM_RELS);
+  zip.file("[Content_Types].xml", XLSX_CONTENT_TYPES, NO_FOLDER_ENTRIES);
+  zip.file("_rels/.rels", XLSX_RELS_ROOT, NO_FOLDER_ENTRIES);
+  zip.file("xl/workbook.xml", XLSX_WORKBOOK, NO_FOLDER_ENTRIES);
+  zip.file("xl/_rels/workbook.xml.rels", XLSX_WORKBOOK_RELS, NO_FOLDER_ENTRIES);
+  zip.file("xl/worksheets/sheet1.xml", XLSX_SHEET1, NO_FOLDER_ENTRIES);
+  zip.file("customXml/item1.xml", item1, NO_FOLDER_ENTRIES);
+  zip.file("customXml/itemProps1.xml", customXmlItemProps(), NO_FOLDER_ENTRIES);
+  zip.file("customXml/_rels/item1.xml.rels", CUSTOMXML_ITEM_RELS, NO_FOLDER_ENTRIES);
   return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
 }
 
@@ -628,7 +716,7 @@ function makeMinimalMashupMetadata(queries: string[], locale: string): MashupMet
   };
 }
 
-function dataverseKindToDataflowType(kind: DataverseFieldKind): DataflowFieldType {
+export function dataverseKindToDataflowType(kind: DataverseFieldKind): DataflowFieldType {
   switch (kind) {
     case "string":
       return "String";
@@ -662,7 +750,7 @@ function dataverseKindToDataflowType(kind: DataverseFieldKind): DataflowFieldTyp
   }
 }
 
-function dataflowTypeToDataverseKind(t: string): DataverseFieldKind {
+export function dataflowTypeToDataverseKind(t: string): DataverseFieldKind {
   switch (t) {
     case "Memo":
       return "memo";

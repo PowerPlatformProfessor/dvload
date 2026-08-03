@@ -450,6 +450,35 @@ export class DataverseClient {
     return json.value?.[0]?.ReferencingEntityNavigationPropertyName || undefined;
   }
 
+  /**
+   * Alternate keys defined on an entity, with the attributes each one spans.
+   *
+   * Dataflows record their upsert key by the *key's* logical name, not by the
+   * attributes it covers (`asker_actid` for a key over `asker_act_id`), so a
+   * dataflow's mapping can only be turned into a dvload `upsertKey` by way of
+   * this lookup.
+   */
+  async getEntityKeys(
+    entityLogicalName: string
+  ): Promise<Array<{ LogicalName: string; KeyAttributes: string[] }>> {
+    assertLogicalName(entityLogicalName, "Entity logical name");
+    const res = await this.fetchWithRetry(
+      this.url(
+        `EntityDefinitions(LogicalName='${entityLogicalName}')/Keys` +
+          `?$select=LogicalName,KeyAttributes`
+      ),
+      { headers: { ...DEFAULT_HEADERS, ...(await this.authHeaders()) } }
+    );
+    if (!res.ok) await throwForResponse(res);
+    const json = (await res.json()) as {
+      value?: Array<{ LogicalName?: string; KeyAttributes?: string[] }>;
+    };
+    return (json.value ?? []).map((k) => ({
+      LogicalName: String(k.LogicalName ?? ""),
+      KeyAttributes: Array.isArray(k.KeyAttributes) ? k.KeyAttributes.map(String) : [],
+    }));
+  }
+
   /** Create a new table (entity). Payload from tablegen's buildEntityPayload. */
   async createEntity(payload: Record<string, unknown>): Promise<void> {
     const res = await this.fetchWithRetry(this.url("EntityDefinitions"), {

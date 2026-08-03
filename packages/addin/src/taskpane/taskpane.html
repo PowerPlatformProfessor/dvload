@@ -71,6 +71,46 @@
     .opts-grid label { margin: 0; font-weight: 500; font-size: 12px; }
     .opts-grid .check { display: flex; align-items: center; gap: 6px; grid-column: 1 / span 2; }
     .opts-grid .check input { width: auto; }
+    /* Tabs. The pane is one long column of unrelated jobs — build an import,
+       assemble a run plan, pull a dataflow down — and only one of them is ever
+       in progress. Splitting them stops the other two from pushing the one you
+       want off screen. */
+    .tabs {
+      display: flex; gap: 2px; margin: 0 0 10px 0;
+      border-bottom: 1px solid #e1dfdd;
+    }
+    .tabs button {
+      flex: 1; width: auto; background: transparent; color: #605e5c;
+      border: 0; border-bottom: 2px solid transparent;
+      padding: 6px 4px; font-size: 12px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tabs button:hover { color: #201f1e; background: #f3f2f1; }
+    .tabs button[aria-selected="true"] { color: #0078d4; border-bottom-color: #0078d4; }
+    .tabs .badge {
+      display: inline-block; margin-left: 4px; padding: 0 5px;
+      border-radius: 8px; background: #edebe9; color: #605e5c;
+      font-size: 10px; font-weight: 600; vertical-align: 1px;
+    }
+    .tabs button[aria-selected="true"] .badge { background: #deecf9; color: #0078d4; }
+    .tabpanel[hidden] { display: none; }
+    /* A numbered step: sign in, then choose where to write. The order matters
+       enough to label it, because picking the environment first was what made
+       the old pane look like it had signed you out. */
+    .step { display: flex; align-items: baseline; gap: 6px; margin-top: 10px; }
+    .step .n {
+      flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%;
+      background: #0078d4; color: #fff; font-size: 10px; font-weight: 700;
+      line-height: 16px; text-align: center;
+    }
+    .step .t { font-weight: 600; }
+    .step .sub { font-weight: 400; font-size: 11px; color: #605e5c; }
+    .hint { font-size: 11px; color: #605e5c; margin: 2px 0 4px 0; }
+    @media (prefers-color-scheme: dark) {
+      .tabs { border-bottom-color: #484644; }
+      .tabs button:hover { color: #f3f2f1; background: #3b3a39; }
+      .tabs .badge { background: #3b3a39; color: #c8c6c4; }
+    }
     .status { margin-top: 10px; padding: 6px; border-radius: 4px; }
     .status.info { background: #eef6ff; color: #003a75; }
     .status.error { background: #fde7e9; color: #5c0011; }
@@ -83,219 +123,331 @@
 <body>
   <h1>Load to Dataverse</h1>
 
-  <label>Saved environments</label>
-  <div class="row">
-    <select id="profile" style="flex:1"></select>
-    <button id="profileDelete" class="secondary icon" type="button" title="Remove selected profile">✕</button>
+  <!--
+    Three jobs, one at a time: build and run an import, assemble a multi-step
+    run plan, or pull a dataflow out of the environment. They share the
+    account, the environment and the status area at the bottom — everything
+    else is independent, so it lives on its own tab rather than pushing the
+    others off screen.
+  -->
+  <div class="tabs" role="tablist">
+    <button id="tabImport" type="button" role="tab" aria-selected="true"
+            aria-controls="panelImport" data-panel="panelImport">Import</button>
+    <button id="tabPlan" type="button" role="tab" aria-selected="false"
+            aria-controls="panelPlan" data-panel="panelPlan">Run plan<span
+            id="planBadge" class="badge" style="display:none;">0</span></button>
+    <button id="tabDataflow" type="button" role="tab" aria-selected="false"
+            aria-controls="panelDataflow" data-panel="panelDataflow">Dataflows</button>
   </div>
 
-  <label for="env">Environment URL</label>
-  <input id="env" placeholder="https://contoso.crm.dynamics.com" />
-  <div id="profileSaveRow" class="row" style="margin-top:4px; display:none;">
-    <input id="profileName" placeholder="Name this environment…" style="flex:1" />
-    <button id="profileSaveConfirm" type="button" style="width:auto;">Save</button>
-    <button id="profileSaveCancel" class="secondary icon" type="button">Cancel</button>
-  </div>
-  <div style="margin-top:4px;">
-    <button id="profileSaveBtn" class="secondary" type="button" style="font-size:11px;">Save as profile…</button>
-  </div>
+  <!-- ===================== Tab 1: Import ================================= -->
+  <div id="panelImport" class="tabpanel" role="tabpanel" aria-labelledby="tabImport">
 
-  <div class="row" style="margin-top: 6px;">
-    <button id="signin" class="secondary" type="button">Sign in</button>
-    <span id="authDot" style="font-size:16px; line-height:1;">&#9679;</span>
-    <span id="who" style="font-size: 12px; color: #555;"></span>
-  </div>
+    <!--
+      Identity first, destination second. Sign-in is per environment under the
+      hood (the token's scope is the environment's own origin), but that is an
+      implementation detail the user should not have to hold: they sign in as
+      themselves once, then move between environments as that same person.
+      Switching environment re-uses the cached session where there is one and
+      otherwise re-authenticates with the username pre-filled.
+    -->
+    <div class="step"><span class="n">1</span><span class="t">Account</span>
+      <span class="sub">— carried across environments</span></div>
+    <div class="row">
+      <span id="authDot" style="font-size:16px; line-height:1;">&#9679;</span>
+      <select id="account" style="flex:1">
+        <option value="">Not signed in</option>
+      </select>
+      <button id="signin" type="button" style="width:auto;">Sign in</button>
+    </div>
+    <div id="accountHint" class="hint"></div>
 
-  <hr />
+    <div class="step"><span class="n">2</span><span class="t">Environment</span>
+      <span class="sub">— where the records land</span></div>
+    <div class="row">
+      <select id="profile" style="flex:1"></select>
+      <button id="profileDelete" class="secondary icon" type="button" title="Remove selected profile">✕</button>
+    </div>
 
-  <label>Run plan (.dvplan.json)</label>
-  <div style="font-size:11px; color:#605e5c; margin-bottom:4px;">
-    Steps with the same stage run in parallel. Use dependsOn for explicit ordering.
-  </div>
-  <div class="row" style="margin-bottom:4px;">
-    <input id="planName" placeholder="Plan name" style="flex:1" title="Saved as the plan's name" />
-    <label class="check" style="font-weight:400; font-size:11px; white-space:nowrap; margin:0;">
-      <input id="planStopOnError" type="checkbox" checked style="width:auto;" />
-      Stop on error
-    </label>
-  </div>
-  <input id="planDescription" placeholder="Description (optional)" style="margin-bottom:4px;" />
-  <div id="planSteps"></div>
-  <div id="planErrors" class="row-error" style="display:none; padding-left:0;"></div>
-  <div class="row" style="margin-top:6px;">
-    <button id="planAddStep" class="secondary" type="button">Add step</button>
-    <button id="planFromCurrent" class="secondary" type="button">Add current mapping as step</button>
-    <button id="planSave" class="secondary" type="button">Save plan…</button>
-    <button id="planLoad" class="secondary" type="button">Load plan…</button>
-  </div>
+    <label for="env">Environment URL</label>
+    <input id="env" placeholder="https://contoso.crm.dynamics.com" />
+    <div id="profileSaveRow" class="row" style="margin-top:4px; display:none;">
+      <input id="profileName" placeholder="Name this environment…" style="flex:1" />
+      <button id="profileSaveConfirm" type="button" style="width:auto;">Save</button>
+      <button id="profileSaveCancel" class="secondary icon" type="button">Cancel</button>
+    </div>
+    <div style="margin-top:4px;">
+      <button id="profileSaveBtn" class="secondary" type="button" style="font-size:11px;">Save as profile…</button>
+    </div>
 
-  <hr />
+    <hr />
+
+    <!--
+      Two blocks, reordered at runtime by applyHostCapabilities(): in the
+      browser there is no open workbook, so the picker is empty until a file is
+      added and the file block has to come first. In Excel the picker already
+      has the workbook's tables, so it leads.
+    -->
+    <div id="sourceFilesBlock">
+      <label>Source files</label>
+      <div class="row">
+        <button id="pickFile" class="secondary" type="button" style="width:auto;"
+          title="Add .xlsx workbooks or .csv/.tsv files. Every table inside them becomes selectable below.">
+          Add files…
+        </button>
+        <span id="fileSourceInfo" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      </div>
+      <div id="fileList" style="display:none; margin-top:4px;"></div>
+    </div>
+
+    <div id="sourceTableBlock">
+      <label for="table">Source table</label>
+      <select id="table"><option value="">Loading…</option></select>
+    </div>
+
+    <label for="solution">Solution</label>
+    <select id="solution" disabled><option value="">All entities (Default solution)</option></select>
+
+    <label for="entity">Target Dataverse entity</label>
+    <select id="entity" disabled><option value="">Sign in to load entities</option></select>
+
+    <div id="createTablePanel" style="display:none; border:1px solid #c8c6c4; border-radius:4px; padding:8px; margin-top:6px;">
+      <label>New table</label>
+      <div class="row">
+        <input id="ctPrefix" value="new" style="width:64px" title="Publisher customization prefix (letters/digits, starts with a letter)" />
+        <input id="ctDisplayName" style="flex:1" placeholder="Display name" />
+      </div>
+      <div id="ctColumns" style="margin-top:6px;"></div>
+      <div class="row" style="margin-top:6px;">
+        <span style="font-size:11px; align-self:center; white-space:nowrap;">Owner for all records:</span>
+        <span style="flex:1; position:relative; display:inline-block;">
+          <input id="ctOwner" placeholder="(optional) type to search users, or paste a user GUID" autocomplete="off" spellcheck="false" />
+          <div id="ctOwnerList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
+        </span>
+      </div>
+      <div style="font-size:11px; color:#605e5c; margin-top:4px;">
+        One string column must be the table's <b>Primary name</b>. <b>Key</b> columns form an
+        alternate key (text / whole number / decimal only) — its index activates in the
+        background, so upserts against it may need a minute after creation.
+      </div>
+    </div>
+
+    <div id="mappingSection">
+      <label>Column mapping</label>
+      <div id="mappings"></div>
+      <div class="row" style="margin-top: 6px;">
+        <button id="addMap" class="secondary" type="button">Add column</button>
+        <button id="addConst" class="secondary" type="button"
+          title="Set a field to a fixed value on every record (e.g. a fixed owner) instead of reading a table column">
+          Add fixed value
+        </button>
+        <button id="suggest" class="secondary" type="button" title="Suggest mappings by header name similarity">
+          Suggest from names
+        </button>
+      </div>
+    </div>
+
+    <hr />
+
+    <label>Import options</label>
+    <div class="opts-grid">
+      <label for="conflictMode">On existing rows</label>
+      <select id="conflictMode">
+        <option value="insert">Insert only</option>
+        <option value="upsert">Upsert (update or create)</option>
+        <option value="skip-if-exists">Skip if exists</option>
+        <option value="sync">Sync (upsert + remove missing)</option>
+      </select>
+
+      <label for="upsertKey" id="upsertKeyLabel" style="display:none">Match existing rows on</label>
+      <input id="upsertKey" style="display:none"
+        placeholder="e.g. emailaddress1, or accountid to match on the record's own id"
+        title="A Dataverse alternate key (comma-separate the parts of a compound key), or a single uniqueidentifier column holding the record id — dvload then creates the row with that id if it doesn't exist." />
+
+      <label for="syncAction" id="syncActionLabel" style="display:none">Missing records</label>
+      <select id="syncAction" style="display:none">
+        <option value="deactivate">Deactivate (statecode = 1)</option>
+        <option value="delete">Delete permanently</option>
+      </select>
+
+      <label for="batchSize">Batch size</label>
+      <input id="batchSize" type="number" min="1" max="1000" value="100" />
+
+      <label for="concurrency">Parallel batches</label>
+      <input id="concurrency" type="number" min="1" max="8" value="1" />
+
+      <div class="check">
+        <input id="bypassCustomLogic" type="checkbox" />
+        <label for="bypassCustomLogic">Bypass plugins &amp; Power Automate flows (needs bypass privilege)</label>
+      </div>
+      <div class="check">
+        <input id="skipUnchanged" type="checkbox" />
+        <label for="skipUnchanged">Skip unchanged rows (upsert/sync; one extra read per row)</label>
+      </div>
+      <div class="check">
+        <input id="dryRun" type="checkbox" />
+        <label for="dryRun">Dry run — coerce and plan everything, but don't write to Dataverse</label>
+      </div>
+    </div>
+
+    <details id="advancedOptions" style="margin-top:8px;">
+      <summary style="font-size:12px; font-weight:600; cursor:pointer;">Advanced</summary>
+      <div class="opts-grid" style="margin-top:6px;">
+        <label for="mappingName">Mapping name</label>
+        <input id="mappingName" placeholder="Defaults to the source table name" />
+
+        <label for="mappingDescription">Description</label>
+        <input id="mappingDescription" placeholder="Optional note saved in the mapping" />
+
+        <label for="maxErrors" title="Stop the run after this many row errors. 0 = never stop early.">Stop after N errors</label>
+        <input id="maxErrors" type="number" min="0" value="0" />
+
+        <label for="notifyUrl" title="A {text: summary} JSON POST after the run — Teams and Slack incoming webhooks accept this shape.">Notify webhook</label>
+        <input id="notifyUrl" placeholder="https://… (Teams/Slack incoming webhook)" />
+
+        <label for="impersonateUser" title="Records are created as this user (MSCRMCallerID). Needs prvActOnBehalfOfAnotherUser.">Run as user</label>
+        <span style="position:relative; display:inline-block; width:100%;">
+          <input id="impersonateUser" placeholder="(optional) type to search users, or paste a user GUID"
+                 autocomplete="off" spellcheck="false" />
+          <div id="impersonateUserList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;
+               max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;
+               box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
+        </span>
+      </div>
+    </details>
+
+    <hr />
+
+    <div class="row">
+      <button id="resetAll" class="secondary" type="button" title="Clear source, target, mappings and options and start over">Reset</button>
+      <button id="save" class="secondary" type="button">Save mapping…</button>
+      <button id="load" class="secondary" type="button">Load mapping…</button>
+      <button id="run" type="button" style="margin-left: auto;">Run import</button>
+      <button id="cancelRun" type="button" style="margin-left: auto; display:none; background:#a4262c; color:#fff;">
+        Cancel import
+      </button>
+    </div>
+    <div id="resumeRow" class="row" style="margin-top:6px; display:none;">
+      <span id="resumeText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <button id="resumeRun" class="secondary" type="button" style="width:auto; font-size:11px;">Resume</button>
+      <button id="discardResume" class="secondary icon" type="button" style="font-size:11px;"
+              title="Forget the checkpoint and start from the first row next time">✕</button>
+    </div>
+  </div><!-- /panelImport -->
+
+  <!-- ===================== Tab 2: Run plan =============================== -->
+  <div id="panelPlan" class="tabpanel" role="tabpanel" aria-labelledby="tabPlan" hidden>
+    <label>Run plan (.dvplan.json)</label>
+    <div class="hint">
+      Several mappings executed as one job. Steps with the same stage run in
+      parallel; use dependsOn for explicit ordering. The plan runs from the
+      CLI (<code>dvload run-all</code>) — this tab builds and saves it.
+    </div>
+    <div class="row" style="margin-bottom:4px;">
+      <input id="planName" placeholder="Plan name" style="flex:1" title="Saved as the plan's name" />
+      <label class="check" style="font-weight:400; font-size:11px; white-space:nowrap; margin:0;">
+        <input id="planStopOnError" type="checkbox" checked style="width:auto;" />
+        Stop on error
+      </label>
+    </div>
+    <input id="planDescription" placeholder="Description (optional)" style="margin-bottom:4px;" />
+    <div id="planSteps"></div>
+    <div id="planErrors" class="row-error" style="display:none; padding-left:0;"></div>
+    <div class="row" style="margin-top:6px;">
+      <button id="planAddStep" class="secondary" type="button">Add step</button>
+      <button id="planFromCurrent" class="secondary" type="button">Add current mapping as step</button>
+      <button id="planSave" class="secondary" type="button">Save plan…</button>
+      <button id="planLoad" class="secondary" type="button">Load plan…</button>
+    </div>
+  </div><!-- /panelPlan -->
+
+  <!-- ===================== Tab 3: Dataflows ============================== -->
+  <div id="panelDataflow" class="tabpanel" role="tabpanel" aria-labelledby="tabDataflow" hidden>
+    <!--
+      Import from a live dataflow. Distinct from "Import .pqt…" below: a .pqt
+      file carries the M code only, because Dataverse strips the destination
+      config on export. Reading msdyn_dataflow directly keeps the column
+      mappings, which is the whole point of this block.
+      Needs an authenticated environment, so it stays disabled until sign-in.
+    -->
+    <label for="dataflow">Import from a dataflow</label>
+    <div class="hint">
+      Reads the queries and their Dataverse column mappings from the
+      environment selected on the Import tab.
+    </div>
+    <div class="row">
+      <select id="dataflow" disabled style="flex:1">
+        <option value="">Sign in to load dataflows</option>
+      </select>
+      <button id="dataflowRefresh" class="secondary icon" type="button"
+        title="Reload the dataflow list">&#8635;</button>
+    </div>
+    <div class="row" style="margin-top:4px;">
+      <label class="check" style="font-weight:400; font-size:11px; white-space:nowrap; margin:0;">
+        <input id="dataflowWantXlsx" type="checkbox" checked style="width:auto;" />
+        Excel workbook
+      </label>
+      <label class="check" style="font-weight:400; font-size:11px; white-space:nowrap; margin:0;">
+        <input id="dataflowWantMapping" type="checkbox" checked style="width:auto;" />
+        Mapping files
+      </label>
+      <button id="dataflowImport" type="button" style="width:auto; margin-left:auto;" disabled>
+        Load
+      </button>
+    </div>
+    <div id="dataflowInfo" style="font-size:11px; color:#605e5c; margin-top:4px;"></div>
+    <div id="dataflowResult" class="row" style="margin-top:6px; display:none;">
+      <span id="dataflowResultText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <button id="dataflowDownload" type="button" style="width:auto; font-size:11px;">Download</button>
+      <button id="dataflowDismiss" class="secondary icon" type="button" style="font-size:11px;"
+        title="Discard">&#10005;</button>
+    </div>
+
+    <hr />
+
+    <!--
+      The offline half of the same job: a .pqt on disk instead of a dataflow in
+      the environment. Grouped here rather than with the mapping buttons
+      because both directions are "move queries between Dataverse and files",
+      and neither needs the import form to be filled in first.
+    -->
+    <label>Power Query templates (.pqt)</label>
+    <div class="hint">
+      Dataverse exports a dataflow as a .pqt containing only the M code — the
+      column mappings are stripped, so prefer the dataflow reader above when
+      you have access to the environment.
+    </div>
+    <div class="row">
+      <button id="importPqt" class="secondary" type="button" style="width:auto;"
+        title="Import queries + field mappings from a Dataverse Dataflow / Power Query Online .pqt export">Import .pqt…</button>
+      <button id="extractPqt" class="secondary" type="button" style="width:auto;"
+        title="Package this workbook's Power Query queries — plus the current column mapping — as a .pqt you can import as a Dataverse Dataflow">Export workbook as .pqt…</button>
+    </div>
+    <div id="pqtRow" class="row" style="margin-top:6px; display:none;">
+      <select id="pqtQuery" style="flex:1"></select>
+      <button id="pqtUse" type="button" style="width:auto;">Use mapping</button>
+      <button id="pqtUseAll" class="secondary" type="button" style="width:auto;"
+              title="Download a .dvmap.json for every query in this .pqt and add each as a run-plan step">Use all</button>
+      <button id="pqtCopyM" class="secondary" type="button" style="width:auto;"
+              title="Copy the M code to paste into Excel: Data → Get Data → Blank Query → Advanced Editor">Copy M</button>
+      <button id="pqtExport" class="secondary" type="button" style="width:auto;"
+              title="Write the current column mapping into the .pqt's FieldsMetadata and download it for import as a Dataverse Dataflow">Export .pqt</button>
+      <button id="pqtToXlsx" class="secondary" type="button" style="width:auto;"
+              title="Build an .xlsx containing every query in this .pqt as a real Power Query, ready for &quot;Load To…&quot;">Create workbook</button>
+    </div>
+    <div id="pqtXlsxRow" class="row" style="margin-top:6px; display:none;">
+      <span id="pqtXlsxText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <button id="pqtXlsxDownload" type="button" style="width:auto; font-size:11px;">Download</button>
+      <button id="pqtXlsxDismiss" class="secondary icon" type="button" style="font-size:11px;"
+              title="Discard the generated workbook">✕</button>
+    </div>
+  </div><!-- /panelDataflow -->
 
   <!--
-    Two blocks, reordered at runtime by applyHostCapabilities(): in the
-    browser there is no open workbook, so the picker is empty until a file is
-    added and the file block has to come first. In Excel the picker already
-    has the workbook's tables, so it leads.
+    Below the tabs, not inside one: a run started on the Import tab keeps
+    reporting while you look at the run plan, and an error from any tab lands
+    in the same place.
   -->
-  <div id="sourceFilesBlock">
-    <label>Source files</label>
-    <div class="row">
-      <button id="pickFile" class="secondary" type="button" style="width:auto;"
-        title="Add .xlsx workbooks or .csv/.tsv files. Every table inside them becomes selectable below.">
-        Add files…
-      </button>
-      <span id="fileSourceInfo" style="font-size:11px; color:#605e5c; flex:1;"></span>
-    </div>
-    <div id="fileList" style="display:none; margin-top:4px;"></div>
-  </div>
-
-  <div id="sourceTableBlock">
-    <label for="table">Source table</label>
-    <select id="table"><option value="">Loading…</option></select>
-  </div>
-
-  <label for="solution">Solution</label>
-  <select id="solution" disabled><option value="">All entities (Default solution)</option></select>
-
-  <label for="entity">Target Dataverse entity</label>
-  <select id="entity" disabled><option value="">Sign in to load entities</option></select>
-
-  <div id="createTablePanel" style="display:none; border:1px solid #c8c6c4; border-radius:4px; padding:8px; margin-top:6px;">
-    <label>New table</label>
-    <div class="row">
-      <input id="ctPrefix" value="new" style="width:64px" title="Publisher customization prefix (letters/digits, starts with a letter)" />
-      <input id="ctDisplayName" style="flex:1" placeholder="Display name" />
-    </div>
-    <div id="ctColumns" style="margin-top:6px;"></div>
-    <div class="row" style="margin-top:6px;">
-      <span style="font-size:11px; align-self:center; white-space:nowrap;">Owner for all records:</span>
-      <span style="flex:1; position:relative; display:inline-block;">
-        <input id="ctOwner" placeholder="(optional) type to search users, or paste a user GUID" autocomplete="off" spellcheck="false" />
-        <div id="ctOwnerList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
-      </span>
-    </div>
-    <div style="font-size:11px; color:#605e5c; margin-top:4px;">
-      One string column must be the table's <b>Primary name</b>. <b>Key</b> columns form an
-      alternate key (text / whole number / decimal only) — its index activates in the
-      background, so upserts against it may need a minute after creation.
-    </div>
-  </div>
-
-  <div id="mappingSection">
-    <label>Column mapping</label>
-    <div id="mappings"></div>
-    <div class="row" style="margin-top: 6px;">
-      <button id="addMap" class="secondary" type="button">Add column</button>
-      <button id="addConst" class="secondary" type="button"
-        title="Set a field to a fixed value on every record (e.g. a fixed owner) instead of reading a table column">
-        Add fixed value
-      </button>
-      <button id="suggest" class="secondary" type="button" title="Suggest mappings by header name similarity">
-        Suggest from names
-      </button>
-    </div>
-  </div>
-
-  <hr />
-
-  <label>Import options</label>
-  <div class="opts-grid">
-    <label for="conflictMode">On existing rows</label>
-    <select id="conflictMode">
-      <option value="insert">Insert only</option>
-      <option value="upsert">Upsert (update or create)</option>
-      <option value="skip-if-exists">Skip if exists</option>
-      <option value="sync">Sync (upsert + remove missing)</option>
-    </select>
-
-    <label for="upsertKey" id="upsertKeyLabel" style="display:none">Match existing rows on</label>
-    <input id="upsertKey" style="display:none"
-      placeholder="e.g. emailaddress1, or accountid to match on the record's own id"
-      title="A Dataverse alternate key (comma-separate the parts of a compound key), or a single uniqueidentifier column holding the record id — dvload then creates the row with that id if it doesn't exist." />
-
-    <label for="syncAction" id="syncActionLabel" style="display:none">Missing records</label>
-    <select id="syncAction" style="display:none">
-      <option value="deactivate">Deactivate (statecode = 1)</option>
-      <option value="delete">Delete permanently</option>
-    </select>
-
-    <label for="batchSize">Batch size</label>
-    <input id="batchSize" type="number" min="1" max="1000" value="100" />
-
-    <label for="concurrency">Parallel batches</label>
-    <input id="concurrency" type="number" min="1" max="8" value="1" />
-
-    <div class="check">
-      <input id="bypassCustomLogic" type="checkbox" />
-      <label for="bypassCustomLogic">Bypass plugins &amp; Power Automate flows (needs bypass privilege)</label>
-    </div>
-    <div class="check">
-      <input id="skipUnchanged" type="checkbox" />
-      <label for="skipUnchanged">Skip unchanged rows (upsert/sync; one extra read per row)</label>
-    </div>
-    <div class="check">
-      <input id="dryRun" type="checkbox" />
-      <label for="dryRun">Dry run — coerce and plan everything, but don't write to Dataverse</label>
-    </div>
-  </div>
-
-  <details id="advancedOptions" style="margin-top:8px;">
-    <summary style="font-size:12px; font-weight:600; cursor:pointer;">Advanced</summary>
-    <div class="opts-grid" style="margin-top:6px;">
-      <label for="mappingName">Mapping name</label>
-      <input id="mappingName" placeholder="Defaults to the source table name" />
-
-      <label for="mappingDescription">Description</label>
-      <input id="mappingDescription" placeholder="Optional note saved in the mapping" />
-
-      <label for="maxErrors" title="Stop the run after this many row errors. 0 = never stop early.">Stop after N errors</label>
-      <input id="maxErrors" type="number" min="0" value="0" />
-
-      <label for="notifyUrl" title="A {text: summary} JSON POST after the run — Teams and Slack incoming webhooks accept this shape.">Notify webhook</label>
-      <input id="notifyUrl" placeholder="https://… (Teams/Slack incoming webhook)" />
-
-      <label for="impersonateUser" title="Records are created as this user (MSCRMCallerID). Needs prvActOnBehalfOfAnotherUser.">Run as user</label>
-      <span style="position:relative; display:inline-block; width:100%;">
-        <input id="impersonateUser" placeholder="(optional) type to search users, or paste a user GUID"
-               autocomplete="off" spellcheck="false" />
-        <div id="impersonateUserList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;
-             max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;
-             box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
-      </span>
-    </div>
-  </details>
-
-  <hr />
-
-  <div class="row">
-    <button id="resetAll" class="secondary" type="button" title="Clear source, target, mappings and options and start over">Reset</button>
-    <button id="save" class="secondary" type="button">Save mapping…</button>
-    <button id="load" class="secondary" type="button">Load mapping…</button>
-    <button id="importPqt" class="secondary" type="button" title="Import queries + field mappings from a Dataverse Dataflow / Power Query Online .pqt export">Import .pqt…</button>
-    <button id="extractPqt" class="secondary" type="button"
-      title="Package this workbook's Power Query queries — plus the current column mapping — as a .pqt you can import as a Dataverse Dataflow">Export workbook as .pqt…</button>
-    <button id="run" type="button" style="margin-left: auto;">Run import</button>
-    <button id="cancelRun" type="button" style="margin-left: auto; display:none; background:#a4262c; color:#fff;">
-      Cancel import
-    </button>
-  </div>
-  <div id="resumeRow" class="row" style="margin-top:6px; display:none;">
-    <span id="resumeText" style="font-size:11px; color:#605e5c; flex:1;"></span>
-    <button id="resumeRun" class="secondary" type="button" style="width:auto; font-size:11px;">Resume</button>
-    <button id="discardResume" class="secondary icon" type="button" style="font-size:11px;"
-            title="Forget the checkpoint and start from the first row next time">✕</button>
-  </div>
-  <div id="pqtRow" class="row" style="margin-top:6px; display:none;">
-    <select id="pqtQuery" style="flex:1"></select>
-    <button id="pqtUse" type="button" style="width:auto;">Use mapping</button>
-    <button id="pqtUseAll" class="secondary" type="button" style="width:auto;"
-            title="Download a .dvmap.json for every query in this .pqt and add each as a run-plan step">Use all</button>
-    <button id="pqtCopyM" class="secondary" type="button" style="width:auto;"
-            title="Copy the M code to paste into Excel: Data → Get Data → Blank Query → Advanced Editor">Copy M</button>
-    <button id="pqtExport" class="secondary" type="button" style="width:auto;"
-            title="Write the current column mapping into the .pqt's FieldsMetadata and download it for import as a Dataverse Dataflow">Export .pqt</button>
-  </div>
-
   <label id="telemetryRow" style="display:none; font-size:11px; color:#605e5c; margin-top:6px;">
     <input type="checkbox" id="telemetryOptIn" style="width:auto; vertical-align:middle;" />
     Share anonymous usage data

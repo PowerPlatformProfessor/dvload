@@ -26,6 +26,7 @@ import {
   injectMappingIntoPqt,
   mappingFromPqt,
   mappingsFromPqtAll,
+  buildWorkbookWithQueries,
   readTableFromBuffer,
   listTablesFromBuffer,
   type WorkbookTableInfo,
@@ -49,9 +50,12 @@ import {
   initAuth,
   getAccount,
   signIn,
+  listKnownAccounts,
   makeTokenProvider,
   devModeBanner,
+  sidecarPost,
   SidecarUnavailableError,
+  type KnownAccount,
 } from "../auth.js";
 import { initHost, host, type TableInfo } from "../host.js";
 import { suggestMappings, suggestionsToMappings } from "../suggest.js";
@@ -68,6 +72,12 @@ const SETTINGS_KEY = "dvload:lastMapping";
 const PLAN_SETTINGS_KEY = "dvload:lastRunPlan";
 const CHECKPOINT_KEY = "dvload:runCheckpoint";
 const PROFILES_KEY = "dvload:profiles";
+/**
+ * The username the pane last acted as. Remembered so a returning user starts
+ * at step 2 (which environment?) rather than step 1 (who are you?), even when
+ * the environment they last used isn't the one they want next.
+ */
+const LAST_USER_KEY = "dvload:lastUser";
 
 interface EntityAttribute {
   logicalName: string;
@@ -105,12 +115,141 @@ function renderProfilePicker(): void {
   sel.innerHTML = "";
   sel.appendChild(new Option("Select a saved environment…", ""));
   for (const p of profiles) {
-    sel.appendChild(new Option(`${p.name}  —  ${p.url}`, p.url));
+    // A tick means "you are already signed in here as the account in step 1",
+    // i.e. selecting it costs nothing. Without it, the only way to find out
+    // which environments need a fresh sign-in is to pick one and see.
+    const ready = hasSessionFor(p.url) ? "✓ " : "";
+    sel.appendChild(new Option(`${ready}${p.name}  —  ${p.url}`, p.url));
   }
   if (current && [...sel.options].some((o) => o.value === current)) {
     sel.value = current;
   }
   el<HTMLButtonElement>("profileDelete").disabled = !sel.value;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Account (step 1)                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Sessions the sidecar already holds, one per environment it has been signed
+ * in to. Refreshed after every successful sign-in, because a new one adds an
+ * entry that decides whether the next environment switch is silent.
+ */
+let knownAccounts: KnownAccount[] = [];
+
+/** Sentinel option: sign in interactively as somebody else. */
+const ANOTHER_ACCOUNT = "__another__";
+
+/** Does the sidecar already hold a session for `url`, belonging to step 1's user? */
+function hasSessionFor(url: string): boolean {
+  if (!url || !state.username) return false;
+  const want = url.trim().replace(/\/+$/, "").toLowerCase();
+  return knownAccounts.some(
+    (a) =>
+      a.username.toLowerCase() === state.username?.toLowerCase() &&
+      (a.environmentUrl.toLowerCase() === want || want.endsWith(`//${a.host.toLowerCase()}`))
+  );
+}
+
+async function refreshKnownAccounts(): Promise<void> {
+  knownAccounts = await listKnownAccounts();
+  // Adopt a remembered identity only if the sidecar still has a session for
+  // it — a signed-out account in the picker would offer a step that silently
+  // does nothing.
+  if (!state.username) {
+    const remembered = localStorage.getItem(LAST_USER_KEY);
+    const usernames = new Set(knownAccounts.map((a) => a.username.toLowerCase()));
+    if (remembered && usernames.has(remembered.toLowerCase())) state.username = remembered;
+    else if (knownAccounts.length > 0) state.username = knownAccounts[0].username;
+  }
+}
+
+/**
+ * Step 1's picker: one entry per distinct username the sidecar knows, plus a
+ * way in for a new one.
+ *
+ * Distinct by username, not by session: the same person signed in to four
+ * environments is one choice here, and which environments they can reach
+ * without re-authenticating is step 2's business (see renderProfilePicker).
+ */
+function renderAccountPicker(): void {
+  const sel = el<HTMLSelectElement>("account");
+  const names = [...new Set(knownAccounts.map((a) => a.username))].sort((a, b) => a.localeCompare(b));
+  const selected = state.username && names.includes(state.username) ? state.username : "";
+  sel.innerHTML = "";
+  // A placeholder whenever nothing is selected, so the select never shows a
+  // username the pane isn't actually acting as.
+  if (!selected) {
+    sel.appendChild(new Option(names.length === 0 ? "Not signed in" : "Choose an account…", ""));
+  }
+  for (const n of names) sel.appendChild(new Option(n, n));
+  sel.appendChild(new Option("Sign in with another account…", ANOTHER_ACCOUNT));
+  sel.value = selected;
+}
+
+/**
+ * The one line under step 1 that says what the pane will do next.
+ *
+ * Sign-in is per environment underneath, so there are three states worth
+ * distinguishing and they are easy to confuse: signed in here, signed in but
+ * not here yet, and not signed in at all.
+ */
+function renderAccountHint(): void {
+  const hint = el<HTMLDivElement>("accountHint");
+  const btn = el<HTMLButtonElement>("signin");
+
+  if (!state.username) {
+    hint.textContent = "Sign in once, then switch between environments as the same user.";
+    btn.textContent = "Sign in";
+    return;
+  }
+
+  btn.textContent = state.account ? "Sign in again" : `Sign in as ${state.username}`;
+
+  if (!state.environmentUrl) {
+    hint.textContent = `Signed in as ${state.username}. Choose an environment below.`;
+  } else if (state.account) {
+    hint.textContent = `Signed in as ${state.account.username}.`;
+  } else {
+    hint.textContent =
+      `${state.username} hasn't signed in to this environment yet — ` +
+      `each one needs its own token. Sign in to continue.`;
+  }
+}
+
+/**
+ * Step 1 changed. Picking a name is a statement about identity, not a login:
+ * the sign-in only happens if the current environment doesn't already have a
+ * session for that person.
+ */
+async function onPickAccount(): Promise<void> {
+  const sel = el<HTMLSelectElement>("account");
+  if (sel.value === ANOTHER_ACCOUNT) {
+    // The sentinel is a request, not an identity: drop the current username
+    // so the sign-in carries no hint, and re-render so the control doesn't
+    // sit on "Sign in with another account…" if that sign-in is cancelled.
+    state.username = null;
+    renderAccountPicker();
+    renderAccountHint();
+    await onSignIn();
+    return;
+  }
+  if (!sel.value || sel.value === state.username) return;
+
+  state.username = sel.value;
+  localStorage.setItem(LAST_USER_KEY, state.username);
+  renderProfilePicker();
+
+  if (!state.environmentUrl) {
+    renderAccountHint();
+    return;
+  }
+  if (state.account?.username.toLowerCase() === state.username.toLowerCase()) {
+    renderAccountHint();
+    return;
+  }
+  await onSignIn();
 }
 
 /**
@@ -163,7 +302,18 @@ interface Checkpoint {
 }
 
 interface AppState {
+  /** The signed-in account *for the current environment*, or null. */
   account: { username: string } | null;
+  /**
+   * Who the pane is acting as, independent of any one environment.
+   *
+   * Survives an environment switch, which `account` deliberately does not:
+   * sign-in state is per environment, so moving to an environment with no
+   * cached session sets `account` to null while this stays put and becomes
+   * the login hint for the sign-in that follows. Null only before the first
+   * ever sign-in.
+   */
+  username: string | null;
   environmentUrl: string;
   tables: TableInfo[];
   selectedTable: TableInfo | null;
@@ -192,6 +342,7 @@ interface AppState {
 
 const state: AppState = {
   account: null,
+  username: null,
   environmentUrl: "",
   tables: [],
   selectedTable: null,
@@ -277,6 +428,12 @@ async function bootstrap(): Promise<void> {
   restoreMapping();
   restoreRunPlan();
 
+  initTabs();
+
+  // Step 1 before step 2: who this machine is already signed in as is
+  // knowable without an environment, and it decides what the environment
+  // pickers can say about themselves.
+  await refreshKnownAccounts();
   await refreshAccountUI();
 
   // Cached session plus a known environment: load entities and restore the
@@ -285,13 +442,17 @@ async function bootstrap(): Promise<void> {
     triggerLoadEntities();
   }
 
-  // Profiles
+  // Account (step 1)
+  el<HTMLSelectElement>("account").addEventListener("change", () => void onPickAccount());
+
+  // Profiles (step 2)
   renderProfilePicker();
   el<HTMLSelectElement>("profile").addEventListener("change", (e) => {
     const url = (e.target as HTMLSelectElement).value;
     if (!url) return;
     el<HTMLButtonElement>("profileDelete").disabled = false;
-    void setEnvironment(url);
+    // Picking a saved environment is an explicit choice, so it may sign in.
+    void setEnvironment(url, { deliberate: true });
   });
   el<HTMLButtonElement>("profileDelete").addEventListener("click", () => {
     const url = el<HTMLSelectElement>("profile").value;
@@ -345,6 +506,14 @@ async function bootstrap(): Promise<void> {
   el<HTMLButtonElement>("pqtUseAll").addEventListener("click", onUseAllPqtMappings);
   el<HTMLButtonElement>("pqtCopyM").addEventListener("click", onCopyPqtM);
   el<HTMLButtonElement>("pqtExport").addEventListener("click", onExportPqt);
+  el<HTMLButtonElement>("pqtToXlsx").addEventListener("click", () => void onPqtToXlsx());
+  el<HTMLButtonElement>("pqtXlsxDownload").addEventListener("click", onPqtXlsxDownload);
+  el<HTMLButtonElement>("pqtXlsxDismiss").addEventListener("click", clearPendingXlsx);
+  el<HTMLButtonElement>("dataflowRefresh").addEventListener("click", () => void loadDataflows());
+  el<HTMLSelectElement>("dataflow").addEventListener("change", onDataflowChange);
+  el<HTMLButtonElement>("dataflowImport").addEventListener("click", () => void onDataflowImport());
+  el<HTMLButtonElement>("dataflowDownload").addEventListener("click", onDataflowDownload);
+  el<HTMLButtonElement>("dataflowDismiss").addEventListener("click", clearDataflowResult);
   el<HTMLButtonElement>("planAddStep").addEventListener("click", onPlanAddStep);
   el<HTMLButtonElement>("planFromCurrent").addEventListener("click", onPlanAddFromCurrent);
   el<HTMLButtonElement>("planSave").addEventListener("click", onPlanSave);
@@ -437,6 +606,70 @@ function applyHostCapabilities(): void {
   pick.classList.remove("secondary");
 }
 
+/* -------------------------------------------------------------------------- */
+/* Tabs                                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Panel ids in tab order, so a keyboard arrow knows what "next" means. */
+const TAB_IDS = ["panelImport", "panelPlan", "panelDataflow"] as const;
+type TabId = (typeof TAB_IDS)[number];
+
+function tabButtons(): HTMLButtonElement[] {
+  return [...document.querySelectorAll<HTMLButtonElement>(".tabs button[data-panel]")];
+}
+
+/**
+ * Show one panel and hide the rest.
+ *
+ * Hidden rather than unmounted: every control keeps its DOM node, so the
+ * existing code can go on reading `el("planName")` from any tab, and a run
+ * started on one tab keeps updating controls on another.
+ */
+function showTab(panelId: TabId): void {
+  for (const btn of tabButtons()) {
+    const selected = btn.dataset.panel === panelId;
+    btn.setAttribute("aria-selected", String(selected));
+    btn.tabIndex = selected ? 0 : -1;
+  }
+  for (const id of TAB_IDS) {
+    el<HTMLDivElement>(id).hidden = id !== panelId;
+  }
+  // A tab switch is a jump to different content; leaving the scroll position
+  // from the previous panel lands the user mid-way down the new one.
+  window.scrollTo({ top: 0 });
+}
+
+function initTabs(): void {
+  const buttons = tabButtons();
+  buttons.forEach((btn, i) => {
+    btn.tabIndex = i === 0 ? 0 : -1;
+    btn.addEventListener("click", () => showTab(btn.dataset.panel as TabId));
+    btn.addEventListener("keydown", (e) => {
+      const delta = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!delta) return;
+      e.preventDefault();
+      const next = buttons[(i + delta + buttons.length) % buttons.length];
+      showTab(next.dataset.panel as TabId);
+      next.focus();
+    });
+  });
+  updateTabBadges();
+}
+
+/**
+ * How many steps the run plan holds, on the tab itself.
+ *
+ * Tabs hide things, and a plan assembled by "Use all" or a dataflow import
+ * is built without the user ever opening that tab. The count is what stops
+ * that work from being invisible.
+ */
+function updateTabBadges(): void {
+  const badge = el<HTMLSpanElement>("planBadge");
+  const n = state.planSteps.length;
+  badge.textContent = String(n);
+  badge.style.display = n > 0 ? "" : "none";
+}
+
 /** Replace the pane with a single actionable message. Used when there is no sidecar. */
 function renderFatal(e: unknown): void {
   const message = e instanceof Error ? e.message : String(e);
@@ -476,26 +709,39 @@ function onImportPqt(): void {
     const file = input.files?.[0];
     if (!file) return;
     try {
+      clearPendingXlsx();
       currentPqtBytes = await file.arrayBuffer();
       currentPqt = await readPqt(currentPqtBytes);
       const names = Object.keys(currentPqt.mashupMetadata.QueriesMetadata);
       const sel = el<HTMLSelectElement>("pqtQuery");
       sel.innerHTML = "";
+      let totalFields = 0;
       for (const name of names) {
         const q = currentPqt.mashupMetadata.QueriesMetadata[name];
         const nFields = Object.keys(q.FieldsMetadata ?? {}).length;
+        totalFields += nFields;
         const suffix = nFields > 0 ? ` — ${nFields} field mapping(s)` : " — no mappings";
         sel.appendChild(new Option(`${name}${suffix}`, name));
       }
       el<HTMLDivElement>("pqtRow").style.display = "";
+
+      const read = `Read "${currentPqt.metadata.Name || file.name}": ${names.length} quer${names.length === 1 ? "y" : "ies"}.`;
       setStatus(
         "info",
-        `Read "${currentPqt.metadata.Name || file.name}": ${names.length} quer${names.length === 1 ? "y" : "ies"}. ` +
-          `Pick one and click "Use mapping", or "Copy M" to paste the queries into Excel's Advanced Editor.`
+        totalFields > 0
+          ? `${read} Pick one and click "Use mapping", or "Copy M" to paste the queries into Excel's Advanced Editor.`
+          : // The common surprise: a Power Query Online / Excel template carries
+            // no FieldsMetadata, because only Dataverse Dataflows record which
+            // column feeds which attribute. Say so here rather than letting
+            // "Use mapping" produce an empty column list with no explanation.
+            `${read} No field mappings in this file — it came from Power Query Online or Excel, ` +
+              `and only Dataverse Dataflow exports carry column-to-attribute mappings. ` +
+              `Use "Create workbook" or "Copy M" to get the queries into Excel, then map the columns here.`
       );
     } catch (e) {
       currentPqt = null;
       currentPqtBytes = null;
+      clearPendingXlsx();
       el<HTMLDivElement>("pqtRow").style.display = "none";
       setStatus("error", `Couldn't read .pqt: ${(e as Error).message}`);
     }
@@ -524,6 +770,10 @@ function onUsePqtMapping(): void {
       if (logical) loadEntityAttributes(logical).catch(() => {});
     }
     rerenderMappings();
+    // The mapping it just built lives on the Import tab, and the user is on
+    // this one. Follow the work rather than leaving it somewhere they have to
+    // go and find.
+    showTab("panelImport");
     setStatus(
       "success",
       `Loaded ${m.columns.length} column mapping(s) from query "${queryName}"` +
@@ -565,6 +815,9 @@ function onUseAllPqtMappings(): void {
     }
     persistRunPlan();
     rerenderRunPlan();
+    // The steps are the deliverable here, and each one still needs a workbook
+    // path — so open the tab that has those fields on it.
+    showTab("panelPlan");
     setStatus(
       "success",
       `Downloaded ${names.length} mapping${names.length === 1 ? "" : "s"} and added ` +
@@ -608,6 +861,340 @@ async function onExportPqt(): Promise<void> {
   } catch (e) {
     setStatus("error", `Couldn't write the .pqt: ${(e as Error).message}`);
   }
+}
+
+/**
+ * Turn the imported .pqt into an .xlsx whose Power Query editor holds every
+ * query — the CLI's `pqt-to-xlsx`. The queries land connection-only, so the
+ * user picks "Load To…" per query once the workbook is open.
+ *
+ * Generation and download are deliberately two steps. A web page cannot hand a
+ * file to Excel: all it can do is put bytes in the downloads folder. So rather
+ * than silently downloading and claiming to have "opened" anything, we build
+ * the workbook, say what's in it, and let the user confirm the download —
+ * which is the only half of "create it and open it" that belongs in a browser.
+ * `pqt-to-xlsx --open` is the path that genuinely launches Excel.
+ */
+
+/** The generated workbook, held until the user downloads or dismisses it. */
+let pendingXlsx: { bytes: Uint8Array; filename: string } | null = null;
+
+async function onPqtToXlsx(): Promise<void> {
+  if (!currentPqt) return;
+  try {
+    setStatus("info", "Building the workbook…");
+    const bytes = await buildWorkbookWithQueries(currentPqt);
+    const names = Object.keys(currentPqt.mashupMetadata.QueriesMetadata);
+    const stem =
+      (currentPqt.metadata.Name || "power-query").replace(/\W+/g, "-").replace(/^-|-$/g, "").toLowerCase() ||
+      "power-query";
+
+    pendingXlsx = { bytes, filename: `${stem}.xlsx` };
+    el<HTMLSpanElement>("pqtXlsxText").textContent =
+      `${stem}.xlsx — ${names.length} quer${names.length === 1 ? "y" : "ies"}: ${names.join(", ")}`;
+    el<HTMLDivElement>("pqtXlsxRow").style.display = "";
+    setStatus("info", 'Workbook ready. Download it, then open it in Excel — the queries are under Data → Queries & Connections.');
+  } catch (e) {
+    setStatus("error", `Couldn't build the workbook: ${(e as Error).message}`);
+  }
+}
+
+function onPqtXlsxDownload(): void {
+  if (!pendingXlsx) return;
+  const { bytes, filename } = pendingXlsx;
+  downloadBlob(
+    new Blob([toArrayBuffer(bytes)], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    filename
+  );
+  clearPendingXlsx();
+  setStatus(
+    "success",
+    `Downloaded ${filename}. Open it in Excel and use "Load To…" on each query. ` +
+      `(To have Excel opened for you, run: dvload pqt-to-xlsx <file.pqt> --open)`
+  );
+}
+
+function clearPendingXlsx(): void {
+  pendingXlsx = null;
+  el<HTMLDivElement>("pqtXlsxRow").style.display = "none";
+  el<HTMLSpanElement>("pqtXlsxText").textContent = "";
+}
+
+/* -------------------------------------------------------------------------- */
+/* Import from a live dataflow                                                 */
+/*                                                                             */
+/* The .pqt path above and this one look similar and are not. A .pqt carries   */
+/* the M code alone — Dataverse drops the destination config on export — so    */
+/* "Use mapping" on an imported .pqt routinely yields zero columns. Reading    */
+/* msdyn_dataflow keeps the mappings, the upsert key and the lookups.          */
+/*                                                                             */
+/* All the work happens in the sidecar: it holds the Dataverse token, and      */
+/* core/src/dataflow.ts does the conversion. This file only renders.           */
+/* -------------------------------------------------------------------------- */
+
+interface DataflowListEntry {
+  id: string;
+  name: string;
+  state: string;
+  queryNames: string[];
+  loadTargets: Array<{ queryName: string; entityName: string; fieldCount: number }>;
+}
+
+interface DataflowImportResult {
+  name: string;
+  queryNames: string[];
+  /** base64 .xlsx, or null when the workbook wasn't requested. */
+  workbook: string | null;
+  mappings: Array<{ queryName: string; mapping: Mapping; problems: string[] }>;
+}
+
+let dataflowList: DataflowListEntry[] = [];
+/** Held until the user downloads or dismisses, like the .pqt workbook flow. */
+let pendingDataflow: DataflowImportResult | null = null;
+
+/**
+ * Load the picker. Called on sign-in and from the refresh button.
+ *
+ * Silent when signed out: the pane opens before an environment is known, and
+ * an error banner about dataflows would be noise on top of the sign-in
+ * prompt the user is already looking at.
+ */
+async function loadDataflows(): Promise<void> {
+  const sel = el<HTMLSelectElement>("dataflow");
+  const btn = el<HTMLButtonElement>("dataflowImport");
+  if (!state.account || !state.environmentUrl) {
+    sel.disabled = true;
+    btn.disabled = true;
+    sel.innerHTML = `<option value="">Sign in to load dataflows</option>`;
+    return;
+  }
+
+  sel.disabled = true;
+  sel.innerHTML = `<option value="">Loading…</option>`;
+  try {
+    const res = await sidecarPost<{ dataflows: DataflowListEntry[] }>("/dataflows", {
+      environmentUrl: state.environmentUrl,
+    });
+    dataflowList = res.dataflows;
+
+    if (dataflowList.length === 0) {
+      sel.innerHTML = `<option value="">No dataflows in this environment</option>`;
+      el<HTMLDivElement>("dataflowInfo").textContent = "";
+      return;
+    }
+
+    // new Option() rather than innerHTML: dataflow names are user-authored
+    // and would otherwise be parsed as markup.
+    sel.innerHTML = "";
+    sel.appendChild(new Option("Select a dataflow…", ""));
+    for (const d of dataflowList) {
+      // The suffix only ever appears for a dataflow that was never
+      // published — the list hides drafts that duplicate a published row.
+      const suffix = d.state === "Active" ? "" : " (draft)";
+      sel.appendChild(new Option(`${d.name}${suffix}`, d.id));
+    }
+    sel.disabled = false;
+    onDataflowChange();
+  } catch (e) {
+    sel.innerHTML = `<option value="">Couldn't load dataflows</option>`;
+    setStatus("error", `Couldn't list dataflows: ${(e as Error).message}`);
+  }
+}
+
+/** Say what the selection will produce before the user commits to it. */
+function onDataflowChange(): void {
+  const id = el<HTMLSelectElement>("dataflow").value;
+  const info = el<HTMLDivElement>("dataflowInfo");
+  const entry = dataflowList.find((d) => d.id === id);
+  el<HTMLButtonElement>("dataflowImport").disabled = !entry;
+
+  if (!entry) {
+    info.textContent = "";
+    return;
+  }
+
+  const staging = entry.queryNames.length - entry.loadTargets.length;
+  const targets =
+    entry.loadTargets.length === 0
+      ? "no queries load to Dataverse, so there are no mappings to build"
+      : entry.loadTargets
+          .map((t) => `${t.queryName} → ${t.entityName} (${t.fieldCount} fields)`)
+          .join(", ");
+  info.textContent =
+    `${entry.queryNames.length} quer${entry.queryNames.length === 1 ? "y" : "ies"}. ${targets}` +
+    (staging > 0 ? `; ${staging} used only as join sources` : "");
+}
+
+async function onDataflowImport(): Promise<void> {
+  const id = el<HTMLSelectElement>("dataflow").value;
+  if (!id || !state.environmentUrl) return;
+
+  const wantXlsx = el<HTMLInputElement>("dataflowWantXlsx").checked;
+  const wantMapping = el<HTMLInputElement>("dataflowWantMapping").checked;
+  if (!wantXlsx && !wantMapping) {
+    setStatus("error", "Tick at least one of Excel workbook or Mapping files.");
+    return;
+  }
+
+  const btn = el<HTMLButtonElement>("dataflowImport");
+  btn.disabled = true;
+  try {
+    setStatus("info", "Reading the dataflow…");
+    const res = await sidecarPost<DataflowImportResult>("/dataflow-import", {
+      environmentUrl: state.environmentUrl,
+      dataflowId: id,
+      xlsx: wantXlsx,
+      mapping: wantMapping,
+    });
+
+    // Mappings are applied immediately — they're state, not files. Only the
+    // workbook waits for a click, because a browser cannot hand a file to
+    // Excel and pretending otherwise would be a lie about what happened.
+    if (wantMapping) applyDataflowMappings(res);
+
+    if (wantXlsx && res.workbook) {
+      pendingDataflow = res;
+      el<HTMLSpanElement>("dataflowResultText").textContent =
+        `${slugify(res.name)}.xlsx — ${res.queryNames.length} quer` +
+        `${res.queryNames.length === 1 ? "y" : "ies"}: ${res.queryNames.join(", ")}`;
+      el<HTMLDivElement>("dataflowResult").style.display = "";
+      if (!wantMapping) {
+        setStatus(
+          "info",
+          "Workbook ready. Download it, then open it in Excel — the queries are under Data → Queries & Connections."
+        );
+      }
+    } else if (wantMapping) {
+      // Nothing left to collect here and the mapping is now on the Import
+      // tab, so go to it. Skipped when a workbook is waiting: switching away
+      // would hide the Download button the user still has to press.
+      showTab("panelImport");
+    }
+  } catch (e) {
+    setStatus("error", `Couldn't import the dataflow: ${(e as Error).message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * One mapping becomes the pane's current mapping. Several also download as
+ * .dvmap.json files and enter the run plan, because the pane edits one
+ * mapping at a time and the run plan is the only way to execute more.
+ */
+function applyDataflowMappings(res: DataflowImportResult): void {
+  if (res.mappings.length === 0) {
+    setStatus(
+      "info",
+      `No query in "${res.name}" loads to Dataverse, so there were no mappings to import.`
+    );
+    return;
+  }
+
+  const problems = res.mappings.flatMap((m) => m.problems);
+  const first = res.mappings[0];
+
+  state.mappings = first.mapping.columns;
+  selectEntitySet(first.mapping.targetEntitySet);
+  applyConflictMode(first.mapping);
+  rerenderMappings();
+
+  if (res.mappings.length > 1) {
+    for (const { queryName, mapping } of res.mappings) {
+      const stem = slugify(queryName);
+      downloadBlob(
+        new Blob([serializeMapping(mapping)], { type: "application/json" }),
+        `${stem}.dvmap.json`
+      );
+      if (!state.planSteps.some((s) => s.id === stem)) {
+        state.planSteps.push({
+          id: stem,
+          mapping: `./${stem}.dvmap.json`,
+          workbook: "./source.xlsx",
+          stage: 1,
+        });
+      }
+    }
+    persistRunPlan();
+    rerenderRunPlan();
+  }
+
+  const upsert = first.mapping.upsertKey?.join("+");
+  const summary =
+    `Loaded ${first.mapping.columns.length} column mapping(s) from "${first.queryName}" ` +
+    `→ ${first.mapping.targetEntitySet}` +
+    (upsert ? `, upserting on ${upsert}.` : ` (${first.mapping.conflictMode}).`) +
+    (res.mappings.length > 1
+      ? ` ${res.mappings.length - 1} further quer(ies) downloaded as .dvmap.json and added to the run plan.`
+      : "");
+
+  // Problems are the sidecar's validateMapping output — typically a lookup
+  // whose target table couldn't be resolved. Reported as a warning, not an
+  // error: the import worked, but the mapping needs a decision before it runs.
+  if (problems.length > 0) {
+    setStatus("info", `${summary} Needs attention: ${problems.join("; ")}`);
+  } else {
+    setStatus("success", summary);
+  }
+}
+
+/** Point the entity picker at a mapping's target, if it's already loaded. */
+function selectEntitySet(entitySet: string): void {
+  const entSel = el<HTMLSelectElement>("entity");
+  const match = [...entSel.options].find(
+    (o) => o.value === entitySet || o.dataset.logical === entitySet
+  );
+  if (!match) return;
+  entSel.value = match.value;
+  state.entitySet = match.value;
+  if (match.dataset.logical) loadEntityAttributes(match.dataset.logical).catch(() => {});
+}
+
+/** Mirror a mapping's conflict settings into the form controls. */
+function applyConflictMode(mapping: Mapping): void {
+  const modeSel = el<HTMLSelectElement>("conflictMode");
+  modeSel.value = mapping.conflictMode;
+  modeSel.dispatchEvent(new Event("change"));
+  if (mapping.upsertKey?.length) {
+    el<HTMLInputElement>("upsertKey").value = mapping.upsertKey.join(",");
+  }
+}
+
+function onDataflowDownload(): void {
+  if (!pendingDataflow?.workbook) return;
+  downloadBlob(
+    new Blob([toArrayBuffer(base64ToBytes(pendingDataflow.workbook))], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }),
+    `${slugify(pendingDataflow.name)}.xlsx`
+  );
+  const name = pendingDataflow.name;
+  clearDataflowResult();
+  setStatus(
+    "success",
+    `Downloaded the workbook for "${name}". Open it in Excel and use "Load To…" on each query. ` +
+      `It keeps the dataflow's SharePoint URLs, so Excel will ask for those credentials. ` +
+      `(To have Excel opened for you: dvload import-dataflow "${name}" --no-mapping --open)`
+  );
+}
+
+function clearDataflowResult(): void {
+  pendingDataflow = null;
+  el<HTMLDivElement>("dataflowResult").style.display = "none";
+  el<HTMLSpanElement>("dataflowResultText").textContent = "";
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+function slugify(s: string): string {
+  return s.replace(/\W+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "dataflow";
 }
 
 /**
@@ -1022,8 +1609,14 @@ function renderDevModeBanner(): void {
  *    would answer for the new one. That's the more dangerous half: it fails
  *    silently and produces a mapping built against the wrong schema, rather
  *    than an error.
+ *
+ * `deliberate` says the environment was picked from the saved-profile list,
+ * which is the only caller allowed to start a sign-in by itself. Sign-in
+ * opens a browser window, so it must never be triggered by a typed URL, and
+ * loading a mapping names an environment as a side effect of opening a file —
+ * neither is a request to authenticate.
  */
-async function setEnvironment(url: string): Promise<void> {
+async function setEnvironment(url: string, opts: { deliberate?: boolean } = {}): Promise<void> {
   const next = url.trim();
   if (next === state.environmentUrl) return;
 
@@ -1036,15 +1629,32 @@ async function setEnvironment(url: string): Promise<void> {
 
   if (state.account) {
     triggerLoadEntities();
-  } else {
-    let where = next;
-    try {
-      where = new URL(next).host;
-    } catch {
-      // not a URL yet — the user may still be typing
-    }
-    setStatus("info", `Not signed in to ${where}. Click Sign in to continue.`);
+    return;
   }
+
+  let where = next;
+  try {
+    where = new URL(next).host;
+  } catch {
+    // not a URL yet — the user may still be typing
+  }
+
+  // Step 1 already established who this is, so a new environment is a sign-in
+  // the pane can start on the user's behalf rather than a decision to put
+  // back to them. With the username as a login hint this is usually a
+  // redirect they never interact with.
+  if (state.username && opts.deliberate) {
+    setStatus("info", `Signing in to ${where} as ${state.username}…`);
+    await onSignIn();
+    return;
+  }
+
+  setStatus(
+    "info",
+    state.username
+      ? `${state.username} isn't signed in to ${where} yet. Click Sign in to continue.`
+      : `Not signed in to ${where}. Click Sign in to continue.`
+  );
 }
 
 /**
@@ -1122,35 +1732,76 @@ async function refreshAccountUI(): Promise<void> {
     acc = await getAccount();
   }
   state.account = acc ? { username: acc.username } : null;
+  // A real session for this environment is the most authoritative answer to
+  // "who am I", so it wins over anything remembered.
+  if (acc) {
+    state.username = acc.username;
+    localStorage.setItem(LAST_USER_KEY, acc.username);
+  }
   // Depends on the status fetched above, so it has to come after it.
   renderDevModeBanner();
   renderConnBar();
+  renderAccountPicker();
+  renderAccountHint();
   el<HTMLSpanElement>("authDot").style.color = acc ? "#107c10" : "#d13438";
-  el<HTMLSpanElement>("who").textContent = acc ? acc.username : "Not signed in";
   const entSel = el<HTMLSelectElement>("entity");
   entSel.disabled = !acc;
   // Clear the "Sign in to load entities" placeholder once signed in
   if (acc && entSel.options.length === 1 && !entSel.options[0].value) {
     entSel.options[0].text = "Select an entity…";
   }
+  // Dataflows are per-environment and need a token, so the picker tracks
+  // auth state exactly like the entity picker does. Not awaited: this is a
+  // background refresh of one control, and blocking the whole account UI on
+  // a dataflow listing would stall sign-in behind an unrelated query.
+  void loadDataflows();
 }
 
 /* -------------------------------------------------------------------------- */
 /* Sign-in / entity loading                                                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Sign in to the current environment, as step 1's user where there is one.
+ *
+ * The token's scope is the environment's own origin, so an environment is
+ * unavoidably required — there is no such thing as signing in to Dataverse in
+ * general. What the pane can do is stop treating that as the user's problem:
+ * the username carries across, goes to Entra as a login hint, and usually
+ * turns the second environment's sign-in into a redirect nobody has to read.
+ */
 async function onSignIn(): Promise<void> {
   if (!state.environmentUrl) {
-    setStatus("error", "Enter an environment URL first.");
+    setStatus(
+      "info",
+      state.username
+        ? `Choose an environment in step 2 — sign-in is per environment, and ${state.username} ` +
+            `will be used for it.`
+        : "Choose an environment in step 2 first — sign-in is against a specific environment."
+    );
+    el<HTMLInputElement>("env").focus();
     return;
   }
+
+  const btn = el<HTMLButtonElement>("signin");
+  btn.disabled = true;
   try {
-    const acc = await signIn(state.environmentUrl);
+    setStatus("info", "Waiting for sign-in to finish in your browser…");
+    const acc = await signIn(state.environmentUrl, state.username ?? undefined);
     state.account = { username: acc.username };
+    state.username = acc.username;
+    localStorage.setItem(LAST_USER_KEY, acc.username);
+    // The new session changes which environments are reachable without
+    // another prompt, which both pickers report.
+    await refreshKnownAccounts();
+    renderProfilePicker();
     await refreshAccountUI();
+    setStatus("success", `Signed in as ${acc.username}.`);
     await loadEntities();
   } catch (e) {
     setStatus("error", `Sign-in failed: ${(e as Error).message}`);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -2516,6 +3167,7 @@ function rerenderMappings(): void {
 function rerenderRunPlan(): void {
   const root = el<HTMLDivElement>("planSteps");
   root.innerHTML = "";
+  updateTabBadges();
   if (state.planSteps.length === 0) {
     root.textContent = "No steps yet.";
     root.style.fontSize = "11px";

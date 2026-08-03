@@ -14,6 +14,7 @@ import {
 import { validateCommand } from "./commands/validate.js";
 import { scheduleCommand } from "./commands/schedule.js";
 import { extractPqtCommand, importPqtCommand, pqtToXlsxCommand } from "./commands/pqt.js";
+import { dataflowsCommand, importDataflowCommand } from "./commands/dataflow.js";
 import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
 import { addinCommand } from "./commands/addin.js";
 import { serveCommand, guiCommand, DEFAULT_PORT } from "./commands/serve.js";
@@ -171,7 +172,43 @@ program
   .description("EXPERIMENTAL: build an .xlsx with the .pqt's queries embedded in Power Query.")
   .argument("<pqt>", "Path to a .pqt file (e.g. exported from Dataverse Dataflows)")
   .option("-o, --out <path>", "Output .xlsx path (default: <pqt-name>.xlsx next to the .pqt)")
+  // Declaring --open before --no-open leaves the default `undefined`, which is
+  // what pqtToXlsxCommand treats as "ask if interactive".
+  .option("--open", "Open the workbook in Excel when done, without asking.")
+  .option("--no-open", "Never open it and never ask (for scripts and CI).")
   .action(pqtToXlsxCommand);
+
+// Live dataflows -----------------------------------------------------------
+// Unlike import-pqt, these read msdyn_dataflow straight out of Dataverse, so
+// the mappings come out populated — a .pqt export drops them. See
+// core/src/dataflow.ts.
+program
+  .command("dataflows")
+  .description("List Power Platform dataflows in a Dataverse environment.")
+  .option("--env <url>", "Dataverse environment URL")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
+  .option("--drafts", "Also show editing drafts (every dataflow has one; it duplicates the published row).")
+  .option("--user", "Force delegated (interactive) auth.")
+  .option("--json", "Print the list as JSON.")
+  .option("--non-interactive", "Fail fast instead of prompting for login.")
+  .action(dataflowsCommand);
+
+program
+  .command("import-dataflow")
+  .description("Build an .xlsx of a dataflow's queries and .dvmap.json files from its Dataverse mappings.")
+  .argument("<dataflow>", "Dataflow name or id (from `dvload dataflows`)")
+  .option("--env <url>", "Dataverse environment URL")
+  .option("-p, --profile <name>", "Use a saved environment profile instead of --env")
+  .option("-o, --out <dir>", "Output directory (default: current directory)")
+  // Both outputs are on by default; --no-* is how you ask for one only. This
+  // mirrors the two checkboxes in the task pane.
+  .option("--no-xlsx", "Skip the workbook; write mappings only.")
+  .option("--no-mapping", "Skip the mappings; write the workbook only.")
+  .option("--drafts", "Allow matching an unpublished draft by name.")
+  .option("--open", "Open the workbook in Excel when done.")
+  .option("--user", "Force delegated (interactive) auth.")
+  .option("--non-interactive", "Fail fast instead of prompting for login.")
+  .action(importDataflowCommand);
 
 program
   .command("telemetry")

@@ -1,4 +1,8 @@
 node_modules/
+# npm troubleshooting sometimes leaves a sibling install here (node_modules_tmp_ajv
+# and friends). It is vendored third-party code, not source: keep it out of git and
+# out of eslint, which otherwise reports its CommonJS as errors in our own lint run.
+node_modules_tmp*/
 dist/
 build/
 *.log

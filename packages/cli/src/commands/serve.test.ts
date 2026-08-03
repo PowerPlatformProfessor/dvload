@@ -38,9 +38,22 @@ const getTokenProvider = vi.hoisted(() =>
   )
 );
 
+/**
+ * Stubbed for the same reason: the real one reads the secure store and then
+ * rebuilds an MSAL app per environment to recover each username. Here it is
+ * the route's own shaping that's under test — which fields are exposed, and
+ * what happens to a session whose username can no longer be read.
+ */
+const listDelegatedSessions = vi.hoisted(() =>
+  vi.fn(
+    (): Promise<Array<{ host: string; environmentUrl: string; username: string | null }>> =>
+      Promise.resolve([])
+  )
+);
+
 vi.mock("../auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../auth.js")>();
-  return { ...actual, getTokenProvider };
+  return { ...actual, getTokenProvider, listDelegatedSessions };
 });
 
 import { startServer, resolveWebSource, checkUi, type RunningServer } from "./serve.js";
@@ -358,4 +371,38 @@ test("account status reports delegated regardless of stored app-only creds", asy
   assert.equal(status.mode, "delegated");
   // Present so the pane can explain why `dvload run` may write as someone else.
   assert.ok("appOnlyConfigured" in status);
+});
+
+test("/api/accounts lists every signed-in identity, without an environment", async () => {
+  listDelegatedSessions.mockResolvedValueOnce([
+    {
+      host: "contoso.crm.dynamics.com",
+      environmentUrl: "https://contoso.crm.dynamics.com",
+      username: "dan@contoso.com",
+    },
+    {
+      host: "contoso-dev.crm.dynamics.com",
+      environmentUrl: "https://contoso-dev.crm.dynamics.com",
+      username: "dan@contoso.com",
+    },
+    // Store entry whose MSAL cache no longer holds the account: there is
+    // nothing to show for it, and a nameless row in the pane's account picker
+    // would be a choice that does nothing.
+    { host: "gone.crm.dynamics.com", environmentUrl: "https://gone.crm.dynamics.com", username: null },
+  ]);
+
+  // No environmentUrl in the body: the point of this route is that the pane
+  // can ask "who am I?" before it has one.
+  const res = await call("POST", "/api/accounts", { headers: ours(), body: "{}" });
+  assert.equal(res.status, 200);
+
+  const { accounts } = JSON.parse(res.body) as {
+    accounts: Array<{ username: string; environmentUrl: string; host: string }>;
+  };
+  assert.deepEqual(
+    accounts.map((a) => `${a.username}@${a.host}`),
+    ["dan@contoso.com@contoso.crm.dynamics.com", "dan@contoso.com@contoso-dev.crm.dynamics.com"]
+  );
+  // Tokens are never part of this answer, only who and where.
+  assert.doesNotMatch(res.body, /token|secret/i);
 });

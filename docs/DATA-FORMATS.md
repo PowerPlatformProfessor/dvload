@@ -696,6 +696,44 @@ preserved):
 }
 ```
 
+#### `QueriesMetadata` has two shapes
+
+The object above is what **Dataverse Dataflows** emit: `QueriesMetadata` keyed
+by query name. **Power Query Online** and Excel emit the same information as an
+**array**, with no `QueryId` and no `FieldsMetadata`:
+
+```json
+{
+  "DocumentLocale": "en-US",
+  "EngineVersion": "2.156.778.0",
+  "QueriesMetadata": [
+    {
+      "QueryName": "Full_Match_Table",
+      "QueryGroupId": null,
+      "LastKnownIsParameter": false,
+      "LastKnownResultTypeName": null,
+      "LoadEnabled": true,
+      "IsHidden": null
+    }
+  ],
+  "QueryGroups": []
+}
+```
+
+`readPqt` normalizes both into a name-keyed object via
+`normalizeQueriesMetadata`, and records which shape it saw in
+`PqtArchive.queriesMetadataShape` so `writePqt` emits it back unchanged.
+
+Treating the array as an object is a silent, not a loud, failure —
+`Object.keys([{ … }])` is `["0"]`, so every query gets named `0`, lookups by
+real query name miss, and the emitted `.dvmap.json` ends up with
+`"sourceTable": "0"` and no columns. That was a real bug; the regression tests
+in `pqt.test.ts` pin it.
+
+One exception to shape preservation: `injectMappingIntoPqt` promotes an array
+to the keyed object and mints a `QueryId`, because a `.pqt` carrying
+`FieldsMetadata` is bound for Dataverse Dataflows, which expect that form.
+
 `FieldsMetadata` is keyed by **Dataverse attribute** and points back at the
 source column — the inverse of a `.dvmap.json` column, which is keyed by
 source. Type translation:

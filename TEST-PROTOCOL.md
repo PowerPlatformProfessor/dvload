@@ -260,6 +260,12 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 | 19.9 | Save mapping → CLI | Mapping saved from add-in runs unmodified via `dvload run` (portability promise) | |
 | 19.10 | Large table | Open workbook with `contacts_100k` table | Pane stays responsive; import works or fails gracefully with guidance (record behavior) | |
 | 19.11 | Errors surfaced | Import with known-bad rows | Row errors visible in pane, not just console | |
+| 19.12 | Tabs | Three tabs: Import / Run plan / Dataflows. Only one panel visible at a time; ←/→ move between them when a tab has focus; the Run plan tab shows a step count once the plan has steps | |
+| 19.13 | Account before environment | With no session at all, step 1 says "Sign in once…"; clicking **Sign in** with no environment set asks for one rather than failing. After signing in, step 1 shows the username and step 2 ticks the profiles that account already has a session for | |
+| 19.14 | Environment switch keeps the user | Signed in to A, pick profile B from the list: the pane signs in to B automatically with the username pre-filled (usually no account picker in the browser), and the connection bar ends on B with the same username. Typing a URL instead must NOT open a browser — it prompts to click Sign in | |
+| 19.15 | Switch user | Choose "Sign in with another account…": Entra shows the account picker (no hint), and the new username replaces the old one in step 1 and in the connection bar | |
+| 19.16 | Cross-tab handoff | On the Dataflows tab, "Use mapping" (or a dataflow import with *Mapping files* only) lands on the Import tab with the mapping loaded; "Use all" lands on the Run plan tab with the new steps. A dataflow imported *with* a workbook stays put so the Download button is still reachable | |
+| 19.17 | Status is shared | Start an import, switch to the Run plan tab while it runs | Progress and the final summary stay visible from every tab | |
 
 ## 20. CSV / TSV input
 

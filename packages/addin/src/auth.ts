@@ -102,6 +102,15 @@ async function post<T>(route: string, body: Record<string, unknown> = {}): Promi
 }
 
 /**
+ * Call a non-auth sidecar route (the dataflow reads) with the same guard
+ * headers and error handling. Exported rather than duplicated so there is one
+ * place that knows about `x-dvload-client` and how the sidecar reports errors.
+ */
+export function sidecarPost<T>(route: string, body: Record<string, unknown> = {}): Promise<T> {
+  return post<T>(route, body);
+}
+
+/**
  * Confirm the sidecar is up before the UI starts making requests it can't
  * explain. Deliberately a cheap GET with no environment in it, so it works
  * before the user has picked one.
@@ -123,6 +132,31 @@ export async function initAuth(): Promise<void> {
   }
 }
 
+/** An environment this machine already has a session for, and whose it is. */
+export interface KnownAccount {
+  username: string;
+  environmentUrl: string;
+  host: string;
+}
+
+/**
+ * Who the sidecar is already signed in as, across every environment.
+ *
+ * The pane's first step is "which account", which happens before an
+ * environment exists — and `/account` can't answer that, because sign-in
+ * state is keyed by environment. Returns an empty list rather than throwing:
+ * on a first run there genuinely are no accounts, and that is the same UI as
+ * a sidecar that couldn't read its store.
+ */
+export async function listKnownAccounts(): Promise<KnownAccount[]> {
+  try {
+    const { accounts } = await post<{ accounts: KnownAccount[] }>("/accounts");
+    return accounts;
+  } catch {
+    return [];
+  }
+}
+
 export async function getAuthStatus(environmentUrl: string): Promise<AuthStatus> {
   const status = await post<AuthStatus>("/account", { environmentUrl });
   lastStatus = status;
@@ -139,9 +173,17 @@ export async function getAccount(environmentUrl?: string): Promise<Account | nul
  * not from here, so this resolves only once the user has finished in it —
  * which can be a while. There's no popup for Office to block, and no
  * redirect back into the pane.
+ *
+ * `loginHint` is the username the pane already signed in as somewhere else.
+ * Every environment needs its own sign-in — the token scope is the
+ * environment's own origin — so passing it is what makes switching
+ * environment feel like staying signed in rather than starting over.
  */
-export async function signIn(environmentUrl: string): Promise<Account> {
-  const status = await post<AuthStatus>("/signin", { environmentUrl });
+export async function signIn(environmentUrl: string, loginHint?: string): Promise<Account> {
+  const status = await post<AuthStatus>("/signin", {
+    environmentUrl,
+    ...(loginHint ? { loginHint } : {}),
+  });
   lastStatus = status;
   if (!status.account) throw new Error("Sign-in completed but no account was returned.");
   tokens.delete(environmentUrl);

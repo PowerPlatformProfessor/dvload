@@ -15,7 +15,7 @@
 | `profile add/remove/list` | Named environment shortcuts stored in `~/.dvload/profiles.json`. |
 | `extract-pqt` | Extract Power Query M code from an `.xlsx` into a `.pqt` archive, optionally injecting a column mapping into `MashupMetadata.json`. |
 | `import-pqt` | Synthesise a `.dvmap.json` from the `MashupMetadata.json` inside an existing `.pqt`. `--all-queries` emits one mapping per query; `--emit-m` writes the M document. |
-| `pqt-to-xlsx` | **Experimental:** build an `.xlsx` with the `.pqt`'s queries embedded natively in Power Query (QDEFF/DataMashup writer). Queries arrive connection-only; use "Load To…" in Excel. |
+| `pqt-to-xlsx` | **Experimental:** build an `.xlsx` with the `.pqt`'s queries embedded natively in Power Query (QDEFF/DataMashup writer). Queries arrive connection-only; use "Load To…" in Excel. `--open` launches it in Excel when done (interactive runs ask; `--no-open` for scripts). Also in the pane as *Create workbook*, download-only. |
 | `schedule` | Register a Windows Scheduled Task for nightly unattended imports (`dvload run --refresh`). |
 | `addin` | Launch/stop add-in local workflow from CLI (`dvload addin start|stop|dev`). |
 
@@ -53,6 +53,8 @@ One bundle, served from loopback by `dvload serve`. The Office-vs-browser
 differences are confined to `packages/addin/src/host.ts`.
 
 - Sign-in delegated to `dvload serve`, so no Entra app registration and no admin consent — the UI carries no client id and never talks to Entra
+- **Three tabs**: *Import* (account, environment, source, target, column mapping, import options, Run import), *Run plan* (multi-step `.dvplan.json` editor, with a step count on the tab), *Dataflows* (read a dataflow out of the environment, plus the `.pqt` import/export tools). Status, progress and the run log sit below the tabs, so a running import keeps reporting whichever tab you're on
+- **Account first, environment second**: pick who you are, then where to write. The username is remembered across environment switches, and selecting a saved profile you haven't used yet signs in with that username pre-filled (`login_hint`) rather than starting from an account picker. Profiles you already have a session for are ticked
 - `dvload gui` runs the same interface without Excel; everything works except reading the open workbook and extracting its Power Query
 - Lists Excel tables in the open workbook, or reads a picked `.xlsx`/`.csv`/`.tsv` file instead
 - Fetches Dataverse entities and their attributes from the live environment

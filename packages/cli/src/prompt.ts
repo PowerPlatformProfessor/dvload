@@ -16,6 +16,18 @@ export async function prompt(question: string): Promise<string> {
 }
 
 /**
+ * Ask a yes/no question. Returns `fallback` without prompting when stdin isn't
+ * a TTY, so piped or scheduled runs never hang waiting on an answer.
+ */
+export async function promptYesNo(question: string, fallback = false): Promise<boolean> {
+  if (!stdin.isTTY) return fallback;
+  const suffix = fallback ? " [Y/n] " : " [y/N] ";
+  const answer = (await prompt(question + suffix)).toLowerCase();
+  if (answer === "") return fallback;
+  return answer === "y" || answer === "yes";
+}
+
+/**
  * Prompt without echoing keystrokes. Used for client secrets.
  * Falls back to a regular prompt if stdin isn't a TTY (CI scenarios).
  */

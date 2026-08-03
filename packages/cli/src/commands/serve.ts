@@ -45,12 +45,23 @@ import { fileURLToPath } from "node:url";
 import kleur from "kleur";
 
 import {
+  DataverseClient,
+  buildWorkbookWithQueries,
+  createMetadataResolver,
+  getDataflow,
+  listDataflows,
+  mappingsFromDataflow,
+  validateMapping,
+} from "@dvload/core";
+
+import {
   getTokenProvider,
   loginDelegated,
   logoutDelegated,
   detectAuthMode,
   getStoredClientId,
   getSignedInAccount,
+  listDelegatedSessions,
   describeClient,
   isSharedMicrosoftClient,
   openInBrowser,
@@ -504,17 +515,109 @@ async function describeAuth(environmentUrl: string): Promise<Record<string, unkn
   };
 }
 
+/**
+ * A Dataverse client for the signed-in user of `environmentUrl`.
+ *
+ * Goes through UI_TOKEN_OPTS like every other UI path: reading dataflows is
+ * harmless, but a request that could silently run as the Application User is
+ * the thing that rule exists to prevent, and there is no reason for this
+ * route to be the exception.
+ */
+async function uiClient(environmentUrl: string): Promise<DataverseClient> {
+  const getToken = await providerFor(environmentUrl, UI_TOKEN_OPTS.forceUser);
+  return new DataverseClient({ environmentUrl, getToken });
+}
+
 async function handleApi(route: string, body: Record<string, unknown>): Promise<unknown> {
   switch (route) {
     case "/api/account":
       return describeAuth(requiredString(body, "environmentUrl"));
 
+    /*
+     * Who this machine is already signed in as, across every environment.
+     *
+     * The pane asks this before an environment has been picked, so that
+     * "sign in" and "choose where to write" can be two separate steps
+     * instead of one. `/api/account` cannot answer it: sign-in state is
+     * keyed by environment, and the pane has no environment yet.
+     *
+     * Only usernames and hosts leave the process — never tokens.
+     */
+    case "/api/accounts": {
+      const sessions = await listDelegatedSessions();
+      return {
+        accounts: sessions
+          .filter((s) => s.username)
+          .map((s) => ({
+            username: s.username as string,
+            environmentUrl: s.environmentUrl,
+            host: s.host,
+          })),
+      };
+    }
+
+    /* --- Live dataflows ---------------------------------------------------
+     * The pane's counterpart to picking a .pqt off disk. Everything the
+     * conversion needs lives in core/src/dataflow.ts; these two routes only
+     * move bytes.
+     */
+    case "/api/dataflows": {
+      const environmentUrl = requiredString(body, "environmentUrl");
+      const client = await uiClient(environmentUrl);
+      return { dataflows: await listDataflows(client, { includeDrafts: body.drafts === true }) };
+    }
+
+    case "/api/dataflow-import": {
+      const environmentUrl = requiredString(body, "environmentUrl");
+      const dataflowId = requiredString(body, "dataflowId");
+      // Absent means "yes": the pane always sends both, but a caller that
+      // omits them should get the same thing the checkboxes default to.
+      const wantXlsx = body.xlsx !== false;
+      const wantMapping = body.mapping !== false;
+
+      const client = await uiClient(environmentUrl);
+      const detail = await getDataflow(client, dataflowId);
+
+      // Base64 rather than a binary response: this route already returns
+      // JSON, and the pane hands the bytes to a Blob download either way.
+      const workbook = wantXlsx
+        ? Buffer.from(await buildWorkbookWithQueries(detail.archive)).toString("base64")
+        : null;
+
+      // Metadata reads (alternate keys, lookup targets) cost several round
+      // trips, so they only happen when mappings were actually asked for.
+      const mappings = wantMapping
+        ? await mappingsFromDataflow(detail, {
+            environmentUrl,
+            resolver: createMetadataResolver(client),
+          })
+        : {};
+
+      return {
+        name: detail.name,
+        queryNames: detail.queryNames,
+        workbook,
+        mappings: Object.entries(mappings).map(([queryName, mapping]) => ({
+          queryName,
+          mapping,
+          // Sent alongside so the pane can warn in place instead of the user
+          // finding out at load time.
+          problems: validateMapping(mapping),
+        })),
+      };
+    }
+
     case "/api/signin": {
       const environmentUrl = requiredString(body, "environmentUrl");
+      // Which user the pane thinks it is signed in as, from an earlier
+      // sign-in to a different environment. A hint only: it pre-fills the
+      // Entra page so switching environment is usually a silent redirect
+      // rather than another account picker. Entra decides what it's worth.
+      const loginHint = typeof body.loginHint === "string" ? body.loginHint : undefined;
       // Clear any memoised provider so the next token request picks up the
       // account we are about to create rather than a stale failed thunk.
       providers.clear();
-      await loginDelegated({ environmentUrl });
+      await loginDelegated({ environmentUrl, loginHint });
       return describeAuth(environmentUrl);
     }
 

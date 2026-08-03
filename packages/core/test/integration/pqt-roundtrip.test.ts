@@ -88,6 +88,11 @@ function archive(over: Partial<PqtArchive> = {}): PqtArchive {
       Version: "1.0.0.0",
     },
     contentTypes: STANDARD_CONTENT_TYPES,
+    // A Dataverse Dataflow export is the name-keyed object form, and readPqt
+    // reports the shape it read so writePqt can emit the same one. Declared
+    // here so the round-trip assertion below compares like with like — the
+    // array form has its own coverage in src/pqt.test.ts.
+    queriesMetadataShape: "object",
     ...over,
   } as PqtArchive;
 }
@@ -307,5 +312,37 @@ describe("extract-pqt: workbook → .pqt with an injected mapping", () => {
     expect(back.mashupDocument).toBe(a.mashupDocument);
     expect(back.metadata.Name).toBe("Round-tripped");
     expect(parseQueryNames(back.mashupDocument).sort()).toEqual(["Accounts", "Contacts"]);
+  });
+
+  it("writes no directory entries, in the workbook or the mashup package", async () => {
+    // Office never writes explicit directory entries into an OOXML package;
+    // JSZip does by default, for every path segment. Excel tolerates them in
+    // the outer workbook, but the Power Query engine reads the inner
+    // DataMashup package with a stricter OPC reader and rejects the file with
+    // "the queries in this workbook are corrupted or were created by an
+    // unrecognized version of Excel or Power Query" — a message that says
+    // nothing about zip structure, so this is worth pinning.
+    const { default: JSZip } = await import("jszip");
+
+    const xlsx = await JSZip.loadAsync(await buildWorkbookWithQueries(archive()));
+    expect(Object.values(xlsx.files).filter((f) => f.dir)).toEqual([]);
+
+    // Reach into the DataMashup blob and check the package inside it too.
+    const item1 = await xlsx.file("customXml/item1.xml")!.async("string");
+    const b64 = /<DataMashup[^>]*>([\s\S]*?)<\/DataMashup>/.exec(item1)![1];
+    const blob = Buffer.from(b64.replace(/\s+/g, ""), "base64");
+    const packageLength = new DataView(
+      blob.buffer,
+      blob.byteOffset,
+      blob.byteLength
+    ).getUint32(4, true);
+
+    const inner = await JSZip.loadAsync(blob.subarray(8, 8 + packageLength));
+    expect(Object.values(inner.files).filter((f) => f.dir)).toEqual([]);
+    expect(Object.keys(inner.files).sort()).toEqual([
+      "Config/Package.xml",
+      "Formulas/Section1.m",
+      "[Content_Types].xml",
+    ]);
   });
 });

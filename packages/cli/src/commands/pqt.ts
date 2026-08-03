@@ -9,6 +9,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import kleur from "kleur";
 import { resolveEnv } from "../profiles.js";
+import { promptYesNo } from "../prompt.js";
+import { openInDefaultApp } from "../open-file.js";
 import {
   buildWorkbookWithQueries,
   extractPqtFromXlsx,
@@ -159,9 +161,11 @@ export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promis
   if (mapping.columns.length === 0) {
     console.log(
       kleur.yellow(
-        "Warning: no FieldsMetadata in the .pqt for that query. The output .dvmap.json " +
-          "has no columns. This usually means the .pqt was extracted from Excel (Excel " +
-          "doesn't know about Dataverse mappings) rather than from a Dataverse Dataflow."
+        "Warning: no FieldsMetadata in the .pqt for that query, so the output .dvmap.json " +
+          "has no columns. Only Dataverse Dataflow exports record which source column feeds " +
+          "which attribute; a .pqt saved from Power Query Online or extracted from Excel " +
+          "carries the M code alone. Map the columns in the add-in (or by hand) and use " +
+          "extract-pqt --mapping to write them back into a .pqt."
       )
     );
   }
@@ -173,7 +177,10 @@ export async function importPqtCommand(pqt: string, opts: ImportPqtOpts): Promis
  * MS-QDEFF; if Excel refuses the file, fall back to `import-pqt --emit-m`
  * and paste the M into a Blank Query's Advanced Editor.
  */
-export async function pqtToXlsxCommand(pqt: string, opts: { out?: string }): Promise<void> {
+export async function pqtToXlsxCommand(
+  pqt: string,
+  opts: { out?: string; open?: boolean }
+): Promise<void> {
   const pqtPath = path.resolve(pqt);
   const archive = await readPqt(await readFile(pqtPath));
   const outPath = opts.out
@@ -194,6 +201,23 @@ export async function pqtToXlsxCommand(pqt: string, opts: { out?: string }): Pro
         `  (Experimental QDEFF writer — if Excel complains, use import-pqt --emit-m and paste the M.)`
     )
   );
+
+  // --open forces, --no-open suppresses, and bare interactive runs ask. On a
+  // non-TTY (CI, cron, piped) promptYesNo returns the default without reading
+  // stdin, so an unattended run never blocks here.
+  const shouldOpen = opts.open ?? (await promptYesNo("Open it in Excel now?", false));
+  if (!shouldOpen) return;
+
+  try {
+    await openInDefaultApp(outPath);
+    console.log(kleur.gray("  Handed off to Excel."));
+  } catch (e) {
+    // The file is already written; failing to launch is a nuisance, not an error.
+    console.log(
+      kleur.yellow(`  Couldn't open it automatically (${(e as Error).message}). Open it yourself:`)
+    );
+    console.log(kleur.gray(`  ${outPath}`));
+  }
 }
 
 function stemOf(file: string): string {

@@ -552,6 +552,10 @@ dvload import-pqt ./flow.pqt --env https://contoso.crm.dynamics.com --all-querie
 
 ```bash
 dvload pqt-to-xlsx ./flow.pqt -o ./flow.xlsx
+
+# Open it in Excel when it's written. Interactive runs ask if neither
+# flag is given; --no-open never opens and never asks (scripts, CI).
+dvload pqt-to-xlsx ./flow.pqt --open
 ```
 
 Builds a fresh workbook with the .pqt's M queries embedded natively in
@@ -567,7 +571,21 @@ pasting the M into a Blank Query's Advanced Editor.
 lists every query with its field-mapping count, *Use mapping* populates
 the column grid from the selected query's `FieldsMetadata`, and *Copy M*
 puts the M document on the clipboard for pasting into Excel's Advanced
-Editor.
+Editor. *Create workbook* is `pqt-to-xlsx` in the pane: it builds the
+`.xlsx` and offers it for download. It cannot hand the file to Excel — a
+web page can only write to your downloads folder — so use the CLI's
+`--open` if you want Excel launched for you.
+
+### Why a .pqt can import with no mappings
+
+Only **Dataverse Dataflow** exports carry `FieldsMetadata`, the record of
+which source column feeds which Dataverse attribute. A `.pqt` saved from
+**Power Query Online** or extracted from Excel contains the M code and
+nothing else, so `import-pqt` has no columns to synthesize and warns
+about it. That is expected, not a failure: use *Create workbook* or
+*Copy M* to get the queries into Excel, map the columns in the pane, then
+`extract-pqt --mapping` to write them back into a `.pqt` that a Dataflow
+will import with the mapping pre-filled.
 
 The UI also supports run plans: add/edit/load/save `.dvplan.json` steps,
 assign `stage`/`dependsOn`, and capture alternate-key links for
