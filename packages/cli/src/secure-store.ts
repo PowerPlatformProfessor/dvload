@@ -24,6 +24,18 @@ const POSIX_FILE = path.join(DIR, "secrets.json");
 
 const isWindows = process.platform === "win32";
 
+/**
+ * Absolute path, not "powershell.exe": this child receives every secret over
+ * stdin, so it must not be resolvable through a user-writable PATH entry.
+ */
+const POWERSHELL_EXE = path.join(
+  process.env.SystemRoot ?? "C:\\Windows",
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe"
+);
+
 /* -------------------------------------------------------------------------- */
 /* DPAPI via PowerShell                                                        */
 /* -------------------------------------------------------------------------- */
@@ -44,7 +56,7 @@ function dpapi(mode: "protect" | "unprotect", data: Buffer): Promise<Buffer> {
     `[Console]::Out.Write([Convert]::ToBase64String($out))`;
   return new Promise((resolve, reject) => {
     const child = spawn(
-      "powershell.exe",
+      POWERSHELL_EXE,
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
       { windowsHide: true }
     );
@@ -106,7 +118,11 @@ async function save(map: SecretMap): Promise<void> {
   const plain = Buffer.from(JSON.stringify(map), "utf8");
   const file = isWindows ? WIN_FILE : POSIX_FILE;
   const data = await protectBytes(plain);
-  await fs.writeFile(file, data, { mode: 0o600 });
+  // Write-then-rename: this file is the only copy of every session and
+  // credential, so a crash mid-write must not be able to corrupt it.
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, data, { mode: 0o600 });
+  await fs.rename(tmp, file);
   cache = map;
 }
 

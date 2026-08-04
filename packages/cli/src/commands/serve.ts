@@ -34,6 +34,12 @@
 //   4. API routes are POST-only, require an `x-dvload-client` header (which
 //      forces a preflight that step 3 then fails) and, when an Origin header
 //      is present, require it to be one of ours.
+//
+// Deliberately NOT defended: another process running as the same OS user. It
+// can call the API directly (curl with the header) and receive tokens — but
+// it could equally decrypt the DPAPI secret store, which is CurrentUser-
+// scoped. Same-user local processes are inside the trust boundary; SECURITY.md
+// rules them out of scope for the same reason.
 
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -126,11 +132,15 @@ function diskWebSource(dir: string): WebSource {
       const parts = safeSegments(rel);
       if (!parts) return null;
       const full = path.resolve(root, ...parts);
-      // Belt and braces: symlinks inside the root could still point out of
-      // it, so confirm the resolved path is contained before reading.
       if (full !== root && !full.startsWith(root + path.sep)) return null;
       try {
-        return await fs.readFile(full);
+        // path.resolve is lexical, so a symlink inside the root pointing out
+        // of it passes the check above. Resolve the real path (of both file
+        // and root — the root itself may be reached via a link) and re-check
+        // containment before reading.
+        const [real, realRoot] = await Promise.all([fs.realpath(full), fs.realpath(root)]);
+        if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
+        return await fs.readFile(real);
       } catch {
         return null;
       }

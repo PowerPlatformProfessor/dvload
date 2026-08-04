@@ -71,21 +71,22 @@ const SHARED_DATAVERSE_CLIENT_ID = "51f81489-12ee-4a9e-aaae-a2591f45987d";
 const DVLOAD_CLIENT_ID = "e6828b0f-9fde-43f8-85d0-602660d498bb";
 
 /**
- * Public-client app ids to try, in order.
+ * Public-client app ids to try, in order: [shared Microsoft client, dvload's
+ * own app] — for BOTH flows. The shared client needs no admin consent in any
+ * tenant (it's how XrmToolBox and the XRM Tooling SDK connect), so it always
+ * gets the first shot; dvload's own app covers tenants that block it.
  *
- * Default is [shared Microsoft client, dvload's own app]: the shared client
- * needs no consent anywhere, and the own-app fallback covers tenants that
- * have blocked it (Conditional Access, or Power Platform's "allowed client
- * apps" control).
- *
- * UNRESOLVED: whether the shared client accepts an `http://localhost:<port>`
- * redirect for the interactive flow. One report of AADSTS900971 ("No reply
- * address provided") suggests not; against that, MSAL.NET now refuses
- * `app://`-style redirects on desktop and demands loopback, so tools like
- * XrmToolBox must be using loopback with *some* app id. Until that's settled
- * empirically (see docs/AUTH-NOTES.md) the chain is flow-agnostic: trying the
- * shared client first costs one clear error message and, if it works, saves
- * an admin-consent round trip entirely.
+ * The interactive catch, RESOLVED empirically (see docs/AUTH-NOTES.md): the
+ * shared client has no `http://localhost` redirect URI registered, so a
+ * browser sign-in with it ends in AADSTS900971 ("No reply address") — which
+ * Entra renders in the browser only AFTER the user signs in, leaving the
+ * loopback listener hanging until our timeout. Rather than dropping the
+ * shared client from the interactive chain (and losing its no-consent
+ * superpower wherever it might work), `acquireInteractive` runs
+ * `probeLoopbackRedirect()` first: a sub-second, browserless question to
+ * Entra — "is http://localhost registered for this app?". An unusable client
+ * is skipped in seconds instead of minutes, and if Microsoft ever registers
+ * localhost on the shared app, dvload starts using it with no code change.
  *
  * An explicit `--client-id` or `DATAVERSE_LOAD_CLIENT_ID` disables the
  * chain entirely — if you named an app, that's the app we use. Set
@@ -181,7 +182,8 @@ const RETRY_WITH_NEXT_CLIENT = new Set([
   "AADSTS50194", // single-tenant app reached via /organizations
   "AADSTS500011", // resource principal not found in tenant
   "AADSTS650057", // invalid resource for this client
-  "AADSTS900971", // no reply address / client misconfiguration
+  "AADSTS900971", // no reply address provided / client misconfiguration
+  "AADSTS500113", // no reply address registered for the application
   // http://localhost isn't a registered redirect URI on this app. Only the
   // interactive flow can hit this, and it's the empirical answer to "does
   // the shared Microsoft client support loopback?" — so advance the chain
@@ -208,6 +210,20 @@ const DO_NOT_RETRY = new Set([
 
 /** True when the next client id in the chain is worth attempting. */
 export function shouldTryNextClient(err: unknown): boolean {
+  // Interactive timeout: the browser never called the loopback back, which
+  // in practice means the authorize request died on an Entra error page
+  // (bad redirect URI, unconsented app) that this client id caused. A
+  // different client id is the one thing worth trying. This used to work
+  // only by accident — aadstsCode() regex-matched "AADSTS900971" out of the
+  // timeout error's own help text — so it is now an explicit rule.
+  if ((err as { errorCode?: string })?.errorCode === "interactive_timeout") {
+    return true;
+  }
+  // The loopback preflight said this client's app has no localhost redirect.
+  // That is precisely a "this client can't work here, another might" signal.
+  if ((err as { errorCode?: string })?.errorCode === "no_loopback_redirect") {
+    return true;
+  }
   const code = aadstsCode(err);
   if (code) {
     if (DO_NOT_RETRY.has(code)) return false;
@@ -580,6 +596,15 @@ class BrowserLaunchError extends Error {
 }
 
 /**
+ * Thrown when the loopback listener never heard back from the browser.
+ * Carries a machine-readable code so `shouldTryNextClient` doesn't have to
+ * fish an AADSTS number out of our own help text.
+ */
+class InteractiveTimeoutError extends Error {
+  readonly errorCode = "interactive_timeout";
+}
+
+/**
  * Fail locally, with detail, rather than in the browser with a riddle.
  *
  * `AADSTS900971` ("No reply address provided") means the authorize request
@@ -610,6 +635,90 @@ export function assertUsableAuthorizeUrl(url: string): void {
     process.stderr.write(`[auth] redirect_uri=${redirectUri}\n`);
     process.stderr.write(`[auth] authorize params: ${[...parsed.searchParams.keys()].join(", ")}\n`);
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Loopback redirect preflight                                                 */
+/* -------------------------------------------------------------------------- */
+
+export type LoopbackProbeResult = "usable" | "unusable" | "inconclusive";
+
+/** The AADSTS family Entra uses for "that redirect_uri isn't registered". */
+const AADSTS_BAD_REDIRECT = /AADSTS(?:50011|500113|900971)\b/;
+
+/** Redirect-URI registration is a property of the app, not the tenant, so
+ *  one definitive answer per client id holds for the process lifetime. */
+const loopbackProbeCache = new Map<string, LoopbackProbeResult>();
+
+/**
+ * Ask Entra — without a browser, a user, or credentials — whether `clientId`
+ * accepts an `http://localhost` redirect for the auth-code flow.
+ *
+ * This is what lets the pre-consented shared Microsoft client keep its place
+ * at the front of the interactive chain. Entra only reveals a bad redirect
+ * URI on an error page AFTER the user has signed in, which the loopback
+ * listener never sees — so without this check, an unusable client costs the
+ * user a full sign-in, a browser error page, and a multi-minute hang before
+ * the chain advances. With it, the same knowledge costs one sub-second HTTP
+ * request made before anything opens.
+ *
+ * How: GET the /authorize endpoint with `prompt=none`, which forbids Entra
+ * from showing UI, forcing an immediate verdict:
+ *   - 3xx to our redirect_uri (carrying `error=login_required` or similar):
+ *     the redirect URI is registered — the error is about the missing
+ *     session, and rides on a redirect Entra only issues to VALID targets.
+ *   - An error page mentioning AADSTS50011/500113/900971: not registered.
+ *   - Anything else (network failure, proxy, unexpected shape): inconclusive
+ *     — callers proceed with the normal browser attempt rather than letting
+ *     a flaky network veto a sign-in that might work.
+ */
+export async function probeLoopbackRedirect(
+  clientId: string,
+  tenant = "organizations",
+  fetchImpl: typeof fetch = fetch
+): Promise<LoopbackProbeResult> {
+  const cached = loopbackProbeCache.get(clientId);
+  if (cached) return cached;
+
+  const url =
+    `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize` +
+    `?client_id=${encodeURIComponent(clientId)}` +
+    `&response_type=code` +
+    `&redirect_uri=${encodeURIComponent("http://localhost:53682")}` +
+    `&scope=openid&prompt=none`;
+
+  let result: LoopbackProbeResult = "inconclusive";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  timer.unref();
+  try {
+    const res = await fetchImpl(url, { redirect: "manual", signal: controller.signal });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location") ?? "";
+      if (location.startsWith("http://localhost")) result = "usable";
+    } else {
+      const body = await res.text();
+      if (AADSTS_BAD_REDIRECT.test(body)) result = "unusable";
+    }
+  } catch {
+    // Timeout, DNS failure, corporate proxy tampering — all inconclusive.
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (result !== "inconclusive") loopbackProbeCache.set(clientId, result);
+  if (process.env.DATAVERSE_LOAD_DEBUG === "1") {
+    process.stderr.write(`[auth] loopback probe for ${clientId}: ${result}\n`);
+  }
+  return result;
+}
+
+/**
+ * Thrown instead of opening a browser when the preflight says the sign-in
+ * cannot complete. Classified as "try the next client" — that is the point.
+ */
+class LoopbackRedirectError extends Error {
+  readonly errorCode = "no_loopback_redirect";
 }
 
 /**
@@ -806,29 +915,51 @@ function makePublicApp(opts: DelegatedAuthOptions): PublicClientApplication {
  * whose message tells the user to go read the browser tab.
  */
 async function acquireInteractive(opts: DelegatedAuthOptions): Promise<AuthenticationResult> {
-  const app = makePublicApp(opts);
+  // Resolve the client id here rather than trusting makePublicApp's default,
+  // so the app we build, the probe we run and the error we print all agree.
+  const clientId = opts.clientId ?? resolveClientIdChain()[0];
+
+  // Preflight: don't open a browser for a client whose app can't receive the
+  // redirect. This is what makes it safe to keep the pre-consented shared
+  // Microsoft client at the front of the chain — when its registration lacks
+  // http://localhost, it's skipped here in under a second instead of after a
+  // full sign-in, an Entra error page, and the timeout below.
+  const probe = await probeLoopbackRedirect(clientId, opts.tenantId ?? "organizations");
+  if (probe === "unusable") {
+    throw new LoopbackRedirectError(
+      `Entra reports that ${describeClient(clientId)} has no http://localhost ` +
+        `redirect URI registered, so browser sign-in with it cannot complete. ` +
+        `(Checked before opening your browser — otherwise this would only ` +
+        `surface, as AADSTS900971, after you entered credentials.)`
+    );
+  }
+
+  const app = makePublicApp({ ...opts, clientId });
   const timeoutMs = Number(process.env.DVLOAD_AUTH_TIMEOUT_MS ?? 180_000);
 
   // Errors at the /authorize endpoint (bad redirect URI, unconsented app,
   // Conditional Access) render as a page in the browser and never come back
   // to the loopback listener. Without a timeout the CLI would sit there
   // forever while the answer sits on screen, so say that out loud.
-  const clientId = opts.clientId ?? resolveClientIdChain()[0];
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       reject(
-        new Error(
+        new InteractiveTimeoutError(
           `No response from the browser after ${Math.round(timeoutMs / 1000)}s.\n` +
             `  Sign-in never completed, so whatever the Entra page showed is the\n` +
             `  real cause. Entra only validates the redirect URI AFTER you enter\n` +
             `  credentials, and reports it in the browser, which is why dvload\n` +
             `  can only report a timeout here.\n\n` +
-            `  AADSTS900971 ("No reply address provided") means app ${clientId}\n` +
+            `  "No reply address" (AADSTS900971 / AADSTS500113) means app\n` +
+            `  ${clientId}\n` +
             `  has no redirect URI matching http://localhost registered under\n` +
-            `  Authentication -> Mobile and desktop applications.\n` +
-            `  Either register it, or unset DATAVERSE_LOAD_CLIENT_ID to use the\n` +
-            `  pre-consented shared Microsoft client, which already accepts it.\n\n` +
+            `  Authentication -> Mobile and desktop applications. Register it\n` +
+            `  there, or unset DATAVERSE_LOAD_CLIENT_ID to let dvload pick a\n` +
+            `  working app itself. (dvload normally detects a missing redirect\n` +
+            `  before opening the browser; reaching this timeout instead may\n` +
+            `  mean a proxy blocked that check, or something else went wrong\n` +
+            `  on the Entra page in your browser.)\n\n` +
             `  Set DVLOAD_AUTH_TIMEOUT_MS to wait longer.`
         )
       );
@@ -903,7 +1034,19 @@ async function acquireByDeviceCode(opts: DelegatedAuthOptions): Promise<Authenti
  */
 export async function loginDelegated(opts: DelegatedAuthOptions): Promise<AccountInfo> {
   const flow = opts.flow ?? defaultLoginFlow();
-  const chain = resolveClientIdChain(opts.clientId);
+  let chain = resolveClientIdChain(opts.clientId);
+  // A client id that already produced a working session for this environment
+  // beats the default ordering: re-signin (switching accounts, an expired
+  // refresh token) should not re-litigate which app registration works here.
+  // Explicit --client-id / DATAVERSE_LOAD_CLIENT_ID still win — a pinned id
+  // collapses the chain to one entry above, and we don't override that.
+  // Safe even when the stored id won via device code and this sign-in is
+  // interactive: the loopback preflight in acquireInteractive skips any
+  // client whose app has no http://localhost redirect before a browser opens.
+  if (!opts.clientId && !process.env.DATAVERSE_LOAD_CLIENT_ID) {
+    const stored = await getStoredClientId(opts.environmentUrl);
+    if (stored) chain = [stored, ...chain.filter((id) => id !== stored)];
+  }
   let lastErr: unknown;
 
   for (let i = 0; i < chain.length; i++) {
@@ -1046,8 +1189,35 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
         );
       }
       const account = await loginDelegated(effectiveOpts);
+      // The login may have walked the client-id chain and succeeded with a
+      // DIFFERENT client id than the app we warmed up with. MSAL keys its
+      // refresh tokens by client id, so acquireTokenSilent against the old
+      // app finds nothing and this request fails even though the sign-in
+      // just succeeded — classically "fixed" by restarting the process,
+      // because a fresh warmup reads the stored id. Rebuild the app with
+      // the client id (and tenant) the login actually recorded instead.
+      const usedClientId = await getStoredClientId(opts.environmentUrl);
+      const usedTenant = await getSecret(keys.delegatedTenant(opts.environmentUrl));
+      if (
+        (usedClientId && usedClientId !== effectiveOpts.clientId) ||
+        (usedTenant && usedTenant !== effectiveOpts.tenantId)
+      ) {
+        effectiveOpts = {
+          ...effectiveOpts,
+          ...(usedClientId && { clientId: usedClientId }),
+          ...(usedTenant && { tenantId: usedTenant }),
+        };
+        app = makePublicApp(effectiveOpts);
+      }
       cachedAccount = await app.getTokenCache().getAccountByHomeId(account.homeAccountId);
-      result = await app.acquireTokenSilent({ account: cachedAccount!, scopes });
+      if (!cachedAccount) {
+        throw new Error(
+          `Signed in, but the token cache has no entry for the account — the ` +
+            `cache write may have failed. Delete ~/.dvload/msal-cache-* and ` +
+            `run \`dvload login --env ${opts.environmentUrl}\` again.`
+        );
+      }
+      result = await app.acquireTokenSilent({ account: cachedAccount, scopes });
     }
     if (!result?.accessToken) throw new Error("Failed to acquire delegated access token.");
     return result.accessToken;

@@ -13,6 +13,7 @@ import {
   conditionalAccessHint,
   assertUsableAuthorizeUrl,
   announceLoginAttempt,
+  probeLoopbackRedirect,
 } from "./auth.js";
 
 const SHARED = "51f81489-12ee-4a9e-aaae-a2591f45987d";
@@ -67,6 +68,10 @@ describe("resolveClientIdChain", () => {
     });
   });
 
+  // The shared client leads for BOTH flows. Interactive is protected by the
+  // loopback preflight probe instead of a different chain order, so the
+  // no-admin-consent client keeps first shot everywhere it can work.
+
   it("an explicit --client-id wins and disables the fallback", () => {
     withEnv(clean, () => {
       assert.deepEqual(resolveClientIdChain("abc"), ["abc"]);
@@ -120,6 +125,18 @@ describe("shouldTryNextClient", () => {
 
   it("retries when public client flows are disabled", () => {
     assert.equal(shouldTryNextClient({ errorMessage: "AADSTS7000218" }), true);
+  });
+
+  it("retries on an interactive timeout — the answer is on an Entra page this client caused", () => {
+    assert.equal(shouldTryNextClient({ errorCode: "interactive_timeout" }), true);
+  });
+
+  it("retries when the loopback preflight says this client can't do browser sign-in", () => {
+    assert.equal(shouldTryNextClient({ errorCode: "no_loopback_redirect" }), true);
+  });
+
+  it("retries when the app has no reply address registered", () => {
+    assert.equal(shouldTryNextClient({ errorMessage: "AADSTS500113: no reply address" }), true);
   });
 
   it("does NOT retry when Conditional Access blocked the sign-in", () => {
@@ -358,5 +375,73 @@ describe("announceLoginAttempt", () => {
       const out = captureStderr(() => announceLoginAttempt(SHARED, "interactive"));
       assert.match(out, /Microsoft Dynamics CRM/);
     });
+  });
+});
+
+describe("probeLoopbackRedirect", () => {
+  // Minimal fetch stubs. The probe caches definitive answers per client id
+  // for the process lifetime, so every test uses its own fake client id.
+  const stubResponse = (status: number, headers: Record<string, string>, body = ""): Response =>
+    ({
+      status,
+      headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+      text: async () => body,
+    }) as unknown as Response;
+
+  const fetchReturning = (res: Response): typeof fetch => (async () => res) as unknown as typeof fetch;
+
+  it("a redirect back to localhost means the redirect URI is registered", async () => {
+    const res = stubResponse(302, {
+      location: "http://localhost:53682/?error=login_required&error_description=...",
+    });
+    assert.equal(await probeLoopbackRedirect("probe-usable", "organizations", fetchReturning(res)), "usable");
+  });
+
+  it("an error page naming AADSTS500113 means it is not registered", async () => {
+    const res = stubResponse(200, {}, "<html>AADSTS500113: No reply address is registered</html>");
+    assert.equal(
+      await probeLoopbackRedirect("probe-500113", "organizations", fetchReturning(res)),
+      "unusable"
+    );
+  });
+
+  it("an error page naming AADSTS900971 means it is not registered", async () => {
+    const res = stubResponse(200, {}, "AADSTS900971: No reply address provided.");
+    assert.equal(
+      await probeLoopbackRedirect("probe-900971", "organizations", fetchReturning(res)),
+      "unusable"
+    );
+  });
+
+  it("a redirect to somewhere other than localhost is inconclusive", async () => {
+    const res = stubResponse(302, { location: "https://login.live.com/elsewhere" });
+    assert.equal(
+      await probeLoopbackRedirect("probe-elsewhere", "organizations", fetchReturning(res)),
+      "inconclusive"
+    );
+  });
+
+  it("a network failure is inconclusive — never veto a sign-in over a flaky proxy", async () => {
+    const failing = (async () => {
+      throw new Error("getaddrinfo ENOTFOUND login.microsoftonline.com");
+    }) as unknown as typeof fetch;
+    assert.equal(await probeLoopbackRedirect("probe-offline", "organizations", failing), "inconclusive");
+  });
+
+  it("an unrecognisable error page is inconclusive, not unusable", async () => {
+    const res = stubResponse(400, {}, "<html>Something unrelated went wrong</html>");
+    assert.equal(
+      await probeLoopbackRedirect("probe-unknown", "organizations", fetchReturning(res)),
+      "inconclusive"
+    );
+  });
+
+  it("caches a definitive answer per client id", async () => {
+    const res = stubResponse(200, {}, "AADSTS500113");
+    assert.equal(await probeLoopbackRedirect("probe-cached", "organizations", fetchReturning(res)), "unusable");
+    const explode = (async () => {
+      throw new Error("should not be called — answer was cached");
+    }) as unknown as typeof fetch;
+    assert.equal(await probeLoopbackRedirect("probe-cached", "organizations", explode), "unusable");
   });
 });
