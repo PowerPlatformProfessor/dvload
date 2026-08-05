@@ -223,6 +223,27 @@ test("mappingsFromPqtAll uses real query names for array-shaped .pqt", async () 
   assert.deepEqual(Object.keys(all), ["Full_Match_Table"]);
 });
 
+test("workbook DataMashup Config/Package.xml stays in the shape Excel's QDEFF reader accepts", async () => {
+  // Verified against Excel via COM (2026-08): Excel deserializes this part
+  // strictly and rejects the entire mashup — workbook opens with an empty
+  // Queries pane — if the <Package> root carries a default xmlns (even the
+  // DataMashup namespace) or contains elements it doesn't model, such as
+  // <SafeCombine>. Both regressions shipped once; keep this pinned.
+  const xlsxBytes = await buildWorkbookWithQueries(archive(false));
+  const xlsx = await JSZip.loadAsync(xlsxBytes);
+  const item1 = await xlsx.file("customXml/item1.xml")!.async("string");
+  const b64 = /<DataMashup[^>]*>([\s\S]*?)<\/DataMashup>/.exec(item1)![1];
+  const blob = Buffer.from(b64, "base64");
+  const packageLen = blob.readUInt32LE(4);
+  const inner = await JSZip.loadAsync(blob.subarray(8, 8 + packageLen));
+  const pkgXml = await inner.file("Config/Package.xml")!.async("string");
+  assert.doesNotMatch(pkgXml, /xmlns="/, "Package root must be in the empty namespace");
+  assert.doesNotMatch(pkgXml, /SafeCombine/, "Excel rejects unknown elements like <SafeCombine>");
+  assert.match(pkgXml, /<Version>.*<\/Version>/);
+  assert.match(pkgXml, /<MinVersion>.*<\/MinVersion>/);
+  assert.match(pkgXml, /<Culture>.*<\/Culture>/);
+});
+
 test("EXPERIMENTAL: pqt → workbook → extract round-trips the M document", async () => {
   const a = archive(false);
   a.mashupDocument =

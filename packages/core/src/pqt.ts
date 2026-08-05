@@ -389,12 +389,16 @@ export function mappingFromPqt(
  */
 const NO_FOLDER_ENTRIES = { createFolders: false } as const;
 
+// Excel's QDEFF reader deserializes this part strictly: a default xmlns
+// (even the DataMashup namespace itself) or an element it doesn't model
+// (e.g. <SafeCombine>) makes it reject the whole mashup — the workbook then
+// opens with an empty Queries pane. Keep this exactly in the shape Excel
+// writes: root in the empty namespace, Version/MinVersion/Culture only.
 const QDEFF_PACKAGE_XML =
   '<?xml version="1.0" encoding="utf-8"?>' +
-  '<Package xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ' +
-  'xmlns="http://schemas.microsoft.com/DataMashup">' +
+  '<Package xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
   "<Version>2.72.5556.181</Version><MinVersion>2.21.0.0</MinVersion>" +
-  "<Culture>en-US</Culture><SafeCombine>true</SafeCombine></Package>";
+  "<Culture>en-US</Culture></Package>";
 
 const QDEFF_PERMISSIONS_XML =
   '<?xml version="1.0" encoding="utf-8"?>' +
