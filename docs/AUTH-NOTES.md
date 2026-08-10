@@ -149,6 +149,46 @@ Corollary worth remembering: an env var that silently removes a fallback path
 turns a recoverable failure into an unexplainable one. If a setting disables
 a retry chain, say so out loud at the point of use.
 
+### It came back, with no env var this time
+
+Same `AADSTS900971`, same app `e6828b0f…`, but `DATAVERSE_LOAD_CLIENT_ID` was
+unset in every scope. The chain was working exactly as designed: the shared
+client got the first browser window, that window timed out, `interactive_timeout`
+advanced the chain, and window two opened on dvload's own app — which cannot
+complete a browser sign-in. The user, already holding a valid session from an
+earlier successful sign-in, saw an error page and a connected pane at once.
+
+The preflight was supposed to make that second window impossible, and it was
+silently failing open. `probeLoopbackRedirect` looked for AADSTS50011/500113/900971
+in the response body — the codes that mean "bad reply address". Entra never
+sends them here: it validates the redirect URI **before** it evaluates
+`prompt=none`, so the page it renders complains about the missing session
+(`AADSTS50058`) and never mentions the redirect. No match, verdict
+`inconclusive`, browser opens.
+
+Measured against the live tenant, holding client id and tenant fixed and
+varying only `redirect_uri`:
+
+| client | redirect_uri | Entra |
+|---|---|---|
+| `51f81489…` | `http://localhost:53682` | 302 → localhost |
+| `51f81489…` | `http://localhost:61610` | 302 → localhost |
+| `51f81489…` | `https://not-registered.example/cb` | 200 page, AADSTS50058 |
+| `e6828b0f…` | `http://localhost:53682` | 200 page, AADSTS50058 |
+| `e6828b0f…` | `http://localhost:61610` | 200 page, AADSTS50058 |
+
+Row 3 is the control: same client that 302s for a good URI renders for a bad
+one. So the discriminator is the **shape of the response**, not the code in it
+— Entra redirects an error only to a target it has validated, and renders when
+it has nowhere safe to send it. The probe now reads shape, and treats a body
+with no AADSTS code at all as inconclusive so a proxy block page cannot
+condemn a working app.
+
+**Diagnostic rule, second edition:** when a check that exists to prevent a
+failure doesn't fire, test the check against a known-bad input before trusting
+it. This one had been returning "inconclusive" for every app it was pointed
+at, which is indistinguishable from "not consulted" and equally useless.
+
 ### Windows browser launching
 
 Unrelated to the above, but correct regardless: launch URLs with
@@ -161,9 +201,15 @@ block it in exactly the hardened tenants that force the browser flow).
 
 - `dvload login` defaults to the browser flow, falling back to device code
   only when no local browser exists (SSH, no `DISPLAY`).
-- The client-id chain is flow-agnostic: shared Microsoft client first, then
-  dvload's own app. Trying the shared client costs one clear error if it
-  can't do loopback, and saves an admin-consent round trip if it can.
+- The client-id chain starts shared Microsoft client, then dvload's own app.
+  For a **browser** sign-in the first entry is always attempted and a later
+  one joins only if `probeLoopbackRedirect` confirms it can receive the
+  redirect — which today leaves the shared client alone in the default
+  interactive chain. Device code needs no redirect URI, so both stay live
+  there.
+- Consequence, and the intended one: unless you set `DATAVERSE_LOAD_CLIENT_ID`
+  or `--client-id`, a browser sign-in uses the shared Microsoft client and
+  nothing else. No consent prompt, no second window, nothing to explain.
 - Chain advancement only happens on errors MSAL actually receives — i.e.
   token-endpoint errors. `/authorize`-time errors surface as a browser page
   and a 3-minute timeout, not as a retry.

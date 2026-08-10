@@ -73,9 +73,12 @@ vi.mock("@azure/msal-node", async (importOriginal) => {
   return { ...actual, PublicClientApplication: FakePublicClientApplication };
 });
 
-const { getTokenProvider, needsInteractiveSignIn, isInteractiveSignInRequired } = await import(
-  "./auth.js"
-);
+const {
+  getTokenProvider,
+  needsInteractiveSignIn,
+  isInteractiveSignInRequired,
+  clearLoopbackProbeCache,
+} = await import("./auth.js");
 const { InteractionRequiredAuthError, ClientAuthError, ServerError } = await import(
   "@azure/msal-node"
 );
@@ -83,11 +86,42 @@ const { InteractionRequiredAuthError, ClientAuthError, ServerError } = await imp
 /** What a refresh that failed on the wire looks like coming out of MSAL. */
 const networkFailure = (): Error => new ClientAuthError("network_error", "socket hang up");
 
+/**
+ * Stand in for Entra's answer to the loopback preflight.
+ *
+ * The shape is the signal, not the error code: a registered redirect URI gets
+ * a 302 back to localhost, an unregistered one gets a rendered page whose
+ * AADSTS code is about the missing session (50058) and says nothing about
+ * redirects at all. See probeLoopbackRedirect.
+ */
+function stubProbe(verdicts: Record<string, "usable" | "unusable">): void {
+  vi.stubGlobal("fetch", (url: string) => {
+    const clientId = new URL(url).searchParams.get("client_id") ?? "";
+    // Default unusable: a test that cares must say so.
+    return Promise.resolve(
+      (verdicts[clientId] ?? "unusable") === "usable"
+        ? {
+            status: 302,
+            headers: { get: () => "http://localhost:53682/?error=login_required" },
+            text: () => Promise.resolve(""),
+          }
+        : {
+            status: 200,
+            headers: { get: () => null },
+            text: () => Promise.resolve("AADSTS50058: Silent sign-in request was sent."),
+          }
+    );
+  });
+}
+
 beforeEach(() => {
   msal.silent = null;
   msal.interactive = null;
   msal.interactiveClientIds = [];
   msal.clientIdsConstructed = [];
+  // Verdicts are cached per client id for the process lifetime, and these
+  // tests need opposite answers for the same real app ids.
+  clearLoopbackProbeCache();
   // No test may touch the network. The one caller that would is the loopback
   // preflight in acquireInteractive; a rejected fetch is its "inconclusive"
   // verdict, which is also the real-world state that let this bug through —
@@ -220,7 +254,34 @@ test("silentOnly still reports a transient failure as transient", async () => {
   });
 });
 
+test("a fallback that cannot receive the redirect is never opened in a browser", async () => {
+  // The user-visible bug: the shared client's window timed out, the chain
+  // advanced, and a SECOND browser window opened on dvload's own app — which
+  // has no http://localhost reply URL, so it could only ever end in
+  // AADSTS900971 after a full sign-in. An unconfirmed fallback now costs
+  // nothing instead of costing someone their credentials twice.
+  stubProbe({ [SHARED]: "usable", [DVLOAD]: "unusable" });
+  msal.silent = () => Promise.reject(new InteractionRequiredAuthError("refresh_token_expired"));
+  msal.interactive = () => {
+    const e = new Error("No response from the browser after 180s.") as Error & { errorCode: string };
+    e.errorCode = "interactive_timeout";
+    return Promise.reject(e);
+  };
+
+  const getToken = await getTokenProvider({ environmentUrl: ENV, forceUser: true });
+  await getToken().catch(() => {});
+
+  assert.deepEqual(
+    msal.interactiveClientIds,
+    [SHARED],
+    "only the confirmed client may open a browser window"
+  );
+});
+
 test("the remembered client id does not pin the sign-in chain", async () => {
+  // Both apps can receive the redirect here, so the chain is genuinely two
+  // long and the ordering question this test exists for is the live one.
+  stubProbe({ [SHARED]: "usable", [DVLOAD]: "usable" });
   msal.silent = () => Promise.reject(new InteractionRequiredAuthError("refresh_token_expired"));
   // What the shared Microsoft client actually does in a browser: the loopback
   // listener hears nothing, because the app has no http://localhost redirect
