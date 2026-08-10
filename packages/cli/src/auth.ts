@@ -21,6 +21,7 @@
 import {
   PublicClientApplication,
   ConfidentialClientApplication,
+  InteractionRequiredAuthError,
   LogLevel,
   type Configuration,
   type AccountInfo,
@@ -235,6 +236,41 @@ export function shouldTryNextClient(err: unknown): boolean {
     return false;
   }
   return /invalid_client|unauthorized_client/.test(errorCode);
+}
+
+/**
+ * Does this `acquireTokenSilent` failure actually call for a new sign-in?
+ *
+ * MSAL answers this precisely, and the distinction matters far more than it
+ * looks. `InteractionRequiredAuthError` is raised for exactly the cases a user
+ * can fix by signing in — no_tokens_found, refresh_token_expired,
+ * interaction_required, consent_required, login_required, bad_token. Anything
+ * else (NetworkError, a 5xx ServerError, a proxy or DNS hiccup, a laptop
+ * resuming from sleep) is transient: the very next attempt usually succeeds.
+ *
+ * Treating the two alike is what produced a nasty, self-hiding bug. A single
+ * transient refresh failure escalated to a full interactive login; inside
+ * `dvload serve` that opens a browser and blocks the API request for the whole
+ * DVLOAD_AUTH_TIMEOUT_MS (180s by default) before failing — and then the user
+ * reloads the pane, the retry refreshes silently, and everything works again,
+ * so the evidence points at "flaky connection" rather than at this line.
+ */
+export function needsInteractiveSignIn(err: unknown): boolean {
+  return err instanceof InteractionRequiredAuthError;
+}
+
+/**
+ * Report a failed silent refresh as itself, rather than as whatever the
+ * interactive escalation went on to fail with.
+ */
+function refreshFailed(err: unknown, environmentUrl: string): Error {
+  const detail = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `Couldn't refresh the Dataverse access token for ${host(environmentUrl)}: ${detail}\n` +
+      `  Your sign-in is still valid — this is a transient failure (network, ` +
+      `proxy, or Entra itself), so retrying is usually enough. If it persists, ` +
+      `run \`dvload login --env ${environmentUrl}\`.`
+  );
 }
 
 /** Conditional Access blocks. Worth explaining rather than dumping raw MSAL output. */
@@ -955,7 +991,11 @@ async function acquireInteractive(opts: DelegatedAuthOptions): Promise<Authentic
             `  ${clientId}\n` +
             `  has no redirect URI matching http://localhost registered under\n` +
             `  Authentication -> Mobile and desktop applications. Register it\n` +
-            `  there, or unset DATAVERSE_LOAD_CLIENT_ID to let dvload pick a\n` +
+            `  there, or ${
+              process.env.DATAVERSE_LOAD_CLIENT_ID
+                ? "unset DATAVERSE_LOAD_CLIENT_ID"
+                : "let dvload try the next app in its chain"
+            } to let dvload pick a\n` +
             `  working app itself. (dvload normally detects a missing redirect\n` +
             `  before opening the browser; reaching this timeout instead may\n` +
             `  mean a proxy blocked that check, or something else went wrong\n` +
@@ -1177,7 +1217,11 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
     if (cachedAccount) {
       try {
         result = await app.acquireTokenSilent({ account: cachedAccount, scopes });
-      } catch {
+      } catch (e) {
+        // Only a genuine "you must sign in again" may escalate to a browser.
+        // A transient failure escalating here is what turned a momentary
+        // network blip into a 180s hang — see needsInteractiveSignIn.
+        if (!needsInteractiveSignIn(e)) throw refreshFailed(e, opts.environmentUrl);
         result = null;
       }
     }
@@ -1188,7 +1232,19 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
             `Run \`dvload login --env ${opts.environmentUrl}\` again.`
         );
       }
-      const account = await loginDelegated(effectiveOpts);
+      // Pass the CALLER's client id, not the remembered one. `effectiveOpts`
+      // carries the app id the last successful login used, because MSAL keys
+      // its cache by client id and silent acquisition has to match it — but
+      // handing that to loginDelegated as an *explicit* id pins the chain to
+      // that one app (see resolveClientIdChain) and disables the fallback
+      // that exists for precisely this case. It matters because a remembered
+      // client can be fine for silent refresh yet unable to sign in
+      // interactively at all: the shared Microsoft client has no
+      // http://localhost redirect URI, so once a device-code login stored it,
+      // every later escalation was pinned to an app that could only ever time
+      // out. loginDelegated already tries the stored id first and keeps the
+      // rest of the chain behind it.
+      const account = await loginDelegated({ ...effectiveOpts, clientId: opts.clientId });
       // The login may have walked the client-id chain and succeeded with a
       // DIFFERENT client id than the app we warmed up with. MSAL keys its
       // refresh tokens by client id, so acquireTokenSilent against the old
