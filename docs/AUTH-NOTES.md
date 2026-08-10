@@ -167,3 +167,33 @@ block it in exactly the hardened tenants that force the browser flow).
 - Chain advancement only happens on errors MSAL actually receives — i.e.
   token-endpoint errors. `/authorize`-time errors surface as a browser page
   and a 3-minute timeout, not as a retry.
+
+## Who is allowed to open a browser
+
+Escalating from "no valid token" to "sign in" is a decision about the *user's
+attention*, so it belongs to whoever the user is currently talking to.
+
+- **The CLI escalates.** `dvload run`, `dvload dataflows`, `dvload login`:
+  someone typed a command and is watching a terminal, so prompting is the
+  whole point. `--non-interactive` opts out.
+- **The sidecar never escalates.** Every provider built in
+  `commands/serve.ts` is `silentOnly`. The requests reaching those routes are
+  background work the pane issued by itself — listing dataflows on first
+  render, refreshing a token mid-import — and a browser window appearing over
+  Excel in response to that is not something anyone asked for. Worse, the
+  HTTP response stays blocked until sign-in completes or
+  `DVLOAD_AUTH_TIMEOUT_MS` (3 min) expires.
+
+A dead session therefore becomes `InteractiveSignInRequiredError` in
+`auth.ts`, which the sidecar translates to **401 with `{ needsSignIn: true }`**.
+The pane raises that as `SignInRequiredError` and points at its Sign in
+button, which calls `POST /api/signin` — the one route that does open a
+browser, because a click is what got it there.
+
+This composes with the earlier rule about *what* may escalate.
+`needsInteractiveSignIn()` decides whether a failed refresh is a dead session
+at all — only MSAL's `InteractionRequiredAuthError` counts, so a network blip
+leaves as `refreshFailed` and stays a 500. `InteractiveSignInRequiredError`
+then decides who acts on the ones that are genuine: the CLI prompts, the
+sidecar reports. Both halves are exercised in
+`packages/cli/src/auth-refresh.test.ts`.

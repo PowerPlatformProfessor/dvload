@@ -73,7 +73,9 @@ vi.mock("@azure/msal-node", async (importOriginal) => {
   return { ...actual, PublicClientApplication: FakePublicClientApplication };
 });
 
-const { getTokenProvider, needsInteractiveSignIn } = await import("./auth.js");
+const { getTokenProvider, needsInteractiveSignIn, isInteractiveSignInRequired } = await import(
+  "./auth.js"
+);
 const { InteractionRequiredAuthError, ClientAuthError, ServerError } = await import(
   "@azure/msal-node"
 );
@@ -171,6 +173,51 @@ test("a genuinely expired session still escalates to sign-in", async () => {
   const getToken = await getTokenProvider({ environmentUrl: ENV, forceUser: true });
   assert.equal(await getToken(), "fresh");
   assert.deepEqual(msal.interactiveClientIds, [SHARED], "an expired refresh token must prompt");
+});
+
+/* -------------------------------------------------------------------------- */
+/* silentOnly                                                                  */
+/* -------------------------------------------------------------------------- */
+//
+// The tests above settle when escalation is *warranted*. These settle who is
+// allowed to carry it out. A genuinely expired session is the CLI's cue to
+// prompt — and the sidecar's cue to say "sign-in required" and stop, because
+// its callers are background HTTP requests, and a browser opening over Excel
+// in the middle of one is not something the user asked for.
+
+test("silentOnly reports a dead session instead of signing in", async () => {
+  msal.silent = () => Promise.reject(new InteractionRequiredAuthError("refresh_token_expired"));
+  msal.interactive = () =>
+    Promise.resolve({ accessToken: "should-never-happen", account: { homeAccountId: "h" } });
+
+  const getToken = await getTokenProvider({ environmentUrl: ENV, forceUser: true, silentOnly: true });
+
+  await assert.rejects(getToken(), (e: Error) => {
+    // The type is the contract — serve.ts turns exactly this into a 401 with
+    // needsSignIn, and the pane turns that into its Sign in button.
+    assert.ok(isInteractiveSignInRequired(e), `expected a sign-in-required error, got ${e.name}`);
+    assert.match(e.message, new RegExp(ENV));
+    return true;
+  });
+
+  assert.deepEqual(
+    msal.interactiveClientIds,
+    [],
+    "silentOnly must never open a browser, even for a genuinely expired session"
+  );
+});
+
+test("silentOnly still reports a transient failure as transient", async () => {
+  // Both refusals end in "no token", and conflating them would have the pane
+  // telling someone to sign in because their VPN reconnected.
+  msal.silent = () => Promise.reject(networkFailure());
+  const getToken = await getTokenProvider({ environmentUrl: ENV, forceUser: true, silentOnly: true });
+
+  await assert.rejects(getToken(), (e: Error) => {
+    assert.equal(isInteractiveSignInRequired(e), false);
+    assert.match(e.message, /transient/);
+    return true;
+  });
 });
 
 test("the remembered client id does not pin the sign-in chain", async () => {

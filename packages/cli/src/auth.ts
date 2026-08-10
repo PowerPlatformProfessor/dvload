@@ -382,7 +382,12 @@ export interface AppOnlyCredentials {
 export interface TokenProviderOptions extends DelegatedAuthOptions {
   /** If true, always use delegated even when app-only is configured. */
   forceUser?: boolean;
-  /** If true, don't fall back to interactive login on cache miss. */
+  /**
+   * If true, never escalate to an interactive login. A dead session throws
+   * `InteractiveSignInRequiredError` instead, leaving the decision to prompt
+   * with the caller. Required for anything servicing a request the user did
+   * not personally initiate — see packages/cli/src/commands/serve.ts.
+   */
   silentOnly?: boolean;
 }
 
@@ -1178,6 +1183,55 @@ export async function logoutDelegated(env?: string): Promise<void> {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Interactive sign-in required                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The cached session can no longer produce a token, and only the user standing
+ * in front of Entra can fix that.
+ *
+ * This is a distinct type rather than a plain Error because the right response
+ * to it depends entirely on who is asking. A terminal command should escalate
+ * — prompting is exactly what `dvload run` is there to do. The sidecar serving
+ * the task pane must not: its callers are background HTTP requests the user
+ * never initiated, and opening a system browser from them means a sign-in
+ * window appearing over Excel while somebody is doing something else. It needs
+ * to answer "sign-in required" and let the pane's own Sign in button be the
+ * thing that opens a browser. Neither caller can tell the two situations apart
+ * from an error message, so the type carries the distinction.
+ *
+ * Pairs with `needsInteractiveSignIn`, which answers whether a failure is one
+ * of these at all. This type answers who gets to do something about it.
+ */
+export class InteractiveSignInRequiredError extends Error {
+  readonly errorCode = "interactive_signin_required";
+  readonly environmentUrl: string;
+
+  constructor(environmentUrl: string, message?: string, cause?: unknown) {
+    super(
+      message ??
+        `No valid cached token for ${environmentUrl}. ` +
+          `Run \`dvload login --env ${environmentUrl}\` again.`
+    );
+    this.name = "InteractiveSignInRequiredError";
+    this.environmentUrl = environmentUrl;
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * True for `InteractiveSignInRequiredError`, including across a module
+ * boundary where `instanceof` can fail (bundled vs. imported copies of this
+ * file), which is why the code is on the instance as well.
+ */
+export function isInteractiveSignInRequired(err: unknown): boolean {
+  return (
+    err instanceof InteractiveSignInRequiredError ||
+    (err as { errorCode?: string } | null)?.errorCode === "interactive_signin_required"
+  );
+}
+
 function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string> {
   let app: PublicClientApplication | null = null;
   let cachedAccount: AccountInfo | null = null;
@@ -1214,6 +1268,12 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
     if (!app) throw new Error("Unreachable: MSAL app not initialized");
 
     let result: AuthenticationResult | null = null;
+    /**
+     * The MSAL "you must sign in again" that ended the silent refresh, kept as
+     * the cause of whatever gets thrown or prompted for next. Transient
+     * failures never reach here — they leave through `refreshFailed` below.
+     */
+    let silentError: Error | undefined;
     if (cachedAccount) {
       try {
         result = await app.acquireTokenSilent({ account: cachedAccount, scopes });
@@ -1222,15 +1282,13 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
         // A transient failure escalating here is what turned a momentary
         // network blip into a 180s hang — see needsInteractiveSignIn.
         if (!needsInteractiveSignIn(e)) throw refreshFailed(e, opts.environmentUrl);
+        silentError = e instanceof Error ? e : undefined;
         result = null;
       }
     }
     if (!result) {
       if (opts.silentOnly) {
-        throw new Error(
-          `No valid cached token for ${opts.environmentUrl}. ` +
-            `Run \`dvload login --env ${opts.environmentUrl}\` again.`
-        );
+        throw new InteractiveSignInRequiredError(opts.environmentUrl, undefined, silentError);
       }
       // Pass the CALLER's client id, not the remembered one. `effectiveOpts`
       // carries the app id the last successful login used, because MSAL keys

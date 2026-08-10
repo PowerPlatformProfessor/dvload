@@ -70,6 +70,7 @@ import {
   listDelegatedSessions,
   describeClient,
   isSharedMicrosoftClient,
+  isInteractiveSignInRequired,
   openInBrowser,
 } from "../auth.js";
 
@@ -323,14 +324,55 @@ type Thunk = () => Promise<string>;
 
 const providers = new Map<string, Promise<Thunk>>();
 
+/**
+ * Every provider this server builds is silent-only. Nothing here may open a
+ * browser.
+ *
+ * The default provider escalates to `loginDelegated()` when the delegated
+ * session is dead, which is right in a terminal and wrong in a sidecar. The
+ * requests that reach these routes are background work — the pane listing
+ * dataflows on first render, a token refresh in the middle of a long import —
+ * and escalating means a system browser opening over Excel, plus an HTTP
+ * response blocked until the user finishes signing in or DVLOAD_AUTH_TIMEOUT_MS
+ * expires. The user did not ask for either.
+ *
+ * The pane already has an explicit sign-in path, `/api/signin`, driven by a
+ * button. That is the only route allowed to put someone in front of Entra; a
+ * dead session on any other route becomes a 401 with `needsSignIn: true` and
+ * the pane asks.
+ */
 function providerFor(environmentUrl: string, forceUser: boolean): Promise<Thunk> {
   const key = `${environmentUrl}|${forceUser ? "user" : "auto"}`;
   let p = providers.get(key);
   if (!p) {
-    p = getTokenProvider({ environmentUrl, forceUser });
+    p = getTokenProvider({ environmentUrl, forceUser, silentOnly: true });
     providers.set(key, p);
   }
   return p;
+}
+
+/**
+ * The body of a 401 for a request that failed only because nobody is signed in.
+ *
+ * `needsSignIn` is the machine-readable half: the pane branches on it to show
+ * a "click Sign in" prompt rather than treating the failure as an error it
+ * should report. The message is the human half, and it names the environment
+ * because sign-in is per environment — being signed in to one org says nothing
+ * about another.
+ */
+function signInRequiredBody(environmentUrl: unknown): { error: string; needsSignIn: true } {
+  let where = "this environment";
+  if (typeof environmentUrl === "string" && environmentUrl) {
+    try {
+      where = new URL(environmentUrl).host;
+    } catch {
+      where = environmentUrl;
+    }
+  }
+  return {
+    error: `Not signed in to ${where}, or the session has expired. Click Sign in to continue.`,
+    needsSignIn: true,
+  };
 }
 
 /**
@@ -703,11 +745,23 @@ export async function startServer(opts: ServeOptions): Promise<RunningServer> {
     }
 
     if (isApi) {
+      // Read outside the handler call so the error path can still name the
+      // environment the request was about.
+      let body: Record<string, unknown> = {};
       try {
-        const result = await handleApi(urlPath, await readJsonBody(req));
+        body = await readJsonBody(req);
+        const result = await handleApi(urlPath, body);
         if (result === null) sendJson(res, 404, { error: `Unknown route ${urlPath}` });
         else sendJson(res, 200, result);
       } catch (e) {
+        // Not a failure: an expired session is an ordinary thing to find, and
+        // the pane's answer is to offer the Sign in button. Reported as 401
+        // rather than 500 so it is distinguishable without reading the text.
+        if (isInteractiveSignInRequired(e)) {
+          console.log(kleur.yellow(`  ${urlPath}: sign-in required`));
+          sendJson(res, 401, signInRequiredBody(body.environmentUrl));
+          return;
+        }
         const message = e instanceof Error ? e.message : String(e);
         console.error(kleur.red(`  ${urlPath} failed: ${message}`));
         sendJson(res, 500, { error: message });

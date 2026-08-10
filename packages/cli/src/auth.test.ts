@@ -14,6 +14,8 @@ import {
   assertUsableAuthorizeUrl,
   announceLoginAttempt,
   probeLoopbackRedirect,
+  isInteractiveSignInRequired,
+  InteractiveSignInRequiredError,
 } from "./auth.js";
 
 const SHARED = "51f81489-12ee-4a9e-aaae-a2591f45987d";
@@ -286,6 +288,36 @@ describe("conditionalAccessHint", () => {
 
   it("names the actual error code", () => {
     assert.match(conditionalAccessHint({ errorMessage: "AADSTS53001" }, "interactive"), /AADSTS53001/);
+  });
+});
+
+// `needsInteractiveSignIn` is covered in auth-refresh.test.ts, next to the
+// provider behaviour that depends on it.
+
+describe("isInteractiveSignInRequired", () => {
+  it("recognises the error the silent-only providers throw", () => {
+    assert.equal(
+      isInteractiveSignInRequired(new InteractiveSignInRequiredError("https://org.crm.dynamics.com")),
+      true
+    );
+  });
+
+  it("recognises it by code alone, across a module boundary", () => {
+    // The sidecar and the CLI can end up holding different copies of this
+    // module (bundled vs. imported), which breaks `instanceof`.
+    assert.equal(isInteractiveSignInRequired({ errorCode: "interactive_signin_required" }), true);
+  });
+
+  it("does not fire on an ordinary failure", () => {
+    assert.equal(isInteractiveSignInRequired(new Error("socket hang up")), false);
+    assert.equal(isInteractiveSignInRequired(null), false);
+  });
+
+  it("names the environment and how to sign in again", () => {
+    const err = new InteractiveSignInRequiredError("https://contoso.crm.dynamics.com");
+    assert.match(err.message, /contoso\.crm\.dynamics\.com/);
+    assert.match(err.message, /dvload login/);
+    assert.equal(err.environmentUrl, "https://contoso.crm.dynamics.com");
   });
 });
 
