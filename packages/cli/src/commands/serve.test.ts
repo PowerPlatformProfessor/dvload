@@ -33,7 +33,11 @@ const getTokenProvider = vi.hoisted(() =>
   vi.fn(
     // Typed to match the real export so a signature change breaks this test
     // rather than silently making the assertions below meaningless.
-    (_opts: { environmentUrl: string; forceUser?: boolean }): Promise<() => Promise<string>> =>
+    (_opts: {
+      environmentUrl: string;
+      forceUser?: boolean;
+      silentOnly?: boolean;
+    }): Promise<() => Promise<string>> =>
       Promise.resolve(() => Promise.reject(new Error("no cached token in tests")))
   )
 );
@@ -57,6 +61,7 @@ vi.mock("../auth.js", async (importOriginal) => {
 });
 
 import { startServer, resolveWebSource, checkUi, type RunningServer } from "./serve.js";
+import { InteractiveSignInRequiredError } from "../auth.js";
 
 let server: RunningServer;
 let webRoot: string;
@@ -354,11 +359,78 @@ test("the UI is delegated-only and a request cannot ask for app-only", async () 
   assert.deepEqual(getTokenProvider.mock.calls[0][0], {
     environmentUrl: "https://example.invalid",
     forceUser: true,
+    // Non-negotiable for every provider this server builds — see the
+    // sign-in tests below for what it buys.
+    silentOnly: true,
   });
 
   // And the failure surfaces as a server error, not as a token.
   assert.equal(res.status, 500);
   assert.doesNotMatch(res.body, /client_credentials|clientSecret/i);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Sign-in required                                                            */
+/* -------------------------------------------------------------------------- */
+//
+// The behaviour these pin down is a *refusal to act*. The sidecar can sign the
+// user in — it owns the MSAL cache and can launch a browser — and for requests
+// like these it must not, because they are background work the pane issued on
+// its own. Escalating means a sign-in window appearing over Excel and an HTTP
+// response blocked until somebody notices it. The routes answer 401 instead,
+// and the pane's Sign in button stays the only thing that opens a browser.
+
+test("an expired session on /api/token is a 401 the pane can act on", async () => {
+  getTokenProvider.mockResolvedValueOnce(() =>
+    Promise.reject(new InteractiveSignInRequiredError("https://expired.invalid"))
+  );
+
+  const res = await call("POST", "/api/token", {
+    headers: ours(),
+    body: JSON.stringify({ environmentUrl: "https://expired.invalid" }),
+  });
+
+  assert.equal(res.status, 401);
+  const body = JSON.parse(res.body) as { error: string; needsSignIn?: boolean };
+  // The machine-readable half. Without it the pane can only pattern-match on
+  // message text to tell "sign in" apart from "something broke".
+  assert.equal(body.needsSignIn, true);
+  // Sign-in is per environment, so which one is the useful part of the message.
+  assert.match(body.error, /expired\.invalid/);
+  // And no token leaked out on the way.
+  assert.doesNotMatch(res.body, /accessToken/);
+});
+
+test("an expired session on a data route is a 401, not a 500", async () => {
+  // /api/dataflows reaches auth through DataverseClient rather than directly,
+  // so it is worth proving the classification survives that trip.
+  getTokenProvider.mockResolvedValueOnce(() =>
+    Promise.reject(new InteractiveSignInRequiredError("https://stale.invalid"))
+  );
+
+  const res = await call("POST", "/api/dataflows", {
+    headers: ours(),
+    body: JSON.stringify({ environmentUrl: "https://stale.invalid" }),
+  });
+
+  assert.equal(res.status, 401);
+  assert.equal((JSON.parse(res.body) as { needsSignIn?: boolean }).needsSignIn, true);
+});
+
+test("an ordinary token failure stays a 500 with no sign-in flag", async () => {
+  // The distinction has to cut both ways: a transient failure that the user
+  // cannot fix by signing in must not tell them to sign in.
+  getTokenProvider.mockResolvedValueOnce(() =>
+    Promise.reject(new Error("getaddrinfo ENOTFOUND login.microsoftonline.com"))
+  );
+
+  const res = await call("POST", "/api/token", {
+    headers: ours(),
+    body: JSON.stringify({ environmentUrl: "https://offline.invalid" }),
+  });
+
+  assert.equal(res.status, 500);
+  assert.equal((JSON.parse(res.body) as { needsSignIn?: boolean }).needsSignIn, undefined);
 });
 
 test("account status reports delegated regardless of stored app-only creds", async () => {

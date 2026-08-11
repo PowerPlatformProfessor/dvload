@@ -77,17 +77,25 @@ const DVLOAD_CLIENT_ID = "e6828b0f-9fde-43f8-85d0-602660d498bb";
  * tenant (it's how XrmToolBox and the XRM Tooling SDK connect), so it always
  * gets the first shot; dvload's own app covers tenants that block it.
  *
- * The interactive catch, RESOLVED empirically (see docs/AUTH-NOTES.md): the
- * shared client has no `http://localhost` redirect URI registered, so a
+ * Which way round the loopback problem actually falls, verified against a real
+ * tenant (see docs/AUTH-NOTES.md): the SHARED client accepts
+ * `http://localhost:<port>` and completes a browser sign-in fine. It is
+ * DVLOAD'S OWN app that has no `http://localhost` reply URL registered, so a
  * browser sign-in with it ends in AADSTS900971 ("No reply address") — which
- * Entra renders in the browser only AFTER the user signs in, leaving the
- * loopback listener hanging until our timeout. Rather than dropping the
- * shared client from the interactive chain (and losing its no-consent
- * superpower wherever it might work), `acquireInteractive` runs
- * `probeLoopbackRedirect()` first: a sub-second, browserless question to
- * Entra — "is http://localhost registered for this app?". An unusable client
- * is skipped in seconds instead of minutes, and if Microsoft ever registers
- * localhost on the shared app, dvload starts using it with no code change.
+ * Entra renders in the browser only AFTER the user has signed in, leaving the
+ * loopback listener hanging until our timeout. (An earlier version of this
+ * comment had the two apps the wrong way round.)
+ *
+ * That is why this list is not the whole story for a browser sign-in.
+ * `loginDelegated` keeps the first entry and admits a later one only when
+ * `probeLoopbackRedirect()` — a sub-second, browserless question to Entra —
+ * confirms it can receive the redirect. In practice that leaves the shared
+ * client alone in the default interactive chain, which is the intent: no
+ * consent prompt, no second browser window, nothing to explain. Register
+ * `http://localhost` on dvload's own app and it rejoins automatically, with
+ * no code change.
+ *
+ * Device code needs no redirect URI at all, so both entries stay live there.
  *
  * An explicit `--client-id` or `DATAVERSE_LOAD_CLIENT_ID` disables the
  * chain entirely — if you named an app, that's the app we use. Set
@@ -382,7 +390,12 @@ export interface AppOnlyCredentials {
 export interface TokenProviderOptions extends DelegatedAuthOptions {
   /** If true, always use delegated even when app-only is configured. */
   forceUser?: boolean;
-  /** If true, don't fall back to interactive login on cache miss. */
+  /**
+   * If true, never escalate to an interactive login. A dead session throws
+   * `InteractiveSignInRequiredError` instead, leaving the decision to prompt
+   * with the caller. Required for anything servicing a request the user did
+   * not personally initiate — see packages/cli/src/commands/serve.ts.
+   */
   silentOnly?: boolean;
 }
 
@@ -679,12 +692,30 @@ export function assertUsableAuthorizeUrl(url: string): void {
 
 export type LoopbackProbeResult = "usable" | "unusable" | "inconclusive";
 
-/** The AADSTS family Entra uses for "that redirect_uri isn't registered". */
-const AADSTS_BAD_REDIRECT = /AADSTS(?:50011|500113|900971)\b/;
+/**
+ * Proof that Entra itself answered, rather than something in the middle.
+ *
+ * A captive portal or a corporate proxy's block page is also "a 200 that
+ * isn't a redirect", and must not be read as a verdict about an app
+ * registration. Any AADSTS code in the body is the cheapest available
+ * evidence that the response came from where we think it did.
+ */
+const AADSTS_ANY = /AADSTS\d+/;
 
 /** Redirect-URI registration is a property of the app, not the tenant, so
  *  one definitive answer per client id holds for the process lifetime. */
 const loopbackProbeCache = new Map<string, LoopbackProbeResult>();
+
+/**
+ * Forget every cached probe verdict.
+ *
+ * A test seam. The cache is keyed by client id and deliberately lives for the
+ * whole process, which is right in production and makes two tests that need
+ * opposite verdicts for the *same* app id impossible to write otherwise.
+ */
+export function clearLoopbackProbeCache(): void {
+  loopbackProbeCache.clear();
+}
 
 /**
  * Ask Entra — without a browser, a user, or credentials — whether `clientId`
@@ -699,14 +730,30 @@ const loopbackProbeCache = new Map<string, LoopbackProbeResult>();
  * request made before anything opens.
  *
  * How: GET the /authorize endpoint with `prompt=none`, which forbids Entra
- * from showing UI, forcing an immediate verdict:
- *   - 3xx to our redirect_uri (carrying `error=login_required` or similar):
- *     the redirect URI is registered — the error is about the missing
- *     session, and rides on a redirect Entra only issues to VALID targets.
- *   - An error page mentioning AADSTS50011/500113/900971: not registered.
- *   - Anything else (network failure, proxy, unexpected shape): inconclusive
- *     — callers proceed with the normal browser attempt rather than letting
- *     a flaky network veto a sign-in that might work.
+ * from showing UI, forcing an immediate verdict. The signal is the SHAPE of
+ * the response, not the error code in it:
+ *   - 3xx to our redirect_uri: registered. Entra only redirects errors to a
+ *     target it has validated, so the redirect itself is the proof — whatever
+ *     `error=` it carries is about the missing session, not the URI.
+ *   - A rendered page (any non-redirect from Entra below 500): rejected. When
+ *     Entra will not accept the redirect_uri it has nowhere safe to send the
+ *     answer, so it puts it on screen instead.
+ *   - Network failure, a 5xx, or a response with no AADSTS code in it (a proxy
+ *     block page): inconclusive — callers proceed rather than letting a flaky
+ *     link veto a sign-in that might work.
+ *
+ * That last distinction is the whole correctness of this function, and it was
+ * originally got wrong: the check looked for AADSTS50011/500113/900971 in the
+ * body, the three codes that literally mean "bad reply address". But Entra
+ * validates the redirect URI BEFORE it evaluates `prompt=none`, so the page it
+ * renders says AADSTS50058 ("no user is signed in") and never mentions the
+ * redirect at all. Every unusable app read as "inconclusive", the browser
+ * opened anyway, and the user paid for a full sign-in to be told AADSTS900971
+ * — the exact failure this preflight exists to prevent.
+ *
+ * Verified against a real tenant, holding client id and tenant fixed and
+ * varying only the redirect_uri: a registered one 302s, an unregistered one
+ * renders AADSTS50058. See docs/AUTH-NOTES.md.
  */
 export async function probeLoopbackRedirect(
   clientId: string,
@@ -732,9 +779,13 @@ export async function probeLoopbackRedirect(
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location") ?? "";
       if (location.startsWith("http://localhost")) result = "usable";
-    } else {
+    } else if (res.status < 500) {
+      // Entra declined to redirect. That is the verdict — but only once the
+      // body proves Entra is who answered, so a proxy's block page can't
+      // condemn a perfectly good app registration. A 5xx is Entra having a
+      // bad day and says nothing about this app either way.
       const body = await res.text();
-      if (AADSTS_BAD_REDIRECT.test(body)) result = "unusable";
+      if (AADSTS_ANY.test(body)) result = "unusable";
     }
   } catch {
     // Timeout, DNS failure, corporate proxy tampering — all inconclusive.
@@ -1066,9 +1117,15 @@ async function acquireByDeviceCode(opts: DelegatedAuthOptions): Promise<Authenti
  * Interactive login.
  *
  * Walks the client-id chain from `resolveClientIdChain()`: the shared
- * Microsoft Dataverse client first (no consent prompt in any tenant), then
- * dvload's own app if that client is unusable here. Only client-level
+ * Microsoft Dataverse client first (no consent prompt in any tenant), then any
+ * fallback that has been confirmed usable for this flow. Only client-level
  * failures advance the chain — see `shouldTryNextClient`.
+ *
+ * For a browser sign-in that makes the shared client the effective default and
+ * the only one most people ever see: an explicit `--client-id` or
+ * `DATAVERSE_LOAD_CLIENT_ID` replaces it, a previous working sign-in for this
+ * environment takes precedence over it, and a fallback only joins the chain if
+ * the preflight says it can actually receive the redirect.
  *
  * Uses the browser flow by default; see `defaultLoginFlow()`.
  */
@@ -1087,6 +1144,44 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
     const stored = await getStoredClientId(opts.environmentUrl);
     if (stored) chain = [stored, ...chain.filter((id) => id !== stored)];
   }
+
+  // A fallback has to EARN its turn at the browser.
+  //
+  // The chain exists to survive a tenant that blocks the preferred client. But
+  // a fallback that cannot receive the redirect is worse than no fallback at
+  // all: it costs the user a second browser window, a second full sign-in, and
+  // then AADSTS900971 on a page dvload never sees — after which the loopback
+  // listener waits out the whole timeout, because nothing ever comes back.
+  // That is precisely what dvload's own app does today; it has no
+  // http://localhost reply URL registered.
+  //
+  // So the first client is always attempted — it is the one that was asked
+  // for, by DATAVERSE_LOAD_CLIENT_ID, --client-id, a previous working sign-in,
+  // or the shared-Microsoft default — and every client after it is attempted
+  // only where the preflight positively confirms it can receive a loopback
+  // redirect. Note the asymmetry with `acquireInteractive`: there an
+  // inconclusive probe means "go ahead", because vetoing the client the user
+  // asked for on a failed network check would strand them. Here it means
+  // "skip", because spending somebody's credentials on an unproven fallback
+  // buys nothing that failing immediately doesn't.
+  //
+  // Device code needs no redirect URI, so its chain is left intact.
+  if (flow === "interactive" && chain.length > 1) {
+    const tenant = opts.tenantId ?? "organizations";
+    const usable = [chain[0]];
+    for (const candidate of chain.slice(1)) {
+      if ((await probeLoopbackRedirect(candidate, tenant)) === "usable") {
+        usable.push(candidate);
+      } else if (process.env.DATAVERSE_LOAD_DEBUG === "1") {
+        process.stderr.write(
+          `[auth] not offering ${describeClient(candidate)} as a fallback: ` +
+            `no confirmed http://localhost redirect URI\n`
+        );
+      }
+    }
+    chain = usable;
+  }
+
   let lastErr: unknown;
 
   for (let i = 0; i < chain.length; i++) {
@@ -1103,7 +1198,24 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
         process.stderr.write(conditionalAccessHint(e, flow));
         throw e;
       }
-      if (!next || !shouldTryNextClient(e)) throw e;
+      if (!next) {
+        // Worth saying why the chain stopped here rather than letting the
+        // failure look like dvload simply gave up. A fallback that could not
+        // be confirmed was left out on purpose — see the filter above.
+        if (shouldTryNextClient(e)) {
+          process.stderr.write(
+            `\nSign-in with ${describeClient(clientId)} failed` +
+              `${aadstsCode(e) ? ` (${aadstsCode(e)})` : ""}, and there is no\n` +
+              `  other app to try. dvload only falls back to an app it has\n` +
+              `  confirmed can receive a browser redirect, and none of the\n` +
+              `  alternatives qualified.\n\n` +
+              `  To use a specific app registration, set DATAVERSE_LOAD_CLIENT_ID\n` +
+              `  or pass --client-id.\n\n`
+          );
+        }
+        throw e;
+      }
+      if (!shouldTryNextClient(e)) throw e;
       process.stderr.write(
         `\nSign-in with ${describeClient(clientId)} failed` +
           `${aadstsCode(e) ? ` (${aadstsCode(e)})` : ""}.\n` +
@@ -1178,6 +1290,55 @@ export async function logoutDelegated(env?: string): Promise<void> {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Interactive sign-in required                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The cached session can no longer produce a token, and only the user standing
+ * in front of Entra can fix that.
+ *
+ * This is a distinct type rather than a plain Error because the right response
+ * to it depends entirely on who is asking. A terminal command should escalate
+ * — prompting is exactly what `dvload run` is there to do. The sidecar serving
+ * the task pane must not: its callers are background HTTP requests the user
+ * never initiated, and opening a system browser from them means a sign-in
+ * window appearing over Excel while somebody is doing something else. It needs
+ * to answer "sign-in required" and let the pane's own Sign in button be the
+ * thing that opens a browser. Neither caller can tell the two situations apart
+ * from an error message, so the type carries the distinction.
+ *
+ * Pairs with `needsInteractiveSignIn`, which answers whether a failure is one
+ * of these at all. This type answers who gets to do something about it.
+ */
+export class InteractiveSignInRequiredError extends Error {
+  readonly errorCode = "interactive_signin_required";
+  readonly environmentUrl: string;
+
+  constructor(environmentUrl: string, message?: string, cause?: unknown) {
+    super(
+      message ??
+        `No valid cached token for ${environmentUrl}. ` +
+          `Run \`dvload login --env ${environmentUrl}\` again.`
+    );
+    this.name = "InteractiveSignInRequiredError";
+    this.environmentUrl = environmentUrl;
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * True for `InteractiveSignInRequiredError`, including across a module
+ * boundary where `instanceof` can fail (bundled vs. imported copies of this
+ * file), which is why the code is on the instance as well.
+ */
+export function isInteractiveSignInRequired(err: unknown): boolean {
+  return (
+    err instanceof InteractiveSignInRequiredError ||
+    (err as { errorCode?: string } | null)?.errorCode === "interactive_signin_required"
+  );
+}
+
 function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string> {
   let app: PublicClientApplication | null = null;
   let cachedAccount: AccountInfo | null = null;
@@ -1214,6 +1375,12 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
     if (!app) throw new Error("Unreachable: MSAL app not initialized");
 
     let result: AuthenticationResult | null = null;
+    /**
+     * The MSAL "you must sign in again" that ended the silent refresh, kept as
+     * the cause of whatever gets thrown or prompted for next. Transient
+     * failures never reach here — they leave through `refreshFailed` below.
+     */
+    let silentError: Error | undefined;
     if (cachedAccount) {
       try {
         result = await app.acquireTokenSilent({ account: cachedAccount, scopes });
@@ -1222,15 +1389,13 @@ function makeDelegatedProvider(opts: TokenProviderOptions): () => Promise<string
         // A transient failure escalating here is what turned a momentary
         // network blip into a 180s hang — see needsInteractiveSignIn.
         if (!needsInteractiveSignIn(e)) throw refreshFailed(e, opts.environmentUrl);
+        silentError = e instanceof Error ? e : undefined;
         result = null;
       }
     }
     if (!result) {
       if (opts.silentOnly) {
-        throw new Error(
-          `No valid cached token for ${opts.environmentUrl}. ` +
-            `Run \`dvload login --env ${opts.environmentUrl}\` again.`
-        );
+        throw new InteractiveSignInRequiredError(opts.environmentUrl, undefined, silentError);
       }
       // Pass the CALLER's client id, not the remembered one. `effectiveOpts`
       // carries the app id the last successful login used, because MSAL keys
