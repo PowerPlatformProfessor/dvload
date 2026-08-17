@@ -40,8 +40,8 @@ jobs:
     # platform-agnostic; Windows-specific paths are covered by ci.yml.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -52,8 +52,8 @@ jobs:
     needs: verify
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22 # SEA is more mature on 22 than 20
           cache: npm
@@ -86,7 +86,7 @@ jobs:
         # pipeline stays runnable. The smoke test then reports the exe as
         # unsigned rather than letting it pass silently.
         if: ${{ vars.AZURE_SIGNING_ENDPOINT != '' }}
-        uses: azure/trusted-signing-action@v0
+        uses: azure/trusted-signing-action@v2
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -135,7 +135,7 @@ jobs:
           "sha256=$h" >> $env:GITHUB_OUTPUT
           Write-Host "sha256: $h"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dvload-exe
           path: |
@@ -144,7 +144,7 @@ jobs:
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             packages/cli/build/dvload.exe
