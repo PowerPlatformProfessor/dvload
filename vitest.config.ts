@@ -71,6 +71,13 @@ const COVERAGE_EXCLUDE = [
   "packages/addin/src/excel.ts",
   "packages/addin/src/host.ts",
   "packages/addin/src/telemetry.ts",
+
+  // Power Platform ToolBox host integration: these two exist to talk to the
+  // live toolboxAPI bridge (settings IPC, native dialogs, connection events).
+  // The gateway adapter (pptb-client.ts) is pure bridge-in/gateway-out and
+  // stays IN coverage — it is unit-tested with a fake bridge.
+  "packages/addin/src/pptb/host-pptb.ts",
+  "packages/addin/src/pptb/pptb-bridge.ts",
 ];
 
 export default defineConfig({

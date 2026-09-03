@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    // webpack consumes the transpiled output; stray .d.ts files in dist would
+    // ship inside the published tool package.
+    "declaration": false,
+    "declarationMap": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["office-js"]
+  },
+  "include": ["src/**/*", "../addin/src/**/*"],
+  "exclude": ["../addin/src/**/*.test.ts"]
+}

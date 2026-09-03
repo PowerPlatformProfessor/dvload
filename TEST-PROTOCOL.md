@@ -267,6 +267,29 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 | 19.16 | Cross-tab handoff | On the Dataflows tab, "Use mapping" (or a dataflow import with *Mapping files* only) lands on the Import tab with the mapping loaded; "Use all" lands on the Run plan tab with the new steps. A dataflow imported *with* a workbook stays put so the Download button is still reachable | |
 | 19.17 | Status is shared | Start an import, switch to the Run plan tab while it runs | Progress and the final summary stay visible from every tab | |
 
+## 19b. Power Platform ToolBox tool
+
+Build `packages/pptb` (`npm run build --workspace=@dvload/pptb`), then load
+`packages/pptb/dist` via PPTB → Settings → Show Debug Menu → Debug → Load
+Local Tool. Needs a ToolBox connection to the sandbox environment.
+
+| # | Test | Expected | Result |
+|---|---|---|---|
+| 19b.1 | Bootstrap | Tool opens with NO account/environment steps; connection bar shows the ToolBox connection's name + environment host. No requests to localhost:44321 | |
+| 19b.2 | No connection | With no active connection, the tool shows an actionable "pick a connection" message, not a blank page | |
+| 19b.3 | Entities + metadata | Entity list, solution filter, attribute pickers, lookup targets and option-set labels all load through the bridge | |
+| 19b.4 | Insert run | 1k insert from an added `.xlsx` completes with correct counts (expect slower than the add-in — per-record bridge calls, no $batch) | |
+| 19b.5 | Upsert emulation | Upsert on an alternate key: existing rows count `updated`, missing rows count `created`; re-run counts all `updated` (or `unchanged` with skipUnchanged) | |
+| 19b.6 | skip-if-exists | Existing rows count `skipped` (emulated 412), not failed | |
+| 19b.7 | Refused options | With "Bypass plugins" or "Run as user" set (including via a loaded mapping), the run refuses up front with a message naming the add-in/CLI, and the controls stay editable so the option can be cleared in place | |
+| 19b.8 | Create table | "Create new table from source" creates table + columns; key columns produce the "alternate key NOT created" note instead of a key | |
+| 19b.9 | Saves via dialog | Save mapping / failed rows / run log / dataflow workbook each open the ToolBox save dialog and write the file; cancelling the dialog keeps pending downloads on offer | |
+| 19b.10 | Dataflow import | Dataflows list and import (mapping + workbook) with no sidecar running | |
+| 19b.11 | Persistence | Mapping and run plan survive closing and reopening the tool (ToolBox settings store) | |
+| 19b.12 | Connection switch | Switching the ToolBox connection reloads the tool against the new environment; no stale entity/metadata from the old one | |
+| 19b.13 | Portability | A `.dvmap.json` saved here runs unmodified via `dvload run`, and vice versa | |
+| 19b.14 | Sync paging | (Record behavior) sync mode against a >5k-row target: verify the removal pass sees all rows, or note the bridge's paging limit in the result | |
+
 ## 20. CSV / TSV input
 
 | # | Test | Steps | Expected | Result |

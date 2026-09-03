@@ -124,6 +124,17 @@ plus a SHA-256 to the release. Full detail in
 - Add a CHANGELOG.md with at least the v0.1.0 entry.
 - Add a LICENSE file. MIT is the path of least resistance.
 
+## 6b. Power Platform ToolBox tool (only if shipping it this release)
+
+- Decide the npm scope: `packages/pptb/tool.package.json` publishes as
+  `@dvload/pptb` — the scope must exist and be yours, or rename first.
+- Version in `tool.package.json` bumped in step with the release.
+- `npm run build --workspace=@dvload/pptb`, load `dist/` through the ToolBox
+  Debug menu, and run TEST-PROTOCOL §19b against a sandbox.
+- Publish from `packages/pptb/dist` (NOT the workspace root — the workspace
+  package.json is the private build harness), then submit/refresh the entry
+  on the powerplatformtoolbox.com Tool Submission Form.
+
 ## 7. Sanity checks before tagging v1
 
 - `dvload whoami --env <prod-env>` names a client id you recognise.

@@ -1,9 +1,8 @@
 # dvload
 
 Map an Excel table (typically a Power Query output) to a Microsoft Dataverse
-entity, then load via the OData Web API. Comes in three front ends that
-share one engine — and, since the UI moved behind a local sidecar, one
-auth stack:
+entity, then load via the OData Web API. Comes in four front ends that
+share one engine:
 
 - **Excel add-in** — task pane UI for picking a table, picking a Dataverse
   entity, building a column mapping, and running an import on demand.
@@ -12,6 +11,15 @@ auth stack:
 - **CLI** — runs a saved `.dvmap.json` against an `.xlsx` file from the
   command line. Pairs with Windows Task Scheduler for daily unattended
   imports.
+- **Power Platform ToolBox tool** — the same interface inside
+  [PPTB](https://www.powerplatformtoolbox.com/), running against the
+  ToolBox's active connection. No sidecar and no sign-in of its own; a few
+  options are unavailable there — see
+  [packages/pptb/README.md](./packages/pptb/README.md).
+
+The add-in and browser UI share one auth stack behind a local sidecar
+(`dvload serve`); the ToolBox tool instead routes every Dataverse call
+through the ToolBox's own bridge, which never exposes tokens to tools.
 
 The mapping is portable: build it in whichever UI suits, save it next to
 your workbook, and have the CLI run it nightly.
@@ -28,7 +36,8 @@ dvload/
 ├── packages/
 │   ├── core/      # mapping engine, OData client, xlsx reader (shared)
 │   ├── cli/       # Node CLI: dvload run|login|serve|gui|validate|schedule
-│   └── addin/     # the web UI: task pane in Excel, page in the browser
+│   ├── addin/     # the web UI: task pane in Excel, page in the browser or PPTB
+│   └── pptb/      # Power Platform ToolBox packaging of that UI
 ├── docs/          # architecture, data formats, JSON schemas, auth notes
 ├── packaging/     # distribution manifests (Scoop, winget notes)
 ├── tests/         # seeded test-data generators and fixtures

@@ -34,7 +34,7 @@
 //      runs), cross-linked by RelatedDataflowId. Listing without filtering
 //      shows each dataflow twice under an identical name.
 
-import type { DataverseClient } from "./dataverse.js";
+import type { DataverseGateway } from "./dataverse.js";
 import type { ColumnMapping, Mapping } from "./mapping.js";
 import { SCHEMA_VERSION } from "./mapping.js";
 import {
@@ -136,7 +136,7 @@ export interface ListDataflowsOptions {
  * one-off page load rather than something worth optimising around.
  */
 export async function listDataflows(
-  client: DataverseClient,
+  client: DataverseGateway,
   opts: ListDataflowsOptions = {}
 ): Promise<DataflowSummary[]> {
   const rows = (await client.queryAll(
@@ -156,7 +156,7 @@ export async function listDataflows(
 }
 
 /** Fetch one dataflow, including its M document. */
-export async function getDataflow(client: DataverseClient, dataflowId: string): Promise<DataflowDetail> {
+export async function getDataflow(client: DataverseGateway, dataflowId: string): Promise<DataflowDetail> {
   const rows = (await client.queryAll(
     `msdyn_dataflows?$select=${DATAFLOW_FULL_SELECT}` + `&$filter=msdyn_dataflowid eq ${dataflowId}`
   )) as DataflowRow[];
@@ -171,7 +171,7 @@ export async function getDataflow(client: DataverseClient, dataflowId: string): 
  * silent pick — importing the wrong dataflow is worse than a failed command.
  */
 export async function findDataflowByName(
-  client: DataverseClient,
+  client: DataverseGateway,
   name: string,
   opts: ListDataflowsOptions = {}
 ): Promise<DataflowSummary> {
@@ -528,7 +528,7 @@ async function resolveConflictMode(
  * instance. Building mappings for a multi-query dataflow otherwise re-reads
  * the entity list once per query and once per lookup column.
  */
-export function createMetadataResolver(client: DataverseClient): DataflowMetadataResolver {
+export function createMetadataResolver(client: DataverseGateway): DataflowMetadataResolver {
   let entityList: Promise<Map<string, string>> | undefined;
   const keyCache = new Map<string, Promise<Array<{ LogicalName: string; KeyAttributes: string[] }>>>();
   const lookupCache = new Map<string, Promise<string | undefined>>();

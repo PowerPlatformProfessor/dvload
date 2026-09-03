@@ -212,7 +212,70 @@ interface OptionMetadata {
   Label?: { UserLocalizedLabel?: { Label?: string } };
 }
 
-export class DataverseClient {
+/**
+ * What the engine and the front ends need from "a Dataverse connection",
+ * independent of how the bytes get there. `DataverseClient` is the direct
+ * OData/HTTP implementation; the Power Platform ToolBox front end supplies an
+ * adapter over the ToolBox's `window.dataverseAPI` bridge instead, because
+ * PPTB deliberately never hands tools an access token.
+ *
+ * Implementations must preserve the semantics documented on DataverseClient's
+ * methods — in particular batch()'s per-operation independence and result
+ * statuses (201 create / 200|204 update / 412 for a matched If-None-Match),
+ * which loadRows' accounting is built on.
+ */
+export interface DataverseGateway {
+  getEntityDefinition(logicalName: string): Promise<Record<string, unknown>>;
+  listEntities(): Promise<
+    Array<{ LogicalName: string; EntitySetName: string; DisplayName: string; MetadataId: string }>
+  >;
+  listSolutions(): Promise<Array<{ id: string; uniqueName: string; friendlyName: string }>>;
+  getSolutionEntityIds(solutionId: string): Promise<Set<string>>;
+  getLookupTargets(entityLogicalName: string, attrLogicalName: string): Promise<string[]>;
+  getLookupNavigationProperty(
+    entityLogicalName: string,
+    attrLogicalName: string,
+    referencedEntityLogicalName: string
+  ): Promise<string | undefined>;
+  getEntityKeys(
+    entityLogicalName: string
+  ): Promise<Array<{ LogicalName: string; KeyAttributes: string[] }>>;
+  createEntity(payload: Record<string, unknown>): Promise<void>;
+  createAttribute(entityLogicalName: string, payload: Record<string, unknown>): Promise<void>;
+  createEntityKey(entityLogicalName: string, payload: Record<string, unknown>): Promise<void>;
+  create(
+    entitySet: string,
+    body: Record<string, unknown>,
+    extraHeaders?: Record<string, string>,
+    primaryIdAttribute?: string
+  ): Promise<CreateResult>;
+  queryAll(path: string): Promise<Array<Record<string, unknown>>>;
+  getEntitySetInfo(
+    entitySetName: string
+  ): Promise<{ logicalName: string; primaryIdAttribute: string; primaryNameAttribute?: string }>;
+  resolveManyByText(
+    entitySet: string,
+    attribute: string,
+    values: unknown[],
+    primaryIdAttribute: string
+  ): Promise<Map<string, string[]>>;
+  getRecord(
+    entitySet: string,
+    keyExpr: string,
+    select: string[]
+  ): Promise<Record<string, unknown> | null>;
+  getOptionSetLabels(
+    entityLogicalName: string,
+    attrLogicalName: string
+  ): Promise<Record<string, number>>;
+  resolveByKey(entitySet: string, keyAttribute: string, value: unknown): Promise<string | null>;
+  batch(
+    operations: BatchOperation[],
+    opts?: { idempotent?: boolean }
+  ): Promise<BatchResultItem[]>;
+}
+
+export class DataverseClient implements DataverseGateway {
   private readonly base: string;
   private readonly fetchFn: typeof fetch;
   private readonly entitySetInfoCache = new Map<

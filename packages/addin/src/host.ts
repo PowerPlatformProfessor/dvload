@@ -1,25 +1,34 @@
 // Host adapter: the only place that knows whether the UI is running inside
-// Excel or in an ordinary browser tab.
+// Excel, in an ordinary browser tab, or in the Power Platform ToolBox.
 //
-// Both front ends are the same bundle served by `dvload serve`. Everything
-// downstream of this module — entity picker, mapping builder, validation,
-// the run itself — operates on table metadata and rows, not on Excel, so it
-// needs no idea which host it is in. Four things genuinely differ:
+// All front ends are the same bundle. Everything downstream of this module —
+// entity picker, mapping builder, validation, the run itself — operates on
+// table metadata and rows, not on Excel, so it needs no idea which host it
+// is in. Six things genuinely differ:
 //
 //   settings      Office stores them in the workbook (so a mapping travels
-//                 with the file); a browser has no workbook, so localStorage.
+//                 with the file); a browser has no workbook, so localStorage;
+//                 the ToolBox has its own per-tool settings store.
 //   workbook      Office can enumerate and read the open workbook's tables;
-//                 a browser can only read a file the user picks.
-//   openExternal  Office hosts often swallow target=_blank.
+//                 the others can only read a file the user picks.
+//   openExternal  Office hosts often swallow target=_blank; the ToolBox
+//                 routes through the connection's browser profile.
+//   saveFile      A browser downloads; a sandboxed ToolBox iframe cannot
+//                 (no allow-downloads), so it uses the native save dialog.
+//   copyText      navigator.clipboard is not available in every sandbox.
 //   ready         Office.onReady vs DOMContentLoaded.
 //
 // Keeping the split this narrow is deliberate: if it starts to sprawl, that
 // is the signal to extract a proper packages/ui, not to widen this file.
+//
+// The PPTB host lives in ./pptb/host-pptb.ts; detection here only checks for
+// the ToolBox bridge globals, which no other host injects.
 
 import type { SourceRow } from "@dvload/core";
 import { listTables, readTable, getWorkbookBytes, type TableInfo } from "./excel.js";
+import { pptbGlobals } from "./pptb/pptb-bridge.js";
 
-export type HostKind = "office" | "browser";
+export type HostKind = "office" | "browser" | "pptb";
 
 export interface SettingsStore {
   get(key: string): string | null;
@@ -46,6 +55,32 @@ export interface Host {
   readonly settings: SettingsStore;
   readonly workbook: WorkbookSource;
   openExternal(url: string): void;
+  /**
+   * Hand the user a generated file. Browser-ish hosts download it; the
+   * ToolBox opens a native save dialog. Resolves false when the user
+   * cancelled a dialog (downloads can't be cancelled, so always true there).
+   */
+  saveFile(content: Uint8Array | ArrayBuffer | string, filename: string, mime: string): Promise<boolean>;
+  copyText(text: string): Promise<void>;
+}
+
+/** Shared by the Office and browser hosts: an <a download> click. */
+function downloadFile(content: Uint8Array | ArrayBuffer | string, filename: string, mime: string): void {
+  const blob = new Blob(
+    // Copy a view's bytes into a standalone ArrayBuffer that Blob accepts.
+    [
+      content instanceof Uint8Array
+        ? (content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength) as ArrayBuffer)
+        : content,
+    ],
+    { type: mime }
+  );
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -83,6 +118,13 @@ const officeHost: Host = {
     }
     window.open(url, "_blank", "noopener");
   },
+
+  saveFile: async (content, filename, mime) => {
+    downloadFile(content, filename, mime);
+    return true;
+  },
+
+  copyText: (text) => navigator.clipboard.writeText(text),
 };
 
 /* -------------------------------------------------------------------------- */
@@ -140,6 +182,13 @@ const browserHost: Host = {
   openExternal: (url) => {
     window.open(url, "_blank", "noopener");
   },
+
+  saveFile: async (content, filename, mime) => {
+    downloadFile(content, filename, mime);
+    return true;
+  },
+
+  copyText: (text) => navigator.clipboard.writeText(text),
 };
 
 /* -------------------------------------------------------------------------- */
@@ -159,6 +208,14 @@ let current: Host | null = null;
  * much worse failure than falling back to browser mode.
  */
 async function detect(): Promise<Host> {
+  // The ToolBox bridge globals are injected before any tool script runs and
+  // exist nowhere else, so their presence is decisive — and checked first,
+  // because office.js is absent in PPTB and its CDN is CSP-blocked anyway.
+  if (pptbGlobals()) {
+    const { createPptbHost } = await import("./pptb/host-pptb.js");
+    return createPptbHost(pptbGlobals()!.toolbox);
+  }
+
   const officeGlobal = (globalThis as { Office?: { onReady?: unknown } }).Office;
   if (!officeGlobal || typeof officeGlobal.onReady !== "function") return browserHost;
 

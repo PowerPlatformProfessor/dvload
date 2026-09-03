@@ -47,10 +47,12 @@
 - `--max-attempts <n>` on `run` / `run-all` (default 5) to ride out longer outages; retries are counted in the run summary and the `--json` output, and each dropped request is recorded in the run log with status 0 and its error code
 - Runs that fail with no HTTP response are called out in the summary as a connectivity problem rather than bad data
 
-### Web UI (Excel task pane, or `dvload gui` in a browser)
+### Web UI (Excel task pane, `dvload gui` in a browser, or a Power Platform ToolBox tool)
 
-One bundle, served from loopback by `dvload serve`. The Office-vs-browser
-differences are confined to `packages/addin/src/host.ts`.
+One bundle. In Excel and the browser it is served from loopback by
+`dvload serve`; in the ToolBox it ships as its own tool package
+(`packages/pptb`, built from the same sources). The host differences are
+confined to `packages/addin/src/host.ts` (plus `src/pptb/` for the ToolBox).
 
 - Sign-in delegated to `dvload serve`, so no Entra app registration and no admin consent — the UI carries no client id and never talks to Entra
 - **Three tabs**: *Import* (account, environment, source, target, column mapping, import options, Run import), *Run plan* (multi-step `.dvplan.json` editor, with a step count on the tab), *Dataflows* (read a dataflow out of the environment, plus the `.pqt` import/export tools). Status, progress and the run log sit below the tabs, so a running import keeps reporting whichever tab you're on
@@ -79,6 +81,27 @@ differences are confined to `packages/addin/src/host.ts`.
 - Persists the last mapping per workbook in Office Settings store; fields the pane has no control for (`createdAt`, `logDir`) survive a load → save round-trip instead of being silently dropped
 - Saved environment profiles in `localStorage`
 - Dev-mode banner — warns when using the fallback Microsoft PowerApps client ID
+
+### Power Platform ToolBox tool (`packages/pptb`)
+
+The same pane packaged as a [PPTB](https://www.powerplatformtoolbox.com/)
+tool. PPTB never gives tools an access token, so the engine runs on a
+`DataverseGateway` adapter over the ToolBox's `window.dataverseAPI` bridge
+(`packages/addin/src/pptb/pptb-client.ts`) instead of the direct OData client.
+
+- Uses the ToolBox's **active connection** — the account/environment steps
+  disappear, and a connection switch reloads the tool
+- `$batch` and PATCH-upserts are **emulated** through per-record bridge calls
+  (per-row accounting semantics preserved; slower, and upserts are
+  probe-then-write rather than atomic)
+- Dataflow import runs fully in-page (core's conversion against the bridge)
+- Saves (`.dvmap.json`, failed rows, run logs, workbooks) go through the
+  ToolBox's native save dialog — a sandboxed iframe can't trigger downloads
+- Not available there: **bypass plugins**, **run as user** (both are
+  per-request headers the bridge can't send) and **alternate-key creation**
+  in create-table mode; sync mode's removal listing depends on the bridge
+  paging past 5,000 rows (truncation removes fewer, never more)
+- Build/debug/publish flow in [packages/pptb/README.md](./packages/pptb/README.md)
 
 ---
 

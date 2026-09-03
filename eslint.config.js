@@ -33,7 +33,11 @@ export default tseslint.config(
       "**/coverage/**",
       "**/reports/**",
       ".stryker-tmp/**",
+      // Claude Code worktrees: full checkouts of the repo that would
+      // otherwise be linted (and fail) as if they were source.
+      ".claude/**",
       "packages/addin/webpack.config.js",
+      "packages/pptb/webpack.config.js",
       "packages/addin/dist/**",
       "tests/dummy-data/**",
       "**/*.d.ts",
@@ -54,6 +58,7 @@ export default tseslint.config(
           "packages/core/tsconfig.test.json",
           "packages/cli/tsconfig.test.json",
           "packages/addin/tsconfig.test.json",
+          "packages/pptb/tsconfig.json",
         ],
         tsconfigRootDir: import.meta.dirname,
       },

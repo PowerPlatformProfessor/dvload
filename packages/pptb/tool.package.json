@@ -1,0 +1,27 @@
+{
+  "name": "@dvload/pptb",
+  "version": "0.1.0",
+  "displayName": "dvload — Excel to Dataverse",
+  "description": "Map an Excel table or CSV (typically a Power Query output) to a Dataverse table and load it: column mapping with suggestions, lookup resolution by GUID / alternate key / text, insert / upsert / skip / sync modes, dry runs, resumable imports, and dataflow import.",
+  "main": "index.html",
+  "icon": "icon.svg",
+  "features": {
+    "minAPI": "1.2.0"
+  },
+  "author": "PowerPlatformProfessor",
+  "keywords": [
+    "powerplatform",
+    "dataverse",
+    "toolbox",
+    "excel",
+    "import",
+    "data-load",
+    "upsert",
+    "csv"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PowerPlatformProfessor/dvload"
+  },
+  "license": "MIT"
+}

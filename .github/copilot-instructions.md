@@ -2,10 +2,11 @@
 
 ## What this repo is
 
-A monorepo (npm workspaces) with three packages:
+A monorepo (npm workspaces) with four packages:
 - **`packages/core`** — shared mapping engine, OData client, xlsx reader. Compiled with `tsc`.
 - **`packages/cli`** — `dvload` CLI (login, run, validate, schedule, pqt). Compiled with `tsc`.
-- **`packages/addin`** — Office.js Excel task-pane add-in. Bundled with webpack.
+- **`packages/addin`** — the web UI (Office.js Excel task pane, browser page, and the Power Platform ToolBox host code under `src/pptb/`). Bundled with webpack.
+- **`packages/pptb`** — Power Platform ToolBox tool packaging of that UI: manifest + its own webpack build. No behaviour of its own.
 
 **Read [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) before changing the engine.**
 It documents the `loadRows` pipeline, the invariants that aren't obvious from the
@@ -68,7 +69,14 @@ CheckNetIsolation LoopbackExempt -a -n="microsoft.win32webviewhost_cw5n1h2txyewy
 - `window.fetch` is rebound to `window` in `initAuth()` to avoid the
   "Illegal invocation" error the Office WebView throws on a bare `fetch`.
 - `packages/addin/src/host.ts` is the only module that knows whether it's
-  running in Excel or a browser. Don't reach for `Office.*` outside it.
+  running in Excel, a browser, or the Power Platform ToolBox. Don't reach for
+  `Office.*` (or `window.toolboxAPI` / `window.dataverseAPI` — those stay in
+  `src/pptb/`) outside it.
+- In the ToolBox there is no sidecar and no token: every Dataverse call goes
+  through `PptbDataverseClient` (`src/pptb/pptb-client.ts`), a
+  `DataverseGateway` adapter over the ToolBox bridge. New engine/client
+  surface must be added to the `DataverseGateway` interface and implemented
+  (or explicitly refused) in that adapter.
 
 ## Known quirks
 

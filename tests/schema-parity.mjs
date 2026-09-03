@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -49,7 +49,8 @@ try {
 
 let core;
 try {
-  core = await import(path.join(ROOT, "packages/core/dist/index.js"));
+  // pathToFileURL: a bare Windows absolute path is not a valid ESM specifier.
+  core = await import(pathToFileURL(path.join(ROOT, "packages/core/dist/index.js")).href);
 } catch {
   console.error("packages/core/dist not found. Run: npm run build");
   process.exit(2);

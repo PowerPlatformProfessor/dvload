@@ -44,7 +44,12 @@ import {
   type RunPlan,
   type RunPlanStep,
   type RunPlanStepOverrides,
+  type DataverseGateway,
   RUN_PLAN_SCHEMA_VERSION,
+  listDataflows,
+  getDataflow,
+  mappingsFromDataflow,
+  createMetadataResolver,
 } from "@dvload/core";
 import {
   initAuth,
@@ -58,6 +63,9 @@ import {
   type KnownAccount,
 } from "../auth.js";
 import { initHost, host, type TableInfo } from "../host.js";
+import { pptbGlobals } from "../pptb/pptb-bridge.js";
+import { PptbDataverseClient } from "../pptb/pptb-client.js";
+import type { PptbHost } from "../pptb/host-pptb.js";
 import { suggestMappings, suggestionsToMappings } from "../suggest.js";
 import { enhanceSelect } from "../combobox.js";
 import {
@@ -377,11 +385,7 @@ async function applyOptionLabels(attrLogical: string, i: number): Promise<void> 
   let map = optionLabelsCache.get(cacheKey);
   if (!map) {
     try {
-      const client = new DataverseClient({
-        environmentUrl: state.environmentUrl,
-        getToken: makeTokenProvider(state.environmentUrl),
-      });
-      map = await client.getOptionSetLabels(state.entityLogicalName, attrLogical);
+      map = await dvClient().getOptionSetLabels(state.entityLogicalName, attrLogical);
       optionLabelsCache.set(cacheKey, map);
     } catch {
       return; // stick with whatever optionMap the user typed
@@ -407,13 +411,23 @@ async function applyOptionLabels(attrLogical: string, i: number): Promise<void> 
  * controls that all fail on click is worse than one honest message.
  */
 async function bootstrap(): Promise<void> {
-  await initHost();
-
   try {
-    await initAuth();
+    await initHost();
   } catch (e) {
+    // Host construction can fail in the ToolBox (no active connection).
     renderFatal(e);
     return;
+  }
+
+  // In the ToolBox there is no sidecar: the connection — and every Dataverse
+  // call — comes from the ToolBox bridge, so the whole sign-in stack is moot.
+  if (!isPptb()) {
+    try {
+      await initAuth();
+    } catch (e) {
+      renderFatal(e);
+      return;
+    }
   }
 
   applyHostCapabilities();
@@ -430,11 +444,15 @@ async function bootstrap(): Promise<void> {
 
   initTabs();
 
-  // Step 1 before step 2: who this machine is already signed in as is
-  // knowable without an environment, and it decides what the environment
-  // pickers can say about themselves.
-  await refreshKnownAccounts();
-  await refreshAccountUI();
+  if (isPptb()) {
+    initPptbSession();
+  } else {
+    // Step 1 before step 2: who this machine is already signed in as is
+    // knowable without an environment, and it decides what the environment
+    // pickers can say about themselves.
+    await refreshKnownAccounts();
+    await refreshAccountUI();
+  }
 
   // Cached session plus a known environment: load entities and restore the
   // saved entity selection without making the user click Sign in.
@@ -503,16 +521,16 @@ async function bootstrap(): Promise<void> {
   el<HTMLButtonElement>("importPqt").addEventListener("click", onImportPqt);
   el<HTMLButtonElement>("extractPqt").addEventListener("click", () => void onExtractPqt());
   el<HTMLButtonElement>("pqtUse").addEventListener("click", onUsePqtMapping);
-  el<HTMLButtonElement>("pqtUseAll").addEventListener("click", onUseAllPqtMappings);
+  el<HTMLButtonElement>("pqtUseAll").addEventListener("click", () => void onUseAllPqtMappings());
   el<HTMLButtonElement>("pqtCopyM").addEventListener("click", onCopyPqtM);
   el<HTMLButtonElement>("pqtExport").addEventListener("click", onExportPqt);
   el<HTMLButtonElement>("pqtToXlsx").addEventListener("click", () => void onPqtToXlsx());
-  el<HTMLButtonElement>("pqtXlsxDownload").addEventListener("click", onPqtXlsxDownload);
+  el<HTMLButtonElement>("pqtXlsxDownload").addEventListener("click", () => void onPqtXlsxDownload());
   el<HTMLButtonElement>("pqtXlsxDismiss").addEventListener("click", clearPendingXlsx);
   el<HTMLButtonElement>("dataflowRefresh").addEventListener("click", () => void loadDataflows());
   el<HTMLSelectElement>("dataflow").addEventListener("change", onDataflowChange);
   el<HTMLButtonElement>("dataflowImport").addEventListener("click", () => void onDataflowImport());
-  el<HTMLButtonElement>("dataflowDownload").addEventListener("click", onDataflowDownload);
+  el<HTMLButtonElement>("dataflowDownload").addEventListener("click", () => void onDataflowDownload());
   el<HTMLButtonElement>("dataflowDismiss").addEventListener("click", clearDataflowResult);
   el<HTMLButtonElement>("planAddStep").addEventListener("click", onPlanAddStep);
   el<HTMLButtonElement>("planFromCurrent").addEventListener("click", onPlanAddFromCurrent);
@@ -589,6 +607,18 @@ void bootstrap();
  * path instead of the fallback.
  */
 function applyHostCapabilities(): void {
+  if (isPptb()) {
+    // Per-operation request headers can't cross the ToolBox bridge, so these
+    // two options can't run here. The controls stay ENABLED — a mapping
+    // loaded with them set must be clearable in place — and onRun refuses
+    // with the same explanation before anything is written.
+    const reason =
+      "Not available in the Power Platform ToolBox — it needs per-request " +
+      "headers the ToolBox bridge can't send. Use the Excel add-in or the CLI.";
+    el<HTMLInputElement>("bypassCustomLogic").parentElement!.title = reason;
+    el<HTMLInputElement>("impersonateUser").title = reason;
+  }
+
   if (host().workbook.canReadOpenWorkbook) return;
 
   // Without a workbook the table picker starts empty, so adding files is the
@@ -604,6 +634,43 @@ function applyHostCapabilities(): void {
 
   const pick = el<HTMLButtonElement>("pickFile");
   pick.classList.remove("secondary");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Power Platform ToolBox session                                              */
+/* -------------------------------------------------------------------------- */
+
+function isPptb(): boolean {
+  return host().kind === "pptb";
+}
+
+/**
+ * The ToolBox already holds a connection, so steps 1 and 2 (account,
+ * environment) have nothing to ask: the connection dictates both, including
+ * over whatever environment a restored mapping named — records go where the
+ * user is connected, and the connection bar at the bottom says where that is.
+ */
+function initPptbSession(): void {
+  const conn = (host() as PptbHost).connection;
+  state.environmentUrl = conn.url.replace(/\/+$/, "");
+  state.account = { username: conn.name };
+  state.username = conn.name;
+  el<HTMLInputElement>("env").value = state.environmentUrl;
+
+  // The sign-in / environment pickers drive the sidecar; hide them wholesale.
+  el<HTMLDivElement>("sidecarAuthBlock").style.display = "none";
+  renderConnBar();
+  el<HTMLSelectElement>("entity").disabled = false;
+
+  // Elsewhere this rides on the account refresh, which pptb skips.
+  void loadDataflows();
+
+  // A connection switch re-points every metadata cache at a different
+  // environment. A reload is the reliable reset — bootstrap re-reads the
+  // active connection and the persisted mapping.
+  pptbGlobals()?.toolbox.events.on((_event, payload) => {
+    if (payload?.event === "connection:updated") window.location.reload();
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -789,7 +856,7 @@ function onUsePqtMapping(): void {
  * downloaded as its own .dvmap.json and added to the run plan, which is the
  * only way to actually execute more than one of them.
  */
-function onUseAllPqtMappings(): void {
+async function onUseAllPqtMappings(): Promise<void> {
   if (!currentPqt) return;
   try {
     const mappings = mappingsFromPqtAll(currentPqt, { environmentUrl: state.environmentUrl || "" });
@@ -800,10 +867,7 @@ function onUseAllPqtMappings(): void {
     }
     for (const name of names) {
       const stem = name.replace(/\W+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "mapping";
-      downloadBlob(
-        new Blob([serializeMapping(mappings[name])], { type: "application/json" }),
-        `${stem}.dvmap.json`
-      );
+      await host().saveFile(serializeMapping(mappings[name]), `${stem}.dvmap.json`, "application/json");
       if (!state.planSteps.some((s) => s.id === stem)) {
         state.planSteps.push({
           id: stem,
@@ -853,9 +917,10 @@ async function onExportPqt(): Promise<void> {
     // edits onto an already-modified archive.
     const fresh = await readPqt(currentPqtBytes);
     injectMappingIntoPqt(fresh, mapping);
-    downloadBlob(
-      new Blob([toArrayBuffer(await writePqt(fresh))], { type: "application/zip" }),
-      `${(mapping.name || queryName).replace(/\W+/g, "-").toLowerCase()}.pqt`
+    await host().saveFile(
+      await writePqt(fresh),
+      `${(mapping.name || queryName).replace(/\W+/g, "-").toLowerCase()}.pqt`,
+      "application/zip"
     );
     setStatus("success", `Wrote ${mapping.columns.length} field mapping(s) into the .pqt.`);
   } catch (e) {
@@ -899,15 +964,15 @@ async function onPqtToXlsx(): Promise<void> {
   }
 }
 
-function onPqtXlsxDownload(): void {
+async function onPqtXlsxDownload(): Promise<void> {
   if (!pendingXlsx) return;
   const { bytes, filename } = pendingXlsx;
-  downloadBlob(
-    new Blob([toArrayBuffer(bytes)], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    }),
-    filename
+  const saved = await host().saveFile(
+    bytes,
+    filename,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   );
+  if (!saved) return; // save dialog cancelled — keep the workbook on offer
   clearPendingXlsx();
   setStatus(
     "success",
@@ -974,10 +1039,16 @@ async function loadDataflows(): Promise<void> {
   sel.disabled = true;
   sel.innerHTML = `<option value="">Loading…</option>`;
   try {
-    const res = await sidecarPost<{ dataflows: DataflowListEntry[] }>("/dataflows", {
-      environmentUrl: state.environmentUrl,
-    });
-    dataflowList = res.dataflows;
+    // Same listing either way; what differs is who holds the connection.
+    // The sidecar does it for Excel/browser; in the ToolBox the conversion
+    // code (core/src/dataflow.ts) runs right here against the bridge client.
+    dataflowList = isPptb()
+      ? await listDataflows(dvClient())
+      : (
+          await sidecarPost<{ dataflows: DataflowListEntry[] }>("/dataflows", {
+            environmentUrl: state.environmentUrl,
+          })
+        ).dataflows;
 
     if (dataflowList.length === 0) {
       sel.innerHTML = `<option value="">No dataflows in this environment</option>`;
@@ -1042,17 +1113,19 @@ async function onDataflowImport(): Promise<void> {
   btn.disabled = true;
   try {
     setStatus("info", "Reading the dataflow…");
-    const res = await sidecarPost<DataflowImportResult>("/dataflow-import", {
-      environmentUrl: state.environmentUrl,
-      dataflowId: id,
-      xlsx: wantXlsx,
-      mapping: wantMapping,
-    });
+    const res = isPptb()
+      ? await importDataflowViaGateway(id, { xlsx: wantXlsx, mapping: wantMapping })
+      : await sidecarPost<DataflowImportResult>("/dataflow-import", {
+          environmentUrl: state.environmentUrl,
+          dataflowId: id,
+          xlsx: wantXlsx,
+          mapping: wantMapping,
+        });
 
     // Mappings are applied immediately — they're state, not files. Only the
     // workbook waits for a click, because a browser cannot hand a file to
     // Excel and pretending otherwise would be a lie about what happened.
-    if (wantMapping) applyDataflowMappings(res);
+    if (wantMapping) await applyDataflowMappings(res);
 
     if (wantXlsx && res.workbook) {
       pendingDataflow = res;
@@ -1080,11 +1153,58 @@ async function onDataflowImport(): Promise<void> {
 }
 
 /**
+ * The ToolBox counterpart of the sidecar's /dataflow-import route: the same
+ * core conversion (getDataflow → workbook + mappings), run in-page against
+ * the bridge client because there is no sidecar to delegate to. Returns the
+ * sidecar route's exact shape so everything downstream is shared.
+ */
+async function importDataflowViaGateway(
+  dataflowId: string,
+  want: { xlsx: boolean; mapping: boolean }
+): Promise<DataflowImportResult> {
+  const client = dvClient();
+  const detail = await getDataflow(client, dataflowId);
+
+  const workbook = want.xlsx ? bytesToBase64(await buildWorkbookWithQueries(detail.archive)) : null;
+
+  // Metadata reads (alternate keys, lookup targets) cost several round
+  // trips, so they only happen when mappings were actually asked for.
+  const mappings = want.mapping
+    ? await mappingsFromDataflow(detail, {
+        environmentUrl: state.environmentUrl,
+        resolver: createMetadataResolver(client),
+      })
+    : {};
+
+  return {
+    name: detail.name,
+    queryNames: detail.queryNames,
+    workbook,
+    mappings: Object.entries(mappings).map(([queryName, mapping]) => ({
+      queryName,
+      mapping,
+      problems: validateMapping(mapping),
+    })),
+  };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  // Chunked: String.fromCharCode(...bytes) overflows the argument limit on
+  // workbooks of any real size.
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
  * One mapping becomes the pane's current mapping. Several also download as
  * .dvmap.json files and enter the run plan, because the pane edits one
  * mapping at a time and the run plan is the only way to execute more.
  */
-function applyDataflowMappings(res: DataflowImportResult): void {
+async function applyDataflowMappings(res: DataflowImportResult): Promise<void> {
   if (res.mappings.length === 0) {
     setStatus(
       "info",
@@ -1104,10 +1224,7 @@ function applyDataflowMappings(res: DataflowImportResult): void {
   if (res.mappings.length > 1) {
     for (const { queryName, mapping } of res.mappings) {
       const stem = slugify(queryName);
-      downloadBlob(
-        new Blob([serializeMapping(mapping)], { type: "application/json" }),
-        `${stem}.dvmap.json`
-      );
+      await host().saveFile(serializeMapping(mapping), `${stem}.dvmap.json`, "application/json");
       if (!state.planSteps.some((s) => s.id === stem)) {
         state.planSteps.push({
           id: stem,
@@ -1162,14 +1279,14 @@ function applyConflictMode(mapping: Mapping): void {
   }
 }
 
-function onDataflowDownload(): void {
+async function onDataflowDownload(): Promise<void> {
   if (!pendingDataflow?.workbook) return;
-  downloadBlob(
-    new Blob([toArrayBuffer(base64ToBytes(pendingDataflow.workbook))], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    }),
-    `${slugify(pendingDataflow.name)}.xlsx`
+  const saved = await host().saveFile(
+    base64ToBytes(pendingDataflow.workbook),
+    `${slugify(pendingDataflow.name)}.xlsx`,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   );
+  if (!saved) return; // save dialog cancelled — keep the workbook on offer
   const name = pendingDataflow.name;
   clearDataflowResult();
   setStatus(
@@ -1222,7 +1339,7 @@ async function onExtractPqt(): Promise<void> {
     });
     if (mapping) injectMappingIntoPqt(archive, mapping);
     const stem = (mapping?.name || "workbook").replace(/\W+/g, "-").toLowerCase();
-    downloadBlob(new Blob([toArrayBuffer(await writePqt(archive))], { type: "application/zip" }), `${stem}.pqt`);
+    await host().saveFile(await writePqt(archive), `${stem}.pqt`, "application/zip");
     setStatus(
       "success",
       mapping
@@ -1237,7 +1354,7 @@ async function onExtractPqt(): Promise<void> {
 async function onCopyPqtM(): Promise<void> {
   if (!currentPqt) return;
   try {
-    await navigator.clipboard.writeText(currentPqt.mashupDocument);
+    await host().copyText(currentPqt.mashupDocument);
     setStatus(
       "success",
       "M code copied. In Excel: Data → Get Data → From Other Sources → Blank Query → " +
@@ -1805,7 +1922,17 @@ async function onSignIn(): Promise<void> {
   }
 }
 
-function dvClient(): DataverseClient {
+/**
+ * One instance for the pane's whole life: the adapter memoises the entity
+ * listing, and the ToolBox reloads this page on a connection switch, so the
+ * cache can never answer for the wrong environment.
+ */
+let pptbClient: PptbDataverseClient | null = null;
+
+function dvClient(): DataverseGateway {
+  if (isPptb()) {
+    return (pptbClient ??= new PptbDataverseClient({ dataverse: pptbGlobals()!.dataverse }));
+  }
   return new DataverseClient({
     environmentUrl: state.environmentUrl,
     getToken: makeTokenProvider(state.environmentUrl),
@@ -1861,7 +1988,7 @@ function renderEntityOptions(filter: Set<string> | null): void {
  * Default solution, which contains every entity); picking a solution
  * filters the entity list to that solution's tables.
  */
-async function loadSolutions(client: DataverseClient): Promise<void> {
+async function loadSolutions(client: DataverseGateway): Promise<void> {
   const sel = el<HTMLSelectElement>("solution");
   try {
     const solutions = await client.listSolutions();
@@ -2171,7 +2298,11 @@ async function createTableThenImport(): Promise<void> {
     await client.createAttribute(entityLogical, buildAttributePayload(prefix, rest[i]));
   }
 
-  if (keyCols.length > 0) {
+  // The ToolBox bridge has no alternate-key endpoint. Skipping the key up
+  // front (with the upsertKey left unset below) beats creating the table and
+  // then failing per-row against a key that doesn't exist.
+  const keysSupported = !isPptb();
+  if (keyCols.length > 0 && keysSupported) {
     setStatus("info", "Creating alternate key…");
     await client.createEntityKey(entityLogical, buildKeyPayload(prefix, entitySuffix, keyCols));
   }
@@ -2222,15 +2353,22 @@ async function createTableThenImport(): Promise<void> {
       notes: ctFixedOwner.label,
     });
   }
-  if (keyCols.length > 0) {
+  if (keyCols.length > 0 && keysSupported) {
     el<HTMLInputElement>("upsertKey").value = keyCols.map((c) => attributeLogicalName(prefix, c)).join(", ");
   }
   rerenderMappings();
   trackTelemetry("addin_create_table", {
     columns: telemetryBucket(included.length),
-    hasKey: String(keyCols.length > 0),
+    hasKey: String(keyCols.length > 0 && keysSupported),
   });
-  setStatus("success", `Table ${displayName} created (${entitySetName}). Starting import…`);
+  setStatus(
+    "success",
+    `Table ${displayName} created (${entitySetName}). Starting import…` +
+      (keyCols.length > 0 && !keysSupported
+        ? " Note: the alternate key was NOT created — the Power Platform ToolBox bridge " +
+          "can't create keys. Add it in Power Apps (Table → Keys) if you need upserts."
+        : "")
+  );
 }
 
 function sanitize(s: string): string {
@@ -2307,11 +2445,7 @@ async function loadEntityAttributes(logical: string): Promise<void> {
   state.entityLogicalName = logical;
   lookupTargetsCache.clear();
   optionLabelsCache.clear();
-  const client = new DataverseClient({
-    environmentUrl: state.environmentUrl,
-    getToken: makeTokenProvider(state.environmentUrl),
-  });
-  state.entityAttributes = attributesFromDefinition(await client.getEntityDefinition(logical));
+  state.entityAttributes = attributesFromDefinition(await dvClient().getEntityDefinition(logical));
 
   // If the user hasn't started mapping yet, auto-suggest. Otherwise leave
   // existing mappings alone — they can click "Suggest" to fill in the rest.
@@ -2451,11 +2585,7 @@ async function applyLookupTargets(
   const cacheKey = `${state.entityLogicalName}/${attrLogical}`;
   let targets = lookupTargetsCache.get(cacheKey);
   if (!targets) {
-    const client = new DataverseClient({
-      environmentUrl: state.environmentUrl,
-      getToken: makeTokenProvider(state.environmentUrl),
-    });
-    targets = await client.getLookupTargets(state.entityLogicalName, attrLogical);
+    targets = await dvClient().getLookupTargets(state.entityLogicalName, attrLogical);
     lookupTargetsCache.set(cacheKey, targets);
   }
   const validEntities = targets
@@ -3659,6 +3789,16 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
       renderRowErrors();
       return;
     }
+    // Both options are per-request headers, which the ToolBox bridge cannot
+    // send. The client would refuse them per-row; say it once, up front.
+    if (isPptb() && (mapping.bypassCustomLogic || mapping.impersonateUserId)) {
+      setStatus(
+        "error",
+        "“Bypass plugins” and “Run as user” aren't supported in the Power Platform ToolBox — " +
+          "clear them, or run this mapping with the Excel add-in or the CLI."
+      );
+      return;
+    }
     // Advisories (e.g. overriddencreatedon with upsert) — confirm, don't block.
     const warnings = mappingWarnings(mapping);
     if (warnings.length > 0) {
@@ -3705,23 +3845,30 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
     const requestLog: RequestLogEntry[] = [];
     const successLog: RowSuccess[] = [];
     let retries = 0;
-    const client = new DataverseClient({
-      environmentUrl: mapping.environmentUrl,
-      getToken: makeTokenProvider(mapping.environmentUrl),
-      onRequest: (entry) => requestLog.push(entry),
-      retry: {
-        onRetry: (info) => {
-          retries++;
-          // status 0 = the request threw before responding — a dropped
-          // connection, usually the machine sleeping mid-run.
-          setStatus(
-            "info",
-            `Retrying (${info.attempt}): ${info.status === 0 ? (info.error ?? "network error") : info.status} — ` +
-              `waiting ${(info.delayMs / 1000).toFixed(1)}s…`
-          );
-        },
-      },
-    });
+    // In the ToolBox, retry/backoff belongs to the bridge; everywhere else
+    // the direct client owns it and reports each retry here.
+    const client: DataverseGateway = isPptb()
+      ? new PptbDataverseClient({
+          dataverse: pptbGlobals()!.dataverse,
+          onRequest: (entry) => requestLog.push(entry),
+        })
+      : new DataverseClient({
+          environmentUrl: mapping.environmentUrl,
+          getToken: makeTokenProvider(mapping.environmentUrl),
+          onRequest: (entry) => requestLog.push(entry),
+          retry: {
+            onRetry: (info) => {
+              retries++;
+              // status 0 = the request threw before responding — a dropped
+              // connection, usually the machine sleeping mid-run.
+              setStatus(
+                "info",
+                `Retrying (${info.attempt}): ${info.status === 0 ? (info.error ?? "network error") : info.status} — ` +
+                  `waiting ${(info.delayMs / 1000).toFixed(1)}s…`
+              );
+            },
+          },
+        });
     // Track how far we got so a cancel can be resumed.
     let processed = startOffset;
     const result = await loadRows({
@@ -3850,28 +3997,14 @@ async function onDownloadFailedRows(): Promise<void> {
   if (!lastFailedRows) return;
   try {
     const buf = await writeRowsToBuffer(lastFailedRows.headers, lastFailedRows.rows, "FailedRows");
-    downloadBlob(
-      new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-      `failed-rows-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.xlsx`
+    await host().saveFile(
+      buf,
+      `failed-rows-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.xlsx`,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
   } catch (e) {
     setStatus("error", `Couldn't build the failed-rows workbook: ${(e as Error).message}`);
   }
-}
-
-/** Copy a view's bytes into a standalone ArrayBuffer that Blob will accept. */
-function toArrayBuffer(view: Uint8Array): ArrayBuffer {
-  return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer;
-}
-
-/** Trigger a browser download for a generated file. */
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -4000,7 +4133,7 @@ function showRunLog(
 
   el<HTMLButtonElement>("downloadLog").onclick = () => {
     if (!lastRun) return;
-    downloadRunLog(lastRun.requestLog, lastRun.successLog, lastRun.result, lastRun.mapping);
+    void downloadRunLog(lastRun.requestLog, lastRun.successLog, lastRun.result, lastRun.mapping);
   };
   // The CLI writes a failed-rows workbook next to its logs; the pane can only
   // hand it over as a download.
@@ -4011,29 +4144,27 @@ function showRunLog(
     : "Download failed rows…";
 }
 
-function downloadRunLog(
+async function downloadRunLog(
   requestLog: RequestLogEntry[],
   successLog: RowSuccess[],
   result: LoadResult,
   mapping: Mapping
-): void {
+): Promise<void> {
   const { errors, ...summary } = result;
   const lines: string[] = [];
   lines.push(JSON.stringify({ event: "summary", ...summary }));
   for (const r of requestLog) lines.push(JSON.stringify(r));
   for (const s of successLog) lines.push(JSON.stringify({ event: "success", ...s }));
   for (const e of errors) lines.push(JSON.stringify({ event: "error", ...e }));
-  const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
   const startedAt = new Date(result.startedAt);
   const datePart = startedAt.toISOString().slice(0, 10);
   const timePart = startedAt.toISOString().slice(11, 19).replace(/:/g, "-");
   const stem = (mapping.name || mapping.sourceTable).replace(/[^\w.-]/g, "_");
-  a.download = `${stem}_${datePart}_${timePart}.jsonl`;
-  a.click();
-  URL.revokeObjectURL(url);
+  await host().saveFile(
+    lines.join("\n") + "\n",
+    `${stem}_${datePart}_${timePart}.jsonl`,
+    "application/x-ndjson"
+  );
 }
 
 function restoreMapping(): void {
@@ -4079,13 +4210,11 @@ async function onSave(): Promise<void> {
       return;
     }
   }
-  const blob = new Blob([serializeMapping(m)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${m.name.replace(/\W+/g, "-").toLowerCase()}.dvmap.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  await host().saveFile(
+    serializeMapping(m),
+    `${m.name.replace(/\W+/g, "-").toLowerCase()}.dvmap.json`,
+    "application/json"
+  );
 }
 
 async function onPlanSave(): Promise<void> {
@@ -4106,18 +4235,12 @@ async function onPlanSave(): Promise<void> {
       return;
     }
   }
-  const blob = new Blob([serializeRunPlan(plan)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
   const stem = (plan.name || "run-plan")
     .replace(/\W+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase();
-  a.download = `${stem}.dvplan.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  await host().saveFile(serializeRunPlan(plan), `${stem}.dvplan.json`, "application/json");
 }
 
 function onLoad(): void {

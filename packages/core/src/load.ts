@@ -16,11 +16,11 @@ import { sourceValue, type Mapping, type ColumnMapping } from "./mapping.js";
 import type { SourceRow, LoadResult, RowError, RowSuccess, ProgressFn } from "./types.js";
 import { coerceRow, coerceValue, CoerceError } from "./coerce.js";
 import {
-  DataverseClient,
   DataverseError,
   assertLogicalName,
   formatKeyLiteral,
   type BatchOperation,
+  type DataverseGateway,
 } from "./dataverse.js";
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -28,7 +28,7 @@ const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export interface LoadOptions {
   mapping: Mapping;
   rows: SourceRow[];
-  client: DataverseClient;
+  client: DataverseGateway;
   /** Optional progress callback. */
   onProgress?: ProgressFn;
   /** If true, do everything except actually call Dataverse. */
@@ -289,7 +289,7 @@ type LookupCache = Map<string /* target */, Map<string /* sourceValueKey */, Loo
 async function buildLookupCache(
   mapping: Mapping,
   rows: SourceRow[],
-  client: DataverseClient,
+  client: DataverseGateway,
   dryRun: boolean
 ): Promise<LookupCache> {
   const cache: LookupCache = new Map();
@@ -392,7 +392,7 @@ async function buildLookupCache(
 /* -------------------------------------------------------------------------- */
 
 async function applySkipUnchanged(
-  client: DataverseClient,
+  client: DataverseGateway,
   mapping: Mapping,
   kindByTarget: Map<string, string>,
   ops: BatchOperation[],
@@ -505,7 +505,7 @@ export function valuesEqual(kind: string | undefined, ours: unknown, theirs: unk
 /* -------------------------------------------------------------------------- */
 
 async function syncRemoveMissing(
-  client: DataverseClient,
+  client: DataverseGateway,
   mapping: Mapping,
   rows: SourceRow[],
   extraHeaders: Record<string, string>,

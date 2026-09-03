@@ -39,12 +39,17 @@ upsert/sync/lookup-resolution serve both a task pane and a scheduled task.
 ```
 packages/core     @dvload/core   — mapping schema, coercion, OData client, load engine, .pqt codec
 packages/cli      dvload         — argv → filesystem → core → stdout; auth, scheduling, PQ refresh, `serve`
-packages/addin    @dvload/addin  — the web UI: DOM over core, host-adapted for Excel or a browser
+packages/addin    @dvload/addin  — the web UI: DOM over core, host-adapted for Excel, a browser, or PPTB
+packages/pptb     @dvload/pptb   — Power Platform ToolBox packaging: manifest + a webpack build of the addin UI
 ```
 
-Dependency direction is strictly `cli → core` and `addin → core`. There is
-no `core → cli` or `addin ↔ cli` edge, and nothing in `core` may import a
-Node built-in at module scope.
+Dependency direction is strictly `cli → core`, `addin → core` and
+`pptb → addin → core`. There is no `core → cli` or `addin ↔ cli` edge, and
+nothing in `core` may import a Node built-in at module scope. `pptb` holds
+no behaviour of its own — it is a second webpack graph over the addin's
+sources plus the ToolBox manifest, so the PPTB-specific code (host adapter,
+gateway client) lives in `packages/addin/src/pptb/` where the rest of the
+host split already is.
 
 `addin → cli` is *not* an exception to that. The UI never imports CLI code;
 it talks to `dvload serve` over HTTP, which is a runtime dependency between
@@ -269,6 +274,23 @@ carries the resume offset described above; `done` carries the final
 `packages/core/src/dataverse.ts`. A thin, dependency-free OData client that
 takes a `getToken: () => Promise<string>` thunk so it pins no MSAL flow and
 works identically under Node and in a WebView.
+
+### DataverseGateway
+
+The engine and the front ends consume the client through the
+`DataverseGateway` interface (same file), not the class. `DataverseClient`
+is the direct-HTTP implementation; the Power Platform ToolBox front end
+substitutes `PptbDataverseClient` (`packages/addin/src/pptb/pptb-client.ts`),
+an adapter over PPTB's `window.dataverseAPI` bridge — PPTB deliberately
+never hands tools a token, so the direct client cannot run there at all.
+
+Any implementation must preserve the batch() contract loadRows accounts on:
+one result per operation, statuses 201 (created) / 200|204 (updated) / 412
+(If-None-Match matched), operations independent of each other. The PPTB
+adapter satisfies it by executing operations individually through the bridge
+(core's $batch already isolates each op in its own changeset, so per-row
+semantics survive the translation; atomic upserts and per-request headers do
+not — the adapter refuses what it cannot preserve rather than approximating).
 
 Base URL is `${environmentUrl}/api/data/${apiVersion}` (default `v9.2`).
 
@@ -571,8 +593,11 @@ PowerShell because there is no clean COM or DPAPI story from Node:
 |---|---|
 | `taskpane/taskpane.ts` | The pane. Single `AppState` object, imperative re-render functions. |
 | `taskpane/taskpane.html` | Static markup; every control has a stable `id` that `el<T>(id)` looks up. |
-| `auth.ts` | Token client for the sidecar. No MSAL, no Entra traffic; caches tokens and de-dupes concurrent misses. |
-| `host.ts` | The Office-vs-browser split: settings store, workbook source, external links, bootstrap. The only module that knows which host it's in. |
+| `auth.ts` | Token client for the sidecar. No MSAL, no Entra traffic; caches tokens and de-dupes concurrent misses. Unused under the PPTB host. |
+| `host.ts` | The host split (Excel / browser / PPTB): settings store, workbook source, external links, file saving, clipboard, bootstrap. The only module that knows which host it's in. |
+| `pptb/pptb-bridge.ts` | Hand-written minimal typings for `window.toolboxAPI` / `window.dataverseAPI`, plus detection. |
+| `pptb/host-pptb.ts` | The PPTB `Host`: async ToolBox settings bridged to the sync store, native save dialogs, connection handle. |
+| `pptb/pptb-client.ts` | `DataverseGateway` over the ToolBox bridge (see [DataverseGateway](#dataversegateway)). Unit-tested with a fake bridge. |
 | `excel.ts` | Office.js table listing and reading. Reached through `host.ts`, never directly. |
 | `suggest.ts` | Column-name similarity → suggested mappings. The one unit-tested module here. |
 | `combobox.ts` | Type-ahead wrapper (`enhanceSelect`) over a plain `<select>`. |
@@ -749,6 +774,13 @@ branch to `readTableFromFile`'s extension dispatch.
 **A new CLI subcommand.** One file in `commands/`, one `.command()` block in
 `index.ts`. If it needs a token, use `getTokenProvider`; don't construct
 MSAL directly.
+
+**A new front end.** Implement `Host` in `packages/addin/src/host.ts` (or
+alongside it, like `pptb/host-pptb.ts`) and — if the environment cannot run
+the direct OData client — a `DataverseGateway` adapter. The pane's
+controller stays shared; anything host-specific must go through `host()` or
+`dvClient()`, never inline. Packaging gets its own workspace only when the
+distribution artifact differs (the PPTB tool package is the model).
 
 **A new mapping field.** `Mapping` interface → `parseMapping` (with a
 default) → `validateMapping` if it constrains other fields →

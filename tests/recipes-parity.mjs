@@ -14,14 +14,17 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
 const recipes = path.join(repoRoot, "docs", "RECIPES.md");
 
+// pathToFileURL, not a bare path: Windows absolute paths ("C:\…") are not
+// valid ESM specifiers, so a plain import() fails on the platform most
+// users run this on.
 const { parseMapping, validateMapping } = await import(
-  path.join(repoRoot, "packages", "core", "dist", "index.js")
+  pathToFileURL(path.join(repoRoot, "packages", "core", "dist", "index.js")).href
 ).catch(() => {
   console.error(
     "Could not load @dvload/core. Build it first:\n" +

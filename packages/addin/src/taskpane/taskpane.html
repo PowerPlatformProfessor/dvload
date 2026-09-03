@@ -151,6 +151,10 @@
       Switching environment re-uses the cached session where there is one and
       otherwise re-authenticates with the username pre-filled.
     -->
+    <!-- Hidden wholesale in the Power Platform ToolBox: the ToolBox owns the
+         connection, so there is no account to pick and no environment to type.
+         The connection bar at the bottom still says where records will land. -->
+    <div id="sidecarAuthBlock">
     <div class="step"><span class="n">1</span><span class="t">Account</span>
       <span class="sub">— carried across environments</span></div>
     <div class="row">
@@ -179,6 +183,7 @@
     <div style="margin-top:4px;">
       <button id="profileSaveBtn" class="secondary" type="button" style="font-size:11px;">Save as profile…</button>
     </div>
+    </div><!-- /sidecarAuthBlock -->
 
     <hr />
 
