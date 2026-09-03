@@ -14,6 +14,8 @@ import {
   assertUsableAuthorizeUrl,
   announceLoginAttempt,
   probeLoopbackRedirect,
+  isInteractiveSignInRequired,
+  InteractiveSignInRequiredError,
 } from "./auth.js";
 
 const SHARED = "51f81489-12ee-4a9e-aaae-a2591f45987d";
@@ -289,6 +291,36 @@ describe("conditionalAccessHint", () => {
   });
 });
 
+// `needsInteractiveSignIn` is covered in auth-refresh.test.ts, next to the
+// provider behaviour that depends on it.
+
+describe("isInteractiveSignInRequired", () => {
+  it("recognises the error the silent-only providers throw", () => {
+    assert.equal(
+      isInteractiveSignInRequired(new InteractiveSignInRequiredError("https://org.crm.dynamics.com")),
+      true
+    );
+  });
+
+  it("recognises it by code alone, across a module boundary", () => {
+    // The sidecar and the CLI can end up holding different copies of this
+    // module (bundled vs. imported), which breaks `instanceof`.
+    assert.equal(isInteractiveSignInRequired({ errorCode: "interactive_signin_required" }), true);
+  });
+
+  it("does not fire on an ordinary failure", () => {
+    assert.equal(isInteractiveSignInRequired(new Error("socket hang up")), false);
+    assert.equal(isInteractiveSignInRequired(null), false);
+  });
+
+  it("names the environment and how to sign in again", () => {
+    const err = new InteractiveSignInRequiredError("https://contoso.crm.dynamics.com");
+    assert.match(err.message, /contoso\.crm\.dynamics\.com/);
+    assert.match(err.message, /dvload login/);
+    assert.equal(err.environmentUrl, "https://contoso.crm.dynamics.com");
+  });
+});
+
 describe("dataverseScope", () => {
   it("appends /.default to the origin", () => {
     assert.equal(dataverseScope("https://org.crm.dynamics.com"), "https://org.crm.dynamics.com/.default");
@@ -410,6 +442,39 @@ describe("probeLoopbackRedirect", () => {
     assert.equal(
       await probeLoopbackRedirect("probe-900971", "organizations", fetchReturning(res)),
       "unusable"
+    );
+  });
+
+  it("an AADSTS50058 page means not registered — Entra never got as far as saying so", async () => {
+    // The regression that made the preflight useless. Entra validates the
+    // redirect URI BEFORE it evaluates prompt=none, so when the URI is bad the
+    // page it renders complains about the missing session (50058) and never
+    // mentions the redirect. The old check looked for 50011/500113/900971,
+    // found none of them, returned "inconclusive", and let the browser open —
+    // after which the user signed in and got AADSTS900971 for their trouble.
+    const res = stubResponse(200, {}, "<html>AADSTS50058: Silent sign-in request was sent…</html>");
+    assert.equal(
+      await probeLoopbackRedirect("probe-50058", "organizations", fetchReturning(res)),
+      "unusable"
+    );
+  });
+
+  it("a proxy block page cannot condemn an app registration", async () => {
+    // Also a non-redirect 200, and it must NOT read as a verdict: an
+    // intercepting proxy would otherwise permanently veto a working client.
+    // The absence of any AADSTS code is what tells them apart.
+    const res = stubResponse(200, {}, "<html><h1>Access denied by NetGuard</h1></html>");
+    assert.equal(
+      await probeLoopbackRedirect("probe-proxy", "organizations", fetchReturning(res)),
+      "inconclusive"
+    );
+  });
+
+  it("a 5xx is Entra having a bad day, not a verdict", async () => {
+    const res = stubResponse(503, {}, "AADSTS90033: A transient error has occurred.");
+    assert.equal(
+      await probeLoopbackRedirect("probe-5xx", "organizations", fetchReturning(res)),
+      "inconclusive"
     );
   });
 

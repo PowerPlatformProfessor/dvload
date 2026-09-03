@@ -59,6 +59,32 @@ export class SidecarUnavailableError extends Error {
 }
 
 /**
+ * Thrown when the sidecar has no usable session for an environment.
+ *
+ * The sidecar could sign the user in itself — it owns the MSAL cache and can
+ * open a browser — but deliberately doesn't, because the requests that hit
+ * this are background ones: listing dataflows on first render, refreshing a
+ * token mid-import. A browser window appearing over Excel in response to work
+ * nobody asked for is worse than being told to click Sign in. So the sidecar
+ * answers 401 `needsSignIn`, and this type carries that up to the UI, where
+ * the existing Sign in button is the thing that opens a browser.
+ */
+export class SignInRequiredError extends Error {
+  /** Mirrors the sidecar's flag; also survives a failed `instanceof`. */
+  readonly needsSignIn = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SignInRequiredError";
+  }
+}
+
+/** True for `SignInRequiredError`, without depending on `instanceof`. */
+export function isSignInRequired(e: unknown): e is SignInRequiredError {
+  return e instanceof SignInRequiredError || (e as { needsSignIn?: boolean } | null)?.needsSignIn === true;
+}
+
+/**
  * Same-origin by construction: the sidecar serves this page, so a relative
  * URL always lands on it. Nothing to configure, and no CORS to negotiate.
  */
@@ -94,8 +120,11 @@ async function post<T>(route: string, body: Record<string, unknown> = {}): Promi
   }
 
   if (!res.ok) {
-    const message =
-      (payload as { error?: string } | null)?.error ?? `${res.status} ${res.statusText}`;
+    const failure = payload as { error?: string; needsSignIn?: boolean } | null;
+    const message = failure?.error ?? `${res.status} ${res.statusText}`;
+    // Distinguished from any other failure so callers can offer the Sign in
+    // button instead of reporting an error the user can do nothing with.
+    if (failure?.needsSignIn) throw new SignInRequiredError(message);
     throw new Error(message);
   }
   return payload as T;

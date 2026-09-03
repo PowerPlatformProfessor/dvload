@@ -60,6 +60,7 @@ import {
   devModeBanner,
   sidecarPost,
   SidecarUnavailableError,
+  isSignInRequired,
   type KnownAccount,
 } from "../auth.js";
 import { initHost, host, type TableInfo } from "../host.js";
@@ -1069,8 +1070,10 @@ async function loadDataflows(): Promise<void> {
     sel.disabled = false;
     onDataflowChange();
   } catch (e) {
-    sel.innerHTML = `<option value="">Couldn't load dataflows</option>`;
-    setStatus("error", `Couldn't list dataflows: ${(e as Error).message}`);
+    sel.innerHTML = isSignInRequired(e)
+      ? `<option value="">Sign in to load dataflows</option>`
+      : `<option value="">Couldn't load dataflows</option>`;
+    reportSidecarError(e, "Couldn't list dataflows");
   }
 }
 
@@ -1146,7 +1149,7 @@ async function onDataflowImport(): Promise<void> {
       showTab("panelImport");
     }
   } catch (e) {
-    setStatus("error", `Couldn't import the dataflow: ${(e as Error).message}`);
+    reportSidecarError(e, "Couldn't import the dataflow");
   } finally {
     btn.disabled = false;
   }
@@ -1879,6 +1882,59 @@ async function refreshAccountUI(): Promise<void> {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Show the pane as signed out and point at the button that fixes it.
+ *
+ * Called when a background request came back "sign-in required" — a session
+ * that expired since the pane last checked, or one that was never created for
+ * this environment. The sidecar could have opened a browser itself and did
+ * not, on purpose: that request was the pane refreshing a token, not the user
+ * asking to authenticate. This is the other half of that decision.
+ *
+ * Deliberately does NOT re-run `refreshAccountUI()`. `/api/account` reports
+ * whoever is in the MSAL cache, and an account whose refresh token has expired
+ * is still in the cache — so asking would put "Signed in as …" back on screen
+ * next to a prompt saying the opposite.
+ */
+function promptSignIn(message: string): void {
+  state.account = null;
+  el<HTMLSpanElement>("authDot").style.color = "#d13438";
+  renderAccountHint();
+  renderConnBar();
+  setStatus("error", message);
+
+  // Focus doubles as scroll-into-view — the Sign in button is in step 1 and
+  // this can fire while the user is looking at the run panel. Never taken off
+  // a field being typed into, though: these calls arrive from background work
+  // (a dataflow list refreshing, a token renewing), and moving the caret out
+  // from under someone mid-sentence is its own kind of rude interruption.
+  const btn = el<HTMLButtonElement>("signin");
+  btn.disabled = false;
+  const active = document.activeElement;
+  const typing =
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement;
+  if (!typing) btn.focus();
+}
+
+/**
+ * Report a sidecar failure, routing a dead session to the sign-in prompt.
+ *
+ * Every path that reaches Dataverse goes through the sidecar for its token, so
+ * every one of them can fail this way; `context` is what that particular path
+ * was trying to do, and it is dropped for the sign-in case because "couldn't
+ * list dataflows" is not the useful half of that sentence.
+ */
+function reportSidecarError(e: unknown, context: string): void {
+  if (isSignInRequired(e)) {
+    promptSignIn(e.message);
+    return;
+  }
+  const message = (e as Error).message;
+  setStatus("error", context ? `${context}: ${message}` : message);
+}
+
+/**
  * Sign in to the current environment, as step 1's user where there is one.
  *
  * The token's scope is the environment's own origin, so an environment is
@@ -2023,7 +2079,7 @@ async function onPickSolution(e: Event): Promise<void> {
     }
     renderEntityOptions(ids);
   } catch (err) {
-    setStatus("error", `Could not load solution components: ${(err as Error).message}`);
+    reportSidecarError(err, "Could not load solution components");
     renderEntityOptions(null);
   }
 }
@@ -3937,7 +3993,10 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
       dryRun: String(dryRun),
     });
   } catch (e) {
-    setStatus("error", (e as Error).message);
+    // Reaches here for a token failure before the batches start — creating a
+    // table, resolving metadata. Once `loadRows` is running it catches a
+    // whole-batch auth failure itself and reports it per row instead.
+    reportSidecarError(e, "");
   } finally {
     runController = null;
     setRunning(false);
@@ -4066,9 +4125,14 @@ function triggerLoadEntities(): void {
         if (logical) await loadEntityAttributes(logical);
       }
     })
-    .catch(() => {
+    .catch((e: unknown) => {
       entSel.innerHTML = `<option value="">Could not load — click Sign in to retry</option>`;
       entSel.disabled = true;
+      // Silent otherwise, as before: this runs on every environment change and
+      // an error banner would fight with whatever the pane is already saying.
+      // A dead session is the exception, because "click Sign in" above is the
+      // instruction and nothing else on screen explains why.
+      if (isSignInRequired(e)) promptSignIn(e.message);
     });
 }
 
