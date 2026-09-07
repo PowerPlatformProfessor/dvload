@@ -267,6 +267,7 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 | 19.16 | Cross-tab handoff | On the Dataflows tab, "Use mapping" (or a dataflow import with *Mapping files* only) lands on the Import tab with the mapping loaded; "Use all" lands on the Run plan tab with the new steps. A dataflow imported *with* a workbook stays put so the Download button is still reachable | |
 | 19.17 | Status is shared | Start an import, switch to the Run plan tab while it runs | Progress and the final summary stay visible from every tab | |
 | 19.18 | Create table from a file source | With an **added file** (not a workbook table) selected — in Excel and again in `dvload gui`, where files are the only source kind — choose "＋ Create new table from source…": the panel lists every source column with suggested names/types. Regression guard: this used to read rows off the live workbook only, leaving the grid empty for file sources | |
+| 19.19 | Table names are editable | In the create-table panel: the **Schema name** field follows the display name as you type (e.g. "Order Lines" → `new_OrderLines`), stops following once edited by hand, and the created table carries exactly the shown `prefix_SchemaName`. Changing the prefix updates the `prefix_` echo | |
 
 ## 19b. Power Platform ToolBox tool
 

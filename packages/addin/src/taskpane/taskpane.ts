@@ -515,6 +515,21 @@ async function bootstrap(): Promise<void> {
   el<HTMLSelectElement>("table").addEventListener("change", onPickTable);
   el<HTMLSelectElement>("solution").addEventListener("change", onPickSolution);
   el<HTMLSelectElement>("entity").addEventListener("change", onPickEntity);
+  // The schema name follows the display name until the user edits it —
+  // then their choice sticks (see ctSchemaTouched).
+  el<HTMLInputElement>("ctPrefix").addEventListener("input", renderCtPrefixEcho);
+  el<HTMLInputElement>("ctDisplayName").addEventListener("input", () => {
+    if (!ctSchemaTouched) {
+      el<HTMLInputElement>("ctSchemaSuffix").value = sanitize(el<HTMLInputElement>("ctDisplayName").value);
+    }
+  });
+  el<HTMLInputElement>("ctSchemaSuffix").addEventListener("input", () => {
+    ctSchemaTouched = true;
+  });
+  el<HTMLInputElement>("ctSchemaSuffix").addEventListener("change", () => {
+    const inp = el<HTMLInputElement>("ctSchemaSuffix");
+    inp.value = inp.value.replace(/[^A-Za-z0-9]/g, "").replace(/^[^A-Za-z]+/, "");
+  });
   el<HTMLButtonElement>("addMap").addEventListener("click", () => addMapping());
   el<HTMLButtonElement>("addConst").addEventListener("click", () => addConstant());
   el<HTMLButtonElement>("suggest").addEventListener("click", onSuggest);
@@ -2108,6 +2123,14 @@ async function onPickEntity(e: Event): Promise<void> {
 let createMode = false;
 let ctCols: GeneratedColumn[] = [];
 let ctFixedOwner: { guid: string; label: string } | null = null;
+/** Once the user edits the schema-name field, stop deriving it from the display name. */
+let ctSchemaTouched = false;
+
+/** Prefix half of the schema-name preview, e.g. `new_`, kept in step with the prefix input. */
+function renderCtPrefixEcho(): void {
+  const prefix = el<HTMLInputElement>("ctPrefix").value.trim().toLowerCase();
+  el<HTMLSpanElement>("ctPrefixEcho").textContent = `${prefix || "new"}_`;
+}
 
 /** Wire the panel's fixed-owner search (systemusers by fullname, or a pasted GUID). */
 /**
@@ -2209,6 +2232,9 @@ async function enterCreateTableMode(): Promise<void> {
   // from the panel when the table is created.
   el<HTMLDivElement>("mappingSection").style.display = "none";
   el<HTMLInputElement>("ctDisplayName").value = state.selectedTable.name.replace(/^tbl/i, "");
+  ctSchemaTouched = false;
+  el<HTMLInputElement>("ctSchemaSuffix").value = sanitize(el<HTMLInputElement>("ctDisplayName").value);
+  renderCtPrefixEcho();
   ctFixedOwner = null;
   el<HTMLInputElement>("ctOwner").value = "";
   setStatus("info", "Reading source rows to infer column types…");
@@ -2356,7 +2382,12 @@ async function createTableThenImport(): Promise<void> {
   const primary = included.find((c) => c.isPrimaryName);
   if (!primary) { setStatus("error", "Pick a string column as the table's primary name."); return; }
   const keyCols = included.filter((c) => c.inAlternateKey);
-  const entitySuffix = sanitize(displayName);
+  // The schema-name field wins; it tracked the display name unless edited.
+  // Same character rules either way, and an emptied field falls back to the
+  // derived name rather than producing `prefix_`.
+  const entitySuffix =
+    el<HTMLInputElement>("ctSchemaSuffix").value.replace(/[^A-Za-z0-9]/g, "").replace(/^[^A-Za-z]+/, "") ||
+    sanitize(displayName);
   const entityLogical = `${prefix}_${entitySuffix}`.toLowerCase();
 
   const client = dvClient();
