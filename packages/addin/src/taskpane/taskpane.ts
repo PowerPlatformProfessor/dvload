@@ -2212,7 +2212,22 @@ async function enterCreateTableMode(): Promise<void> {
   ctFixedOwner = null;
   el<HTMLInputElement>("ctOwner").value = "";
   setStatus("info", "Reading source rows to infer column types…");
-  const { rows } = await host().workbook.readTable(state.selectedTable.name);
+  // readSourceRows, not host().workbook.readTable: the source can be an
+  // added file (the only kind the browser GUI and the ToolBox have), and
+  // only readSourceRows knows both origins. Reading it directly off the
+  // workbook here left create-table mode with an empty column grid
+  // everywhere except an Excel-native table.
+  let rows: Array<Record<string, unknown>>;
+  try {
+    ({ rows } = await readSourceRows(state.selectedTable.name));
+  } catch (err) {
+    // Leave create mode entirely — a panel with no columns offers nothing
+    // to act on, and the un-picked entity select says what happened.
+    exitCreateTableMode();
+    el<HTMLSelectElement>("entity").value = "";
+    setStatus("error", `Could not read the source rows: ${(err as Error).message}`);
+    return;
+  }
   ctCols = suggestColumns(state.selectedTable.columns, rows.slice(0, 200));
   renderCtColumns();
   setStatus(

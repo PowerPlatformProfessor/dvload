@@ -266,6 +266,7 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 | 19.15 | Switch user | Choose "Sign in with another account…": Entra shows the account picker (no hint), and the new username replaces the old one in step 1 and in the connection bar. The previous user is signed out everywhere — step 1's picker offers only the new username, and `dvload whoami` in a terminal confirms the old sessions are gone. Cancelling the Entra page instead leaves the old account signed in | |
 | 19.16 | Cross-tab handoff | On the Dataflows tab, "Use mapping" (or a dataflow import with *Mapping files* only) lands on the Import tab with the mapping loaded; "Use all" lands on the Run plan tab with the new steps. A dataflow imported *with* a workbook stays put so the Download button is still reachable | |
 | 19.17 | Status is shared | Start an import, switch to the Run plan tab while it runs | Progress and the final summary stay visible from every tab | |
+| 19.18 | Create table from a file source | With an **added file** (not a workbook table) selected — in Excel and again in `dvload gui`, where files are the only source kind — choose "＋ Create new table from source…": the panel lists every source column with suggested names/types. Regression guard: this used to read rows off the live workbook only, leaving the grid empty for file sources | |
 
 ## 19b. Power Platform ToolBox tool
 
