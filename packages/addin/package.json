@@ -17,15 +17,15 @@
     "@dvload/core": "0.1.0"
   },
   "devDependencies": {
-    "@types/office-js": "^1.0.391",
+    "@types/office-js": "^1.0.608",
     "copy-webpack-plugin": "^12.0.2",
     "html-webpack-plugin": "^5.6.0",
     "office-addin-debugging": "^5.0.0",
-    "office-addin-dev-certs": "^1.0.0",
+    "office-addin-dev-certs": "^2.0.10",
     "office-addin-manifest": "^1.0.0",
     "ts-loader": "^9.5.1",
-    "tsx": "^4.7.0",
-    "webpack": "^5.90.0",
+    "tsx": "^4.23.13",
+    "webpack": "^5.110.3",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^5.0.2"
   }
