@@ -670,6 +670,23 @@ async function handleApi(route: string, body: Record<string, unknown>): Promise<
       // account we are about to create rather than a stale failed thunk.
       providers.clear();
       await loginDelegated({ environmentUrl, loginHint });
+      // One identity at a time: a sign-in as a different user signs the
+      // previous user out of every environment. Two live accounts would make
+      // "who will this import run as?" depend on which environment is
+      // selected — a wrong answer to that question writes rows as the wrong
+      // user. Runs only after a *successful* sign-in, so cancelling the
+      // Entra page never strands the user signed out of everything.
+      const signedIn = await getSignedInAccount(environmentUrl);
+      if (signedIn?.username) {
+        let removed = false;
+        for (const session of await listDelegatedSessions()) {
+          if (session.username && session.username.toLowerCase() !== signedIn.username.toLowerCase()) {
+            await logoutDelegated(session.environmentUrl);
+            removed = true;
+          }
+        }
+        if (removed) providers.clear();
+      }
       return describeAuth(environmentUrl);
     }
 

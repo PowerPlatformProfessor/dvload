@@ -181,6 +181,10 @@ async function refreshKnownAccounts(): Promise<void> {
  * Distinct by username, not by session: the same person signed in to four
  * environments is one choice here, and which environments they can reach
  * without re-authenticating is step 2's business (see renderProfilePicker).
+ * In practice at most one name appears — the sidecar keeps a single identity
+ * at a time, signing the previous user out everywhere when a different one
+ * signs in (see /api/signin in serve.ts) — but the shaping stays defensive
+ * so a cache holding two users renders as two choices, not garbage.
  */
 function renderAccountPicker(): void {
   const sel = el<HTMLSelectElement>("account");

@@ -55,9 +55,30 @@ const listDelegatedSessions = vi.hoisted(() =>
   )
 );
 
+/**
+ * The sign-in trio, stubbed so /api/signin is testable at all: the real
+ * loginDelegated opens a browser, and the real logoutDelegated deletes files
+ * under ~/.dvload — neither belongs in a unit test. Defaults are the empty
+ * cache the other routes' tests assume.
+ */
+const loginDelegated = vi.hoisted(() =>
+  vi.fn((): Promise<unknown> => Promise.reject(new Error("loginDelegated not stubbed for this test")))
+);
+const logoutDelegated = vi.hoisted(() => vi.fn((_env?: string): Promise<void> => Promise.resolve()));
+const getSignedInAccount = vi.hoisted(() =>
+  vi.fn((_env: string): Promise<{ username: string } | null> => Promise.resolve(null))
+);
+
 vi.mock("../auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../auth.js")>();
-  return { ...actual, getTokenProvider, listDelegatedSessions };
+  return {
+    ...actual,
+    getTokenProvider,
+    listDelegatedSessions,
+    loginDelegated,
+    logoutDelegated,
+    getSignedInAccount,
+  };
 });
 
 import { startServer, resolveWebSource, checkUi, type RunningServer } from "./serve.js";
@@ -477,4 +498,40 @@ test("/api/accounts lists every signed-in identity, without an environment", asy
   );
   // Tokens are never part of this answer, only who and where.
   assert.doesNotMatch(res.body, /token|secret/i);
+});
+
+test("signing in as a different user signs the previous user out everywhere", async () => {
+  // One identity at a time: the pane's account picker must never offer two
+  // live users, because which of them an import runs as would then depend on
+  // the environment selected. Sessions belonging to anyone but the user who
+  // just signed in are removed; the new user's other sessions survive, and a
+  // store entry whose username is unreadable is left for its own cleanup.
+  loginDelegated.mockResolvedValueOnce({ username: "new@contoso.com" });
+  getSignedInAccount.mockImplementation((env) =>
+    Promise.resolve(env === "https://new.crm.dynamics.com" ? { username: "new@contoso.com" } : null)
+  );
+  listDelegatedSessions.mockResolvedValueOnce([
+    { host: "old.crm.dynamics.com", environmentUrl: "https://old.crm.dynamics.com", username: "Old@contoso.com" },
+    { host: "old2.crm.dynamics.com", environmentUrl: "https://old2.crm.dynamics.com", username: "Old@contoso.com" },
+    { host: "new.crm.dynamics.com", environmentUrl: "https://new.crm.dynamics.com", username: "NEW@contoso.com" },
+    { host: "gone.crm.dynamics.com", environmentUrl: "https://gone.crm.dynamics.com", username: null },
+  ]);
+
+  try {
+    const res = await call("POST", "/api/signin", {
+      headers: ours(),
+      body: JSON.stringify({ environmentUrl: "https://new.crm.dynamics.com" }),
+    });
+    assert.equal(res.status, 200);
+    // The response names the account the pane is now acting as.
+    assert.equal((JSON.parse(res.body) as { account: { username: string } }).account.username, "new@contoso.com");
+    // Only the other user's sessions were signed out — comparison is
+    // case-insensitive, so NEW@ was recognised as the same person as new@.
+    assert.deepEqual(
+      logoutDelegated.mock.calls.map(([env]) => env),
+      ["https://old.crm.dynamics.com", "https://old2.crm.dynamics.com"]
+    );
+  } finally {
+    getSignedInAccount.mockImplementation(() => Promise.resolve(null));
+  }
 });
