@@ -71,6 +71,10 @@ jobs:
         # --require-web fails the build rather than shipping an exe whose
         # task pane 404s. A UI-less release is worse than no release.
         run: npm run bundle --workspace=dvload -- --require-web
+        env:
+          # Baked into the CLI bundle by esbuild's define (see bundle.mjs).
+          # Unset means empty, which disables telemetry — the right default.
+          DVLOAD_AI_CONNECTION_STRING: ${{ vars.DVLOAD_AI_CONNECTION_STRING }}
 
       - name: Build SEA blob and inject into node.exe
         shell: pwsh

@@ -62,7 +62,13 @@ await build({
   outfile: "build/dvload.cjs",
   // dist/ is ESM; import.meta.url doesn't exist in CJS. Recreate it from
   // __filename so schedule.ts's entry-point resolution keeps working.
-  define: { "import.meta.url": "__importMetaUrl" },
+  define: {
+    "import.meta.url": "__importMetaUrl",
+    // Bakes the telemetry connection string into release builds (see
+    // src/telemetry.ts). Unset/empty keeps telemetry inert — the right
+    // default for forks and local bundles.
+    __DVLOAD_AI_DEFAULT__: JSON.stringify(process.env.DVLOAD_AI_CONNECTION_STRING ?? ""),
+  },
   banner: {
     js: "const __importMetaUrl = require('node:url').pathToFileURL(__filename).href;",
   },

@@ -87,11 +87,18 @@ and where imports fail. No data is sold or shared.
 
 ## For maintainers / forks
 
-The connection string is injected at build time:
+The connection string is injected at build time from the
+`DVLOAD_AI_CONNECTION_STRING` env var (in CI, the repo *variable* of the
+same name — it is not a secret, since it ships inside the bundles anyway):
 
-- CLI: `DVLOAD_AI_CONNECTION_STRING` env var at runtime, or edit
-  `CONNECTION_STRING` in `packages/cli/src/telemetry.ts` before bundling.
-- Add-in: `DVLOAD_AI_CONNECTION_STRING` env var at webpack build time.
+- CLI: baked by `scripts/bundle.mjs` at bundle time. The env var at
+  runtime still overrides the baked value (set it empty to silence a
+  release build).
+- Add-in / browser UI: baked by webpack's DefinePlugin at build time.
+- Power Platform ToolBox: **always off.** The ToolBox's CSP has no
+  exception for the ingestion endpoint, so events could never leave the
+  tool iframe; the PPTB build bakes an empty string deliberately
+  (`packages/pptb/webpack.config.js`).
 
 Leave it empty and the telemetry code paths are inert. If you add an
 event, document it here in the same commit — this file is the contract.

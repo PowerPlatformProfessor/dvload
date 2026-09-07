@@ -22,9 +22,17 @@ import os from "node:os";
 import path from "node:path";
 import kleur from "kleur";
 
-/** Paste your Application Insights connection string here before release.
- *  Empty string = telemetry fully disabled (nothing is stored or sent). */
-const CONNECTION_STRING = process.env.DVLOAD_AI_CONNECTION_STRING ?? "";
+/** Baked in by scripts/bundle.mjs (esbuild define) when the release is
+ *  built with DVLOAD_AI_CONNECTION_STRING set; undefined in a plain tsc
+ *  build, where only the runtime env var applies. */
+declare const __DVLOAD_AI_DEFAULT__: string | undefined;
+
+/** Runtime env var wins so a baked build can still be pointed elsewhere
+ *  (or silenced with an empty value). Empty string = telemetry fully
+ *  disabled (nothing is stored or sent). */
+const CONNECTION_STRING =
+  process.env.DVLOAD_AI_CONNECTION_STRING ??
+  (typeof __DVLOAD_AI_DEFAULT__ === "string" ? __DVLOAD_AI_DEFAULT__ : "");
 
 const TOOL_VERSION = "0.1.0"; // keep in sync with package.json
 
