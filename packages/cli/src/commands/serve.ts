@@ -325,6 +325,16 @@ type Thunk = () => Promise<string>;
 const providers = new Map<string, Promise<Thunk>>();
 
 /**
+ * The authorize URL of the sign-in currently waiting on a browser, if any.
+ *
+ * One slot, not a map: the loopback flow binds one listener per process, so
+ * there is never more than one live interactive sign-in. Set when MSAL hands
+ * the interactive flow its URL, cleared the moment /api/signin settles —
+ * after that the loopback listener is gone and the URL cannot complete.
+ */
+let pendingAuthorizeUrl: { environmentUrl: string; url: string } | null = null;
+
+/**
  * Every provider this server builds is silent-only. Nothing here may open a
  * browser.
  *
@@ -666,10 +676,53 @@ async function handleApi(route: string, body: Record<string, unknown>): Promise<
       // Entra page so switching environment is usually a silent redirect
       // rather than another account picker. Entra decides what it's worth.
       const loginHint = typeof body.loginHint === "string" ? body.loginHint : undefined;
+      // Try the session that already exists before putting anyone in front of
+      // Entra. The pane asks to sign in whenever it *believes* it isn't — and
+      // that belief can be stale (a transient /api/account failure, a race
+      // during an environment switch). Acting on it opened a browser the user
+      // had no reason to look at, whose loopback listener then timed out and
+      // printed an alarming failure while imports kept working on the cached
+      // session. A silent token acquisition is the proof either way: if it
+      // succeeds for the hinted user, the sign-in is already done.
+      // `force: true` (Sign in again / switch account) skips this — those
+      // clicks exist precisely to replace the current session.
+      if (body.force !== true) {
+        try {
+          const existing = await getSignedInAccount(environmentUrl);
+          if (
+            existing?.username &&
+            (!loginHint || existing.username.toLowerCase() === loginHint.toLowerCase())
+          ) {
+            // The cache listing alone can name an account whose refresh token
+            // is dead — only a real silent acquisition validates the session.
+            await acquireToken(environmentUrl, UI_TOKEN_OPTS.forceUser);
+            return describeAuth(environmentUrl);
+          }
+        } catch {
+          // Dead or missing session — fall through to the interactive path.
+        }
+      }
       // Clear any memoised provider so the next token request picks up the
       // account we are about to create rather than a stale failed thunk.
       providers.clear();
-      await loginDelegated({ environmentUrl, loginHint });
+      try {
+        await loginDelegated({
+          environmentUrl,
+          loginHint,
+          // The pane polls /api/signin-url while this request is in flight,
+          // so a browser that failed to open (or opened behind Excel) still
+          // puts a clickable sign-in link in front of the user instead of a
+          // URL in a console they aren't watching.
+          onAuthorizeUrl: (url) => {
+            pendingAuthorizeUrl = { environmentUrl, url };
+          },
+        });
+      } finally {
+        // Whatever happened, the URL is dead now: the loopback listener for
+        // it is gone, so offering it any longer would send a click into a
+        // sign-in that can never complete.
+        pendingAuthorizeUrl = null;
+      }
       // One identity at a time: a sign-in as a different user signs the
       // previous user out of every environment. Two live accounts would make
       // "who will this import run as?" depend on which environment is
@@ -688,6 +741,18 @@ async function handleApi(route: string, body: Record<string, unknown>): Promise<
         if (removed) providers.clear();
       }
       return describeAuth(environmentUrl);
+    }
+
+    case "/api/signin-url": {
+      // Polled by the pane while its /api/signin request is in flight. Only
+      // the URL for the environment being asked about is handed out — not
+      // that a second environment's sign-in can be pending (see the single
+      // slot above), but so a stale poll from an earlier attempt gets null
+      // rather than a URL for somewhere else.
+      const environmentUrl = requiredString(body, "environmentUrl");
+      return pendingAuthorizeUrl && pendingAuthorizeUrl.environmentUrl === environmentUrl
+        ? { url: pendingAuthorizeUrl.url }
+        : { url: null };
     }
 
     case "/api/signout": {

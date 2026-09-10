@@ -31,7 +31,7 @@ export function enhanceSelect(sel: HTMLSelectElement): HTMLElement {
   list.className = "combobox-list";
   list.style.cssText =
     "position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;" +
-    "max-height:180px;overflow-y:auto;background:#fff;border:1px solid #8a8886;" +
+    "max-height:180px;overflow-y:auto;background:var(--bg);border:1px solid var(--border-strong);" +
     "border-top:none;box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;";
 
   sel.parentNode?.insertBefore(wrap, sel);
@@ -77,14 +77,14 @@ export function enhanceSelect(sel: HTMLSelectElement): HTMLElement {
     if (filtered.length === 0) {
       const empty = document.createElement("div");
       empty.textContent = "No matches";
-      empty.style.cssText = "padding:4px 8px;color:#605e5c;";
+      empty.style.cssText = "padding:4px 8px;color:var(--muted);";
       list.appendChild(empty);
     }
     filtered.forEach((o, i) => {
       const item = document.createElement("div");
       item.textContent = o.text;
       item.style.cssText = "padding:4px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
-      if (i === highlighted) item.style.background = "#edebe9";
+      if (i === highlighted) item.style.background = "var(--surface-3)";
       if (o.value === sel.value) item.style.fontWeight = "600";
       // mousedown, not click: fires before the input's blur closes the list
       item.addEventListener("mousedown", (e) => {

@@ -245,7 +245,9 @@ async function onPickAccount(): Promise<void> {
     state.username = null;
     renderAccountPicker();
     renderAccountHint();
-    await onSignIn();
+    // Forced: reusing the current session would defeat the whole point of
+    // "Sign in with another account…".
+    await onSignIn({ force: true });
     return;
   }
   if (!sel.value || sel.value === state.username) return;
@@ -510,8 +512,20 @@ async function bootstrap(): Promise<void> {
   el<HTMLInputElement>("env").addEventListener("change", (e) => {
     void setEnvironment((e.target as HTMLInputElement).value);
   });
+  el<HTMLButtonElement>("connect").addEventListener("click", () => void onConnect());
+  el<HTMLInputElement>("env").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void onConnect();
+    }
+  });
 
-  el<HTMLButtonElement>("signin").addEventListener("click", onSignIn);
+  // The button reads "Sign in again" once a session exists — that click asks
+  // for a fresh Entra prompt, so it must not be satisfied by the silent reuse
+  // the sidecar otherwise prefers.
+  el<HTMLButtonElement>("signin").addEventListener("click", () =>
+    void onSignIn({ force: state.account != null })
+  );
   el<HTMLSelectElement>("table").addEventListener("change", onPickTable);
   el<HTMLSelectElement>("solution").addEventListener("change", onPickSolution);
   el<HTMLSelectElement>("entity").addEventListener("change", onPickEntity);
@@ -569,6 +583,12 @@ async function bootstrap(): Promise<void> {
     setStatus("info", "Log cleared.");
   });
   el<HTMLSelectElement>("conflictMode").addEventListener("change", updateOptionsVisibility);
+  // These change what the Options / Target section headers summarize.
+  el<HTMLSelectElement>("syncAction").addEventListener("change", renderStepSummaries);
+  el<HTMLInputElement>("dryRun").addEventListener("change", renderStepSummaries);
+  el<HTMLInputElement>("bypassCustomLogic").addEventListener("change", renderStepSummaries);
+  el<HTMLInputElement>("ctSchemaSuffix").addEventListener("input", renderStepSummaries);
+  el<HTMLInputElement>("ctPrefix").addEventListener("input", renderStepSummaries);
 
   // Plan metadata — kept in state so load → save round-trips it.
   el<HTMLInputElement>("planName").addEventListener("change", () => {
@@ -615,6 +635,8 @@ async function bootstrap(): Promise<void> {
     e.preventDefault();
     host().openExternal(a.href);
   });
+
+  renderStepSummaries();
 }
 
 void bootstrap();
@@ -755,6 +777,106 @@ function updateTabBadges(): void {
   const n = state.planSteps.length;
   badge.textContent = String(n);
   badge.style.display = n > 0 ? "" : "none";
+}
+
+/* -------------------------------------------------------------------------- */
+/* Section headers (Import tab)                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Number the visible sections 1..n. Only matters in the ToolBox, where the
+ * Connection section is hidden wholesale and "2. Source" would otherwise be
+ * the first thing on screen.
+ */
+function renumberSections(): void {
+  let n = 0;
+  for (const sec of document.querySelectorAll<HTMLElement>("details.section")) {
+    const num = sec.querySelector<HTMLElement>(":scope > summary .n");
+    if (!num || sec.style.display === "none") continue;
+    num.textContent = String(++n);
+  }
+}
+
+/**
+ * Live summaries on the section headers, and a green "done" number once a
+ * section is satisfied. The Import tab is a sequence; these make it read as a
+ * checklist even when a section is collapsed or scrolled away — and they're
+ * what makes collapsing a finished section safe.
+ */
+function renderStepSummaries(): void {
+  const set = (secId: string, sumId: string, text: string, done: boolean): void => {
+    // Tolerant lookups: renderFatal replaces the whole body.
+    const sec = document.getElementById(secId);
+    const sum = document.getElementById(sumId);
+    if (!sec || !sum) return;
+    sum.textContent = text;
+    sec.classList.toggle("done", done);
+  };
+
+  let envHost = "";
+  if (state.environmentUrl) {
+    try {
+      envHost = new URL(state.environmentUrl).host;
+    } catch {
+      envHost = state.environmentUrl;
+    }
+  }
+  const who = state.account?.username ?? "";
+  set(
+    "sidecarAuthBlock",
+    "secConnectionSum",
+    who || envHost ? [who, envHost].filter(Boolean).join(" → ") : "sign in and pick an environment",
+    Boolean(state.account && state.environmentUrl)
+  );
+
+  const src = currentSource();
+  set(
+    "secSource",
+    "secSourceSum",
+    src ? `${src.tableName} — ${src.rowCount} row${src.rowCount === 1 ? "" : "s"}` : "no table selected",
+    Boolean(src)
+  );
+
+  let targetText = "no entity selected";
+  let targetDone = false;
+  if (createMode) {
+    const prefix = el<HTMLInputElement>("ctPrefix").value.trim().toLowerCase() || "new";
+    const suffix = el<HTMLInputElement>("ctSchemaSuffix").value.trim();
+    targetText = `new table: ${prefix}_${suffix || "…"}`;
+    targetDone = suffix.length > 0;
+  } else if (state.entitySet) {
+    const ent = state.entities.find((e) => e.entitySetName === state.entitySet);
+    targetText = ent?.displayName || ent?.logicalName || state.entitySet;
+    targetDone = true;
+  }
+  set("secTarget", "secTargetSum", targetText, targetDone);
+
+  let mapText: string;
+  let mapDone = false;
+  if (createMode) {
+    mapText = "generated when the table is created";
+    mapDone = true;
+  } else if (state.mappings.length === 0) {
+    mapText = "no columns mapped yet";
+  } else {
+    const errRows = state.mappings.filter((m) => m.target && validateColumn(m).length > 0).length;
+    mapText =
+      `${state.mappings.length} column${state.mappings.length === 1 ? "" : "s"}` +
+      (errRows > 0 ? ` — ${errRows} with errors` : "");
+    mapDone = errRows === 0;
+  }
+  set("secMapping", "secMappingSum", mapText, mapDone);
+
+  const modeSel = el<HTMLSelectElement>("conflictMode");
+  const optBits = [modeSel.selectedOptions[0]?.text ?? modeSel.value];
+  if (modeSel.value === "sync" && el<HTMLSelectElement>("syncAction").value === "delete") {
+    optBits.push("delete missing");
+  }
+  if (el<HTMLInputElement>("dryRun").checked) optBits.push("dry run");
+  if (el<HTMLInputElement>("bypassCustomLogic").checked) optBits.push("bypass logic");
+  set("secOptions", "secOptionsSum", optBits.join(" · "), true);
+
+  renumberSections();
 }
 
 /** Replace the pane with a single actionable message. Used when there is no sidecar. */
@@ -1585,7 +1707,7 @@ function renderFileList(): void {
 
     const label = document.createElement("span");
     label.style.cssText =
-      "flex:1; font-size:11px; color:#605e5c; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+      "flex:1; font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
     label.textContent = `${f.name} — ${tableCount} table${tableCount === 1 ? "" : "s"}`;
     label.title = f.name;
 
@@ -1615,6 +1737,7 @@ function updateOptionsVisibility(): void {
   el<HTMLLabelElement>("syncActionLabel").style.display = isSync ? "" : "none";
   el<HTMLSelectElement>("syncAction").style.display = isSync ? "" : "none";
   el<HTMLInputElement>("skipUnchanged").disabled = !(mode === "upsert" || mode === "sync");
+  renderStepSummaries();
 }
 
 function readOptionsIntoMapping(m: Mapping): void {
@@ -1690,6 +1813,39 @@ function setStatus(kind: "info" | "error" | "success", message: string): void {
   s.style.display = "";
 }
 
+/**
+ * The sign-in status once the sidecar has produced the Entra URL: the browser
+ * *should* have opened by itself, but when it didn't — blocked, crashed, or
+ * opened behind Excel — the only copy of the URL used to be in the sidecar's
+ * console. This puts it in the pane as a link, where clicking it is a user
+ * gesture the host can always honour.
+ */
+function showSignInLink(url: string): void {
+  const s = el<HTMLDivElement>("status");
+  s.className = "status info";
+  s.textContent = "Finish signing in in the browser window that just opened. No window? ";
+  const a = document.createElement("a");
+  a.href = url;
+  // target=_blank routes through the body-level click handler, which hands
+  // the URL to the host adapter — Office webviews ignore target=_blank.
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = "Open the sign-in page";
+  s.append(a, document.createTextNode("."));
+  s.style.display = "";
+}
+
+/** When the current run started, and at which row — the basis for the rate/ETA. */
+let runStartedAt = 0;
+let runStartOffset = 0;
+
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
 function setProgress(
   processed: number,
   total: number,
@@ -1698,10 +1854,23 @@ function setProgress(
   el<HTMLDivElement>("progressWrap").style.display = "";
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
   el<HTMLDivElement>("progressBar").style.width = `${pct}%`;
+  // Rate and ETA once there's enough signal to be honest about it. The first
+  // seconds of a run are dominated by metadata reads and would report a
+  // wildly wrong pace.
+  let pace = "";
+  const elapsed = (Date.now() - runStartedAt) / 1000;
+  const done = processed - runStartOffset;
+  if (runStartedAt > 0 && elapsed >= 3 && done > 0) {
+    const rate = done / elapsed;
+    pace =
+      `  ·  ${rate >= 10 ? Math.round(rate) : rate.toFixed(1)} rows/s` +
+      (processed < total ? `, ~${formatDuration((total - processed) / rate)} left` : "");
+  }
   el<HTMLDivElement>("progressText").textContent =
     `${pct}%  ${processed}/${total}  ` +
     `created=${counts.created}  updated=${counts.updated}  ` +
-    `skipped=${counts.skipped}  failed=${counts.failed}`;
+    `skipped=${counts.skipped}  failed=${counts.failed}` +
+    pace;
 }
 
 /**
@@ -1725,7 +1894,7 @@ function renderDevModeBanner(): void {
     banner = document.createElement("div");
     banner.id = "devModeBanner";
     banner.style.cssText =
-      "background:#eff6fc;color:#243a5e;border:1px solid #b3d3ea;" +
+      "background:var(--info-bg);color:var(--info-fg);border:1px solid var(--border);" +
       "border-radius:4px;padding:6px 8px;font-size:11px;margin-bottom:8px;";
     document.body.insertBefore(banner, document.body.firstChild);
   }
@@ -1756,7 +1925,11 @@ function renderDevModeBanner(): void {
  * neither is a request to authenticate.
  */
 async function setEnvironment(url: string, opts: { deliberate?: boolean } = {}): Promise<void> {
-  const next = url.trim();
+  // Trailing slashes stripped: the sidecar keys sessions by origin, and
+  // "https://org.crm.dynamics.com/" typed with a slash otherwise reads as a
+  // different environment than the session that exists for it — one source of
+  // "signed in but the dot stayed red".
+  const next = url.trim().replace(/\/+$/, "");
   if (next === state.environmentUrl) return;
 
   state.environmentUrl = next;
@@ -1824,7 +1997,8 @@ function renderConnBar(): void {
 
   el<HTMLSpanElement>("connSep").style.display = envHost ? "" : "none";
   el<HTMLSpanElement>("connDot").style.color =
-    envHost && state.account ? "#107c10" : "#d13438";
+    envHost && state.account ? "var(--ok)" : "var(--danger)";
+  renderStepSummaries();
 }
 
 /**
@@ -1882,7 +2056,7 @@ async function refreshAccountUI(): Promise<void> {
   renderConnBar();
   renderAccountPicker();
   renderAccountHint();
-  el<HTMLSpanElement>("authDot").style.color = acc ? "#107c10" : "#d13438";
+  el<HTMLSpanElement>("authDot").style.color = acc ? "var(--ok)" : "var(--danger)";
   const entSel = el<HTMLSelectElement>("entity");
   entSel.disabled = !acc;
   // Clear the "Sign in to load entities" placeholder once signed in
@@ -1916,7 +2090,7 @@ async function refreshAccountUI(): Promise<void> {
  */
 function promptSignIn(message: string): void {
   state.account = null;
-  el<HTMLSpanElement>("authDot").style.color = "#d13438";
+  el<HTMLSpanElement>("authDot").style.color = "var(--danger)";
   renderAccountHint();
   renderConnBar();
   setStatus("error", message);
@@ -1962,14 +2136,14 @@ function reportSidecarError(e: unknown, context: string): void {
  * the username carries across, goes to Entra as a login hint, and usually
  * turns the second environment's sign-in into a redirect nobody has to read.
  */
-async function onSignIn(): Promise<void> {
+async function onSignIn(opts: { force?: boolean } = {}): Promise<void> {
   if (!state.environmentUrl) {
     setStatus(
       "info",
       state.username
-        ? `Choose an environment in step 2 — sign-in is per environment, and ${state.username} ` +
+        ? `Choose an environment first — sign-in is per environment, and ${state.username} ` +
             `will be used for it.`
-        : "Choose an environment in step 2 first — sign-in is against a specific environment."
+        : "Choose an environment first — sign-in is against a specific environment."
     );
     el<HTMLInputElement>("env").focus();
     return;
@@ -1979,7 +2153,10 @@ async function onSignIn(): Promise<void> {
   btn.disabled = true;
   try {
     setStatus("info", "Waiting for sign-in to finish in your browser…");
-    const acc = await signIn(state.environmentUrl, state.username ?? undefined);
+    const acc = await signIn(state.environmentUrl, state.username ?? undefined, {
+      force: opts.force,
+      onAuthorizeUrl: showSignInLink,
+    });
     state.account = { username: acc.username };
     state.username = acc.username;
     localStorage.setItem(LAST_USER_KEY, acc.username);
@@ -1988,6 +2165,18 @@ async function onSignIn(): Promise<void> {
     await refreshKnownAccounts();
     renderProfilePicker();
     await refreshAccountUI();
+    // refreshAccountUI re-asks the sidecar who's signed in, and nulls the
+    // account when that lookup fails. Right here that answer is wrong by
+    // construction — signIn just returned this very account — so a transient
+    // lookup failure must not paint the pane signed-out (the intermittent
+    // "signed in but the dot stayed red").
+    if (!state.account) {
+      state.account = { username: acc.username };
+      el<HTMLSpanElement>("authDot").style.color = "var(--ok)";
+      renderAccountPicker();
+      renderAccountHint();
+      renderConnBar();
+    }
     setStatus("success", `Signed in as ${acc.username}.`);
     await loadEntities();
   } catch (e) {
@@ -1995,6 +2184,47 @@ async function onSignIn(): Promise<void> {
   } finally {
     btn.disabled = false;
   }
+}
+
+/**
+ * The Connect button: one deterministic way to get from "URL in the box" to
+ * "green dot and a loaded entity list". Reuses the cached session when the
+ * sidecar has one for this environment and starts a sign-in when it doesn't —
+ * the same steps the pane tries to do implicitly, but on demand, so the user
+ * never has to work out which of them silently didn't happen.
+ */
+async function onConnect(): Promise<void> {
+  const url = el<HTMLInputElement>("env").value.trim();
+  if (!url) {
+    setStatus("error", "Enter an environment URL first.");
+    el<HTMLInputElement>("env").focus();
+    return;
+  }
+  const changed = url.replace(/\/+$/, "") !== state.environmentUrl;
+  if (changed) {
+    // Not deliberate: setEnvironment's own sign-in path is skipped so this
+    // function stays the single place that decides what happens next.
+    await setEnvironment(url);
+  } else {
+    // Same environment — re-check the session instead of trusting whatever
+    // an earlier (possibly failed) background refresh left in state.
+    await refreshAccountUI();
+  }
+  if (!state.environmentUrl) return;
+  if (!state.account) {
+    await onSignIn();
+    return;
+  }
+  let where = state.environmentUrl;
+  try {
+    where = new URL(state.environmentUrl).host;
+  } catch {
+    // show it raw
+  }
+  setStatus("success", `Connected to ${where} as ${state.account.username}. Loading entities…`);
+  // A changed environment already kicked off its entity load inside
+  // setEnvironment; only the "re-connect to the same place" path needs one.
+  if (!changed) triggerLoadEntities();
 }
 
 /**
@@ -2032,6 +2262,14 @@ async function loadEntities(): Promise<void> {
 /** Sentinel value for the "create a new table" entity option. */
 const CREATE_NEW = "__create_new__";
 
+/**
+ * Sentinel for "All entities (Default solution)". A real value, not "" — the
+ * type-ahead combobox only offers options with a value (empty doubles as its
+ * placeholder), so with "" this choice vanished from the list and there was
+ * no way back to the full entity list after picking a solution.
+ */
+const ALL_SOLUTIONS = "__all__";
+
 /** Populate the entity select, optionally restricted to a set of MetadataIds. */
 function renderEntityOptions(filter: Set<string> | null): void {
   const sel = el<HTMLSelectElement>("entity");
@@ -2068,7 +2306,7 @@ async function loadSolutions(client: DataverseGateway): Promise<void> {
   try {
     const solutions = await client.listSolutions();
     sel.innerHTML = "";
-    sel.appendChild(new Option("All entities (Default solution)", ""));
+    sel.appendChild(new Option("All entities (Default solution)", ALL_SOLUTIONS));
     for (const s of solutions) {
       // The Default solution contains everything — same as "All entities".
       if (s.uniqueName.toLowerCase() === "default") continue;
@@ -2086,7 +2324,7 @@ async function loadSolutions(client: DataverseGateway): Promise<void> {
 async function onPickSolution(e: Event): Promise<void> {
   const sel = e.target as HTMLSelectElement;
   const solutionId = sel.value;
-  if (!solutionId) {
+  if (!solutionId || solutionId === ALL_SOLUTIONS) {
     renderEntityOptions(null);
     return;
   }
@@ -2171,7 +2409,7 @@ function initUserSearch(
         if (mySeq !== seq) return;
         list.innerHTML = "";
         if (rows.length === 0) {
-          list.innerHTML = `<div style="padding:4px 8px;color:#605e5c;">No matching users</div>`;
+          list.innerHTML = `<div style="padding:4px 8px;color:var(--muted);">No matching users</div>`;
         }
         for (const r of rows) {
           const guid = String(r["systemuserid"] ?? "");
@@ -2256,6 +2494,7 @@ async function enterCreateTableMode(): Promise<void> {
   }
   ctCols = suggestColumns(state.selectedTable.columns, rows.slice(0, 200));
   renderCtColumns();
+  renderStepSummaries();
   setStatus(
     "info",
     `Suggested ${ctCols.length} column(s) from ${Math.min(rows.length, 200)} sample row(s). ` +
@@ -2269,6 +2508,7 @@ function exitCreateTableMode(): void {
   el<HTMLButtonElement>("run").textContent = "Run import";
   el<HTMLDivElement>("createTablePanel").style.display = "none";
   el<HTMLDivElement>("mappingSection").style.display = "";
+  renderStepSummaries();
 }
 
 function renderCtColumns(): void {
@@ -2276,7 +2516,7 @@ function renderCtColumns(): void {
   root.innerHTML = "";
   const KINDS: GeneratedKind[] = ["string", "memo", "integer", "decimal", "boolean", "datetime", "dateonly"];
   const header = document.createElement("div");
-  header.style.cssText = "display:grid;grid-template-columns:24px 1fr 1fr 90px 56px 36px;gap:4px;font-size:10px;color:#605e5c;";
+  header.style.cssText = "display:grid;grid-template-columns:24px 1fr 1fr 90px 56px 36px;gap:4px;font-size:10px;color:var(--muted);";
   for (const t of ["", "Source", "Column name", "Type", "Primary", "Key"]) {
     const s = document.createElement("span");
     s.textContent = t;
@@ -2841,7 +3081,7 @@ function makeConstantEditor(
     const input = document.createElement("input");
     input.autocomplete = "off";
     input.spellcheck = false;
-    input.style.background = "#f3f9f1"; // subtle tint: this cell is not a source column
+    input.style.background = "var(--chip-bg)"; // subtle tint: this cell is not a source column
     if (!entitySet) {
       input.disabled = true;
       input.placeholder = "pick “Binds to” below first";
@@ -2862,7 +3102,7 @@ function plainConstantInput(i: number, placeholder: string): HTMLInputElement {
   const input = document.createElement("input");
   input.autocomplete = "off";
   input.spellcheck = false;
-  input.style.background = "#f3f9f1";
+  input.style.background = "var(--chip-bg)";
   input.placeholder = placeholder;
   const cur = state.mappings[i].constant;
   input.value = cur === undefined ? "" : String(cur);
@@ -2908,7 +3148,7 @@ function attachRecordSearch(
   const list = document.createElement("div");
   list.style.cssText =
     "position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;" +
-    "max-height:180px;overflow-y:auto;background:#fff;border:1px solid #8a8886;" +
+    "max-height:180px;overflow-y:auto;background:var(--bg);border:1px solid var(--border-strong);" +
     "box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;";
   wrap.appendChild(list);
 
@@ -2929,7 +3169,7 @@ function attachRecordSearch(
 
   const search = async (term: string): Promise<void> => {
     const mySeq = ++seq;
-    message("Searching…", "#605e5c");
+    message("Searching…", "var(--muted)");
     try {
       const client = dvClient();
       const info = await client.getEntitySetInfo(entitySet);
@@ -2941,7 +3181,7 @@ function attachRecordSearch(
       );
       if (mySeq !== seq) return; // stale response
       if (rows.length === 0) {
-        message("No matches", "#605e5c");
+        message("No matches", "var(--muted)");
         return;
       }
       list.innerHTML = "";
@@ -2951,7 +3191,7 @@ function attachRecordSearch(
         const item = document.createElement("div");
         item.textContent = label;
         item.style.cssText = "padding:4px 8px;cursor:pointer;";
-        item.addEventListener("mouseenter", () => (item.style.background = "#f3f2f1"));
+        item.addEventListener("mouseenter", () => (item.style.background = "var(--surface-2)"));
         item.addEventListener("mouseleave", () => (item.style.background = ""));
         item.addEventListener("mousedown", (e) => {
           e.preventDefault();
@@ -2967,7 +3207,7 @@ function attachRecordSearch(
       list.style.display = "";
     } catch (err) {
       if (mySeq !== seq) return;
-      message((err as Error).message, "#a4262c");
+      message((err as Error).message, "var(--danger)");
     }
   };
 
@@ -3393,7 +3633,45 @@ function rerenderMappings(): void {
     }
   });
 
+  el<HTMLDivElement>("mappingHead").style.display = state.mappings.length > 0 ? "" : "none";
+  renderMappingHealth();
   renderRowErrors();
+  renderStepSummaries();
+}
+
+/**
+ * "N of M source columns mapped", with each unmapped column as a chip that
+ * adds a pre-filled row for itself. Answers "which columns am I silently not
+ * loading?" without diffing two lists by eye.
+ */
+function renderMappingHealth(): void {
+  const box = el<HTMLDivElement>("mappingHealth");
+  box.innerHTML = "";
+  const cols = state.selectedTable?.columns ?? [];
+  if (cols.length === 0) {
+    box.style.display = "none";
+    return;
+  }
+  const mapped = new Set(state.mappings.map((m) => m.source).filter(Boolean));
+  const unmapped = cols.filter((c) => !mapped.has(c));
+  box.style.display = "";
+  const label = document.createElement("span");
+  label.textContent =
+    unmapped.length === 0
+      ? `All ${cols.length} source column${cols.length === 1 ? "" : "s"} mapped.`
+      : `${cols.length - unmapped.length} of ${cols.length} source columns mapped — click to add: `;
+  box.appendChild(label);
+  for (const c of unmapped) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = c;
+    chip.title = `Add a mapping row for source column "${c}"`;
+    chip.addEventListener("click", () =>
+      addMapping({ source: c, target: "", kind: "string", treatEmptyAsNull: true })
+    );
+    box.appendChild(chip);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3407,7 +3685,7 @@ function rerenderRunPlan(): void {
   if (state.planSteps.length === 0) {
     root.textContent = "No steps yet.";
     root.style.fontSize = "11px";
-    root.style.color = "#605e5c";
+    root.style.color = "var(--muted)";
     renderPlanErrors(); // clears any stale message from a previous plan
     return;
   }
@@ -3415,8 +3693,10 @@ function rerenderRunPlan(): void {
   root.style.color = "";
   for (let i = 0; i < state.planSteps.length; i++) {
     const step = state.planSteps[i];
-    const row = document.createElement("div");
-    row.className = "plan-row";
+    // One card per step. The previous layout was a nine-column grid — in a
+    // ~350px task pane that's ~30px per field, unlabeled and unreadable.
+    const card = document.createElement("div");
+    card.className = "plan-card";
 
     const id = document.createElement("input");
     id.placeholder = "step id";
@@ -3509,6 +3789,10 @@ function rerenderRunPlan(): void {
     refreshWrap.style.alignItems = "center";
     refreshWrap.style.gap = "4px";
     refreshWrap.style.fontSize = "11px";
+    refreshWrap.style.margin = "0";
+    refreshWrap.style.fontWeight = "400";
+    refreshWrap.style.whiteSpace = "nowrap";
+    refreshWrap.title = "Refresh the workbook's Power Query connections before reading it";
     const refresh = document.createElement("input");
     refresh.type = "checkbox";
     refresh.style.width = "auto";
@@ -3522,7 +3806,7 @@ function rerenderRunPlan(): void {
     refreshWrap.append(refresh, refreshText);
 
     const remove = document.createElement("button");
-    remove.className = "secondary";
+    remove.className = "secondary icon";
     remove.textContent = "✕";
     remove.title = "Remove step";
     remove.addEventListener("click", () => {
@@ -3531,8 +3815,31 @@ function rerenderRunPlan(): void {
       rerenderRunPlan();
     });
 
-    row.append(id, mapping, workbook, stage, dependsOn, links, overrides, refreshWrap, remove);
-    root.appendChild(row);
+    const head = document.createElement("div");
+    head.className = "plan-head";
+    id.style.flex = "1";
+    head.append(id, refreshWrap, remove);
+
+    const grid = document.createElement("div");
+    grid.className = "plan-grid";
+    const lbl = (text: string, title: string): HTMLSpanElement => {
+      const s = document.createElement("span");
+      s.className = "lbl";
+      s.textContent = text;
+      s.title = title;
+      return s;
+    };
+    grid.append(
+      lbl("Mapping", mapping.title), mapping,
+      lbl("Workbook", workbook.title), workbook,
+      lbl("Stage", stage.title), stage,
+      lbl("Depends on", dependsOn.title), dependsOn,
+      lbl("Key links", links.title), links,
+      lbl("Overrides", overrides.title), overrides
+    );
+
+    card.append(head, grid);
+    root.appendChild(card);
   }
 
   renderPlanErrors();
@@ -3713,11 +4020,81 @@ function buildMapping(): Mapping {
 }
 
 /**
+ * What the Run button is about to do, spelled out: rows, mode, entity,
+ * environment, identity — plus every flag that changes the blast radius.
+ * The connection bar says *where*; this says *what*, at the moment it's
+ * still free to say no. `danger` marks the modes that destroy data.
+ */
+function preflightSummary(
+  mapping: Mapping,
+  rowCount: number,
+  startOffset: number,
+  headers: string[],
+  warnings: string[],
+  dryRun: boolean
+): { text: string; danger: boolean } {
+  let where = mapping.environmentUrl;
+  try {
+    where = new URL(mapping.environmentUrl).host;
+  } catch {
+    // show it raw
+  }
+  const verbs: Record<Mapping["conflictMode"], string> = {
+    insert: "Insert",
+    upsert: "Upsert",
+    "skip-if-exists": "Insert (skip existing)",
+    sync: "Sync",
+  };
+  const n = rowCount - startOffset;
+  const lines: string[] = [];
+  if (dryRun) lines.push("Dry run — nothing will be written.");
+  lines.push(`${verbs[mapping.conflictMode]} ${n} row${n === 1 ? "" : "s"} → ${mapping.targetEntitySet}`);
+  lines.push(`Environment: ${where || "(none)"}`);
+  const who = state.account?.username ?? state.username ?? "current connection";
+  lines.push(`As: ${who}`);
+  if (startOffset > 0) lines.push(`Resuming at row ${startOffset + 1}.`);
+
+  const notes: string[] = [];
+  let danger = false;
+  if (mapping.conflictMode === "sync") {
+    if (mapping.syncAction === "delete") {
+      notes.push("⚠ Records missing from the source will be PERMANENTLY DELETED.");
+      danger = true;
+    } else {
+      notes.push("Records missing from the source will be deactivated.");
+    }
+  }
+  if (mapping.bypassCustomLogic) {
+    notes.push("⚠ Plugins and Power Automate flows are bypassed.");
+    danger = true;
+  }
+  if (mapping.impersonateUserId) {
+    notes.push(`Records are written as another user (${mapping.impersonateUserId}).`);
+  }
+  const mapped = new Set(mapping.columns.map((c) => c.source).filter(Boolean));
+  const unmapped = headers.filter((h) => !mapped.has(h));
+  if (unmapped.length > 0) {
+    const shown = unmapped.slice(0, 5).join(", ");
+    notes.push(
+      `${unmapped.length} source column${unmapped.length === 1 ? "" : "s"} not mapped ` +
+        `(won't be loaded): ${shown}${unmapped.length > 5 ? ", …" : ""}`
+    );
+  }
+  notes.push(...warnings);
+
+  return {
+    text: lines.join("\n") + (notes.length > 0 ? "\n\n" + notes.map((x) => `• ${x}`).join("\n") : ""),
+    danger: danger && !dryRun,
+  };
+}
+
+/**
  * In-pane replacement for window.confirm, which Office task pane webviews
  * don't support (it throws a script error). Renders a modal overlay with
- * OK/Cancel and resolves with the choice.
+ * OK/Cancel and resolves with the choice. `danger` paints the OK button red
+ * for actions that destroy data.
  */
-function confirmDialog(message: string, okLabel = "OK"): Promise<boolean> {
+function confirmDialog(message: string, okLabel = "OK", danger = false): Promise<boolean> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.style.cssText =
@@ -3725,7 +4102,8 @@ function confirmDialog(message: string, okLabel = "OK"): Promise<boolean> {
       "display:flex;align-items:center;justify-content:center;padding:16px;";
     const box = document.createElement("div");
     box.style.cssText =
-      "background:#fff;border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.3);" +
+      "background:var(--bg);color:var(--fg);border:1px solid var(--border);" +
+      "border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.3);" +
       "max-width:320px;width:100%;padding:14px;font-size:12px;";
     const text = document.createElement("div");
     text.style.cssText = "white-space:pre-wrap;margin-bottom:12px;";
@@ -3745,6 +4123,7 @@ function confirmDialog(message: string, okLabel = "OK"): Promise<boolean> {
     const okBtn = document.createElement("button");
     okBtn.type = "button";
     okBtn.style.width = "auto";
+    if (danger) okBtn.style.background = "var(--danger)";
     okBtn.textContent = okLabel;
     okBtn.addEventListener("click", () => done(true));
     row.append(cancelBtn, okBtn);
@@ -3830,7 +4209,10 @@ async function onResetAll(): Promise<void> {
   optionLabelsCache.clear();
   navPropCache.clear();
 
-  el<HTMLSelectElement>("solution").value = "";
+  const solSel = el<HTMLSelectElement>("solution");
+  solSel.value = ALL_SOLUTIONS; // falls back to "" when only the placeholder exists
+  // The combobox layered over the select only re-reads it on change events.
+  solSel.dispatchEvent(new Event("change"));
   if (state.entities.length > 0) {
     // Signed in: keep the loaded entity list, just drop the selection.
     renderEntityOptions(null);
@@ -3905,18 +4287,7 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
       );
       return;
     }
-    // Advisories (e.g. overriddencreatedon with upsert) — confirm, don't block.
     const warnings = mappingWarnings(mapping);
-    if (warnings.length > 0) {
-      const proceed = await confirmDialog(
-        "Heads up:\n\n" + warnings.join("\n\n"),
-        "Run anyway"
-      );
-      if (!proceed) {
-        setStatus("info", "Run cancelled.");
-        return;
-      }
-    }
     const dryRun = el<HTMLInputElement>("dryRun").checked;
 
     setStatus("info", currentSource()?.origin === "file" ? "Reading file…" : "Reading table…");
@@ -3938,11 +4309,25 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
       startOffset = state.checkpoint.offset;
     }
 
+    // Pre-flight: what's about to happen, where, and as whom — confirmed
+    // before the first write. A dry run skips it (nothing is at stake) unless
+    // there are advisories worth reading first.
+    if (!dryRun || warnings.length > 0) {
+      const pf = preflightSummary(mapping, rows.length, startOffset, headers, warnings, dryRun);
+      const proceed = await confirmDialog(pf.text, dryRun ? "Dry run" : "Run import", pf.danger);
+      if (!proceed) {
+        setStatus("info", "Run cancelled.");
+        return;
+      }
+    }
+
     setStatus(
       "info",
       `${dryRun ? "Dry run: planning" : "Loading"} ${rows.length - startOffset} rows…` +
         (startOffset > 0 ? ` (resuming at row ${startOffset + 1})` : "")
     );
+    runStartedAt = Date.now();
+    runStartOffset = startOffset;
     runController = new AbortController();
     setRunning(true);
     // Drop the previous run's log before accumulating a new one, so two
@@ -4229,14 +4614,48 @@ function showRunLog(
 
   el<HTMLDivElement>("logWrap").style.display = "";
   const errorDiv = el<HTMLDivElement>("errorDetails");
+  errorDiv.textContent = "";
   if (result.errors.length > 0) {
     errorDiv.style.display = "";
-    errorDiv.textContent = result.errors
-      .map(e => `row ${e.rowIndex}: [${e.code ?? e.httpStatus ?? ""}] ${e.message}`)
-      .join("\n");
+    // Grouped by message, biggest group first: a 10k-row run usually fails in
+    // two or three distinct ways, and "212 × lookup not found" says more than
+    // 212 interleaved lines. Row numbers stay one click away per group.
+    const groups = new Map<string, { label: string; rows: number[] }>();
+    for (const e of result.errors) {
+      const tag = e.code ?? e.httpStatus ?? "";
+      const label = `${tag ? `[${tag}] ` : ""}${e.message}`;
+      let g = groups.get(label);
+      if (!g) {
+        g = { label, rows: [] };
+        groups.set(label, g);
+      }
+      g.rows.push(e.rowIndex);
+    }
+    const MAX_ROWS_SHOWN = 200;
+    for (const g of [...groups.values()].sort((a, b) => b.rows.length - a.rows.length)) {
+      const det = document.createElement("details");
+      det.className = "err-group";
+      const sum = document.createElement("summary");
+      const cnt = document.createElement("span");
+      cnt.className = "cnt";
+      cnt.textContent = `${g.rows.length} ×`;
+      const msg = document.createElement("span");
+      msg.className = "msg";
+      msg.textContent = g.label;
+      sum.append(cnt, msg);
+      const rowsDiv = document.createElement("div");
+      rowsDiv.className = "rows";
+      rowsDiv.textContent =
+        "rows: " +
+        g.rows.slice(0, MAX_ROWS_SHOWN).join(", ") +
+        (g.rows.length > MAX_ROWS_SHOWN
+          ? ` … and ${g.rows.length - MAX_ROWS_SHOWN} more (all of them are in the downloaded log)`
+          : "");
+      det.append(sum, rowsDiv);
+      errorDiv.appendChild(det);
+    }
   } else {
     errorDiv.style.display = "none";
-    errorDiv.textContent = "";
   }
 
   // Say what's being held, so "Clear log" is an informed choice rather than
@@ -4286,8 +4705,10 @@ function restoreMapping(): void {
   if (!raw || typeof raw !== "string") return;
   try {
     const m = parseMapping(JSON.parse(raw));
-    state.environmentUrl = m.environmentUrl;
-    el<HTMLInputElement>("env").value = m.environmentUrl;
+    // Same normalization as setEnvironment, so the session lookup that keys
+    // off this URL matches the one sign-in created.
+    state.environmentUrl = m.environmentUrl.trim().replace(/\/+$/, "");
+    el<HTMLInputElement>("env").value = state.environmentUrl;
     state.entitySet = m.targetEntitySet;
     state.mappings = m.columns;
     state.mappingExtras = { createdAt: m.createdAt, logDir: m.logDir };

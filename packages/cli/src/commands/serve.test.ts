@@ -62,7 +62,10 @@ const listDelegatedSessions = vi.hoisted(() =>
  * cache the other routes' tests assume.
  */
 const loginDelegated = vi.hoisted(() =>
-  vi.fn((): Promise<unknown> => Promise.reject(new Error("loginDelegated not stubbed for this test")))
+  vi.fn(
+    (_opts?: { environmentUrl?: string; onAuthorizeUrl?: (url: string) => void }): Promise<unknown> =>
+      Promise.reject(new Error("loginDelegated not stubbed for this test"))
+  )
 );
 const logoutDelegated = vi.hoisted(() => vi.fn((_env?: string): Promise<void> => Promise.resolve()));
 const getSignedInAccount = vi.hoisted(() =>
@@ -534,4 +537,49 @@ test("signing in as a different user signs the previous user out everywhere", as
   } finally {
     getSignedInAccount.mockImplementation(() => Promise.resolve(null));
   }
+});
+
+test("/api/signin-url serves the pending authorize URL only while sign-in is in flight", async () => {
+  // The pane polls this while its /api/signin request blocks, so a browser
+  // that failed to open still yields a clickable link. The URL must appear
+  // once the interactive flow produces it, be scoped to the environment that
+  // asked, and vanish the moment the sign-in settles — after that its
+  // loopback listener is gone and a click could never complete.
+  const env = "https://pending.crm.dynamics.com";
+  const authorizeUrl = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?test=1";
+  let finishSignIn!: () => void;
+  loginDelegated.mockImplementationOnce((opts) => {
+    opts?.onAuthorizeUrl?.(authorizeUrl);
+    return new Promise((resolve) => {
+      finishSignIn = () => resolve({ username: "u@contoso.com" });
+    });
+  });
+
+  const askUrl = async (forEnv: string): Promise<string | null> => {
+    const res = await call("POST", "/api/signin-url", {
+      headers: ours(),
+      body: JSON.stringify({ environmentUrl: forEnv }),
+    });
+    assert.equal(res.status, 200);
+    return (JSON.parse(res.body) as { url: string | null }).url;
+  };
+
+  assert.equal(await askUrl(env), null, "nothing pending before the sign-in starts");
+
+  const signin = call("POST", "/api/signin", {
+    headers: ours(),
+    body: JSON.stringify({ environmentUrl: env, force: true }),
+  });
+  // The mock publishes the URL synchronously inside loginDelegated, so one
+  // poll after the request is accepted must see it.
+  await vi.waitFor(async () => {
+    assert.equal(await askUrl(env), authorizeUrl);
+  });
+  // Scoped: another environment's poll gets nothing.
+  assert.equal(await askUrl("https://other.crm.dynamics.com"), null);
+
+  finishSignIn();
+  const res = await signin;
+  assert.equal(res.status, 200);
+  assert.equal(await askUrl(env), null, "the URL is withdrawn once the sign-in settles");
 });

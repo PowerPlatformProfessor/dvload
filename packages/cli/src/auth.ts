@@ -168,6 +168,12 @@ export function announceLoginAttempt(clientId: string, flow: LoginFlow): void {
 
 /** Pull the AADSTS error code out of whatever MSAL threw. */
 export function aadstsCode(err: unknown): string | null {
+  // The interactive timeout's help text QUOTES AADSTS codes ("'No reply
+  // address' (AADSTS900971 / AADSTS500113) means…"). Scraping a code out of
+  // dvload's own explanation reported an Entra error that never happened —
+  // a user who simply never finished the browser page saw "failed
+  // (AADSTS900971)" and went hunting for a redirect-URI problem.
+  if ((err as { errorCode?: string })?.errorCode === "interactive_timeout") return null;
   const text = [
     (err as { errorMessage?: string })?.errorMessage,
     (err as { errorCode?: string })?.errorCode,
@@ -376,6 +382,14 @@ export interface DelegatedAuthOptions {
    * has no matching session, and it never grants anything on its own.
    */
   loginHint?: string;
+  /**
+   * Called with the authorize URL at the moment the interactive flow opens
+   * (or tries to open) the system browser. Exists for the sidecar: the pane
+   * that requested the sign-in has no console, so when the browser fails to
+   * open — or opens behind Excel — this is how the URL reaches a surface the
+   * user is actually looking at. Informational; the flow proceeds regardless.
+   */
+  onAuthorizeUrl?: (url: string) => void;
 }
 
 export interface AppOnlyCredentials {
@@ -1065,6 +1079,9 @@ async function acquireInteractive(opts: DelegatedAuthOptions): Promise<Authentic
     ...(opts.loginHint && { loginHint: opts.loginHint }),
     openBrowser: async (url: string) => {
       assertUsableAuthorizeUrl(url);
+      // Before openInBrowser, not after: if opening hangs or fails, handing
+      // the URL to whoever is listening (the pane) is the recovery path.
+      opts.onAuthorizeUrl?.(url);
       console.log("");
       console.log("Opening your browser to sign in...");
       console.log("If nothing opens, paste this URL yourself:");
@@ -1184,6 +1201,17 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
 
   let lastErr: unknown;
 
+  // Short parenthetical for the failure lines below: the genuine AADSTS code
+  // when Entra returned one, an honest "no response" for the timeout (whose
+  // help text merely quotes AADSTS codes), nothing otherwise.
+  const failureTag = (e: unknown): string => {
+    const code = aadstsCode(e);
+    if (code) return ` (${code})`;
+    return (e as { errorCode?: string })?.errorCode === "interactive_timeout"
+      ? " (no response from the browser — the sign-in page may have been closed or ignored)"
+      : "";
+  };
+
   for (let i = 0; i < chain.length; i++) {
     const clientId = chain[i];
     const next = chain[i + 1];
@@ -1204,8 +1232,7 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
         // be confirmed was left out on purpose — see the filter above.
         if (shouldTryNextClient(e)) {
           process.stderr.write(
-            `\nSign-in with ${describeClient(clientId)} failed` +
-              `${aadstsCode(e) ? ` (${aadstsCode(e)})` : ""}, and there is no\n` +
+            `\nSign-in with ${describeClient(clientId)} failed${failureTag(e)}, and there is no\n` +
               `  other app to try. dvload only falls back to an app it has\n` +
               `  confirmed can receive a browser redirect, and none of the\n` +
               `  alternatives qualified.\n\n` +
@@ -1217,8 +1244,7 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
       }
       if (!shouldTryNextClient(e)) throw e;
       process.stderr.write(
-        `\nSign-in with ${describeClient(clientId)} failed` +
-          `${aadstsCode(e) ? ` (${aadstsCode(e)})` : ""}.\n` +
+        `\nSign-in with ${describeClient(clientId)} failed${failureTag(e)}.\n` +
           `  Retrying with ${describeClient(next)}.\n\n`
       );
     }

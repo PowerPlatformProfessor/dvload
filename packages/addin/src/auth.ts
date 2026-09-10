@@ -207,12 +207,57 @@ export async function getAccount(environmentUrl?: string): Promise<Account | nul
  * Every environment needs its own sign-in — the token scope is the
  * environment's own origin — so passing it is what makes switching
  * environment feel like staying signed in rather than starting over.
+ *
+ * Without `force`, the sidecar reuses a live session for this environment
+ * (and hint) instead of opening a browser — a sign-in the pane merely
+ * *thinks* is needed resolves instantly. Pass `force` for the clicks whose
+ * whole point is a fresh Entra prompt: "Sign in again", switching account.
+ *
+ * `onAuthorizeUrl` fires (at most once) with the Entra sign-in URL once the
+ * sidecar has opened — or failed to open — the system browser with it. The
+ * sidecar can only print that URL to its own console; this callback is what
+ * lets the pane put it somewhere the user is actually looking, as a link to
+ * click when no browser window appeared.
  */
-export async function signIn(environmentUrl: string, loginHint?: string): Promise<Account> {
-  const status = await post<AuthStatus>("/signin", {
+export async function signIn(
+  environmentUrl: string,
+  loginHint?: string,
+  opts: { force?: boolean; onAuthorizeUrl?: (url: string) => void } = {}
+): Promise<Account> {
+  const request = post<AuthStatus>("/signin", {
     environmentUrl,
     ...(loginHint ? { loginHint } : {}),
+    ...(opts.force ? { force: true } : {}),
   });
+
+  // While the sign-in request is in flight, watch for the authorize URL it
+  // produces. Polling, not part of the response: /api/signin blocks until the
+  // whole sign-in finishes, and the URL exists — and matters — in the middle.
+  if (opts.onAuthorizeUrl) {
+    const report = opts.onAuthorizeUrl;
+    let settled = false;
+    request.then(() => (settled = true)).catch(() => (settled = true));
+    void (async () => {
+      // Keeps polling after the first hit: a fallback client id opens a NEW
+      // browser attempt with a new URL, and the old one's listener is dead.
+      let reported: string | null = null;
+      while (!settled) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (settled) return;
+        try {
+          const { url } = await post<{ url: string | null }>("/signin-url", { environmentUrl });
+          if (url && url !== reported && !settled) {
+            reported = url;
+            report(url);
+          }
+        } catch {
+          // Sidecar hiccup — keep waiting; the sign-in itself will report.
+        }
+      }
+    })();
+  }
+
+  const status = await request;
   lastStatus = status;
   if (!status.account) throw new Error("Sign-in completed but no account was returned.");
   tokens.delete(environmentUrl);

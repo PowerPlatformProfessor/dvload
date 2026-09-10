@@ -9,57 +9,130 @@
   <script type="text/javascript" src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 
   <style>
-    :root { color-scheme: light dark; font-family: "Segoe UI", system-ui, sans-serif; }
+    /* One palette, two themes. Every color in the pane (including the ones
+       set from TypeScript) goes through these tokens, so dark mode is a
+       redefinition rather than a second set of rules scattered per element. */
+    :root {
+      color-scheme: light dark;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      --bg: #ffffff;
+      --fg: #201f1e;
+      --muted: #605e5c;
+      --border: #e1dfdd;
+      --border-strong: #8a8886;
+      --accent: #0078d4;
+      --accent-fg: #ffffff;
+      --accent-text: #0078d4;
+      --accent-soft: #deecf9;
+      --surface: #faf9f8;
+      --surface-2: #f3f2f1;
+      --surface-3: #edebe9;
+      --ok: #107c10;
+      --danger: #a4262c;
+      --danger-fg: #ffffff;
+      --info-bg: #eef6ff;   --info-fg: #003a75;
+      --error-bg: #fde7e9;  --error-fg: #5c0011;
+      --success-bg: #e9f7ee; --success-fg: #0a3d1e;
+      --warn-bg: #fff4ce;   --warn-fg: #6d5700;
+      --chip-bg: #f3f9f1;
+      --shadow: 0 4px 8px rgba(0, 0, 0, .15);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #201f1e;
+        --fg: #f3f2f1;
+        --muted: #c8c6c4;
+        --border: #484644;
+        --border-strong: #797775;
+        --accent: #0078d4;
+        --accent-fg: #ffffff;
+        --accent-text: #6cb8f6;
+        --accent-soft: #0b3557;
+        --surface: #292827;
+        --surface-2: #3b3a39;
+        --surface-3: #484644;
+        --ok: #6ccb5f;
+        --danger: #d13438;
+        --danger-fg: #ffffff;
+        --info-bg: #0b3557;   --info-fg: #a3d3ff;
+        --error-bg: #442726;  --error-fg: #f1707b;
+        --success-bg: #0f3a1f; --success-fg: #92d5a9;
+        --warn-bg: #433519;   --warn-fg: #f2d478;
+        --chip-bg: #2b3a28;
+        --shadow: 0 4px 10px rgba(0, 0, 0, .5);
+      }
+    }
+
     /* Bottom padding clears the sticky connection bar so the last control
        is never trapped underneath it. */
-    body { margin: 0; padding: 12px 12px 40px 12px; font-size: 13px; }
+    body { margin: 0; padding: 12px 12px 40px 12px; font-size: 13px; background: var(--bg); color: var(--fg); }
 
     #connBar {
       position: fixed; left: 0; right: 0; bottom: 0;
       display: flex; gap: 6px; align-items: center;
       padding: 5px 10px; font-size: 11px;
-      background: #faf9f8; border-top: 1px solid #e1dfdd; color: #605e5c;
-      white-space: nowrap;
+      background: var(--surface); border-top: 1px solid var(--border); color: var(--muted);
+      white-space: nowrap; z-index: 600;
     }
     /* The environment truncates before the username: if only one can fit,
        "which org" matters more than "which me". */
     #connEnv { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     #connUser { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
     #connDot { font-size: 13px; line-height: 1; flex-shrink: 0; }
-    @media (prefers-color-scheme: dark) {
-      #connBar { background: #292827; border-top-color: #484644; color: #c8c6c4; }
-    }
     h1 { font-size: 16px; margin: 0 0 8px 0; }
     label { display: block; font-weight: 600; margin-top: 10px; margin-bottom: 4px; }
+    .subnote { font-weight: 400; font-size: 11px; color: var(--muted); }
     select, input, button { font: inherit; padding: 4px 6px; box-sizing: border-box; width: 100%; }
-    button { background: #0078d4; color: white; border: 0; padding: 6px 10px; cursor: pointer; }
+    button { background: var(--accent); color: var(--accent-fg); border: 0; padding: 6px 10px; cursor: pointer; }
     button:disabled { opacity: 0.6; cursor: default; }
-    button.secondary { background: #f3f3f3; color: #111; border: 1px solid #ccc; }
+    button.secondary { background: var(--surface-2); color: var(--fg); border: 1px solid var(--border-strong); }
     button.icon { width: auto; padding: 4px 8px; }
     .row { display: flex; gap: 6px; align-items: center; }
     .mapping-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; padding: 2px 0; }
-    .plan-row { display: grid; grid-template-columns: 1fr 1fr 1fr 80px 1fr 1fr 1fr 70px auto; gap: 4px; padding: 2px 0; }
-    .plan-row select, .plan-row input { padding: 2px 4px; }
+    /* Column headers over the grid: three unlabeled dropdowns per row don't
+       explain which side is Excel and which is Dataverse. */
+    .mapping-head {
+      font-size: 10px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--border); padding-bottom: 2px; margin-bottom: 2px;
+    }
     .mapping-row select, .mapping-row input { padding: 2px 4px; }
+    /* Unmapped source columns as one-click chips: "which columns am I not
+       loading?" answered in place, and each is an Add button for itself. */
+    .chip {
+      display: inline-block; width: auto; margin: 1px 2px 1px 0; padding: 1px 7px;
+      font-size: 11px; border: 1px solid var(--border-strong); border-radius: 9px;
+      background: var(--surface-2); color: var(--fg); cursor: pointer;
+    }
+    .chip:hover { background: var(--surface-3); }
+    .plan-card {
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface); padding: 8px; margin: 6px 0;
+    }
+    .plan-card .plan-head { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .plan-card .plan-head input { font-weight: 600; }
+    .plan-grid { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 4px 6px; align-items: center; }
+    .plan-grid .lbl { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .plan-grid select, .plan-grid input { padding: 2px 4px; min-width: 0; }
     /* Lookup sub-row: a labelled grid, configured top-to-bottom in the order
        the engine needs it (entity set → resolution → key field → extras). */
     .lookup-cfg {
       display: grid; grid-template-columns: 74px 1fr; gap: 4px 6px;
-      padding: 4px 0 6px 10px; margin: 0 0 2px 2px; border-left: 2px solid #edebe9;
+      padding: 4px 0 6px 10px; margin: 0 0 2px 2px; border-left: 2px solid var(--surface-3);
       align-items: center;
     }
     .lookup-cfg select, .lookup-cfg input { padding: 2px 4px; min-width: 0; }
-    .lookup-cfg .lbl { font-size: 11px; color: #605e5c; white-space: nowrap; }
+    .lookup-cfg .lbl { font-size: 11px; color: var(--muted); white-space: nowrap; }
     .lookup-cfg .check { display: flex; align-items: center; gap: 6px; }
     .lookup-cfg .check input { width: auto; }
-    .lookup-cfg .hint { grid-column: 1 / span 2; font-size: 11px; color: #605e5c; }
+    .lookup-cfg .hint { grid-column: 1 / span 2; font-size: 11px; color: var(--muted); }
     .row-error {
-      font-size: 11px; color: #a4262c; padding: 0 0 4px 12px;
+      font-size: 11px; color: var(--danger); padding: 0 0 4px 12px;
       grid-column: 1 / span 2;
     }
     .const-chip {
       display: flex; align-items: center; gap: 4px; width: 100%;
-      background: #f3f9f1; border: 1px solid #8a8886; padding: 1px 2px 1px 5px;
+      background: var(--chip-bg); border: 1px solid var(--border-strong); padding: 1px 2px 1px 5px;
       box-sizing: border-box; min-width: 0;
     }
     .const-chip .txt {
@@ -71,53 +144,108 @@
     .opts-grid label { margin: 0; font-weight: 500; font-size: 12px; }
     .opts-grid .check { display: flex; align-items: center; gap: 6px; grid-column: 1 / span 2; }
     .opts-grid .check input { width: auto; }
+    /* Dropdown lists built from TS (user search, combobox). */
+    .search-list {
+      position: absolute; left: 0; right: 0; top: 100%; z-index: 1000;
+      max-height: 160px; overflow-y: auto; background: var(--bg);
+      border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: 12px;
+    }
     /* Tabs. The pane is one long column of unrelated jobs — build an import,
        assemble a run plan, pull a dataflow down — and only one of them is ever
        in progress. Splitting them stops the other two from pushing the one you
        want off screen. */
     .tabs {
       display: flex; gap: 2px; margin: 0 0 10px 0;
-      border-bottom: 1px solid #e1dfdd;
+      border-bottom: 1px solid var(--border);
     }
     .tabs button {
-      flex: 1; width: auto; background: transparent; color: #605e5c;
+      flex: 1; width: auto; background: transparent; color: var(--muted);
       border: 0; border-bottom: 2px solid transparent;
       padding: 6px 4px; font-size: 12px; font-weight: 600;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .tabs button:hover { color: #201f1e; background: #f3f2f1; }
-    .tabs button[aria-selected="true"] { color: #0078d4; border-bottom-color: #0078d4; }
+    .tabs button:hover { color: var(--fg); background: var(--surface-2); }
+    .tabs button[aria-selected="true"] { color: var(--accent-text); border-bottom-color: var(--accent-text); }
     .tabs .badge {
       display: inline-block; margin-left: 4px; padding: 0 5px;
-      border-radius: 8px; background: #edebe9; color: #605e5c;
+      border-radius: 8px; background: var(--surface-3); color: var(--muted);
       font-size: 10px; font-weight: 600; vertical-align: 1px;
     }
-    .tabs button[aria-selected="true"] .badge { background: #deecf9; color: #0078d4; }
+    .tabs button[aria-selected="true"] .badge { background: var(--accent-soft); color: var(--accent-text); }
     .tabpanel[hidden] { display: none; }
-    /* A numbered step: sign in, then choose where to write. The order matters
-       enough to label it, because picking the environment first was what made
-       the old pane look like it had signed you out. */
-    .step { display: flex; align-items: baseline; gap: 6px; margin-top: 10px; }
-    .step .n {
+    /* Numbered, collapsible sections. The Import tab is a sequence — connect,
+       pick a source, pick a target, map, tune — and each section's header
+       carries a live summary of what's chosen, so the pane reads as a
+       checklist even when the controls have scrolled away. */
+    details.section {
+      border: 1px solid var(--border); border-radius: 4px;
+      margin-top: 8px; background: var(--bg);
+    }
+    details.section > summary {
+      display: flex; align-items: center; gap: 6px;
+      list-style: none; cursor: pointer; user-select: none;
+      padding: 6px 8px; background: var(--surface); border-radius: 4px;
+    }
+    details.section[open] > summary { border-bottom: 1px solid var(--border); border-radius: 4px 4px 0 0; }
+    details.section > summary::-webkit-details-marker { display: none; }
+    details.section > summary .n {
       flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%;
-      background: #0078d4; color: #fff; font-size: 10px; font-weight: 700;
+      background: var(--accent); color: var(--accent-fg); font-size: 10px; font-weight: 700;
       line-height: 16px; text-align: center;
     }
-    .step .t { font-weight: 600; }
-    .step .sub { font-weight: 400; font-size: 11px; color: #605e5c; }
-    .hint { font-size: 11px; color: #605e5c; margin: 2px 0 4px 0; }
-    @media (prefers-color-scheme: dark) {
-      .tabs { border-bottom-color: #484644; }
-      .tabs button:hover { color: #f3f2f1; background: #3b3a39; }
-      .tabs .badge { background: #3b3a39; color: #c8c6c4; }
+    details.section.done > summary .n { background: var(--ok); }
+    details.section > summary .t { font-weight: 600; font-size: 12px; white-space: nowrap; }
+    details.section > summary .sum {
+      flex: 1; min-width: 0; font-size: 11px; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
     }
+    details.section > summary .chev { flex: 0 0 auto; font-size: 9px; color: var(--muted); }
+    details.section > summary .chev::before { content: "▸"; }
+    details.section[open] > summary .chev::before { content: "▾"; }
+    .sec-body { padding: 2px 8px 8px 8px; }
+    .sec-body > label:first-child { margin-top: 4px; }
+    .hint { font-size: 11px; color: var(--muted); margin: 2px 0 4px 0; }
     .status { margin-top: 10px; padding: 6px; border-radius: 4px; }
-    .status.info { background: #eef6ff; color: #003a75; }
-    .status.error { background: #fde7e9; color: #5c0011; }
-    .status.success { background: #e9f7ee; color: #0a3d1e; }
-    .progress { background: #eee; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 4px; }
-    .progress > div { background: #0078d4; height: 100%; width: 0%; transition: width 0.2s; }
-    hr { margin: 12px 0; border: 0; border-top: 1px solid #e5e5e5; }
+    .status.info { background: var(--info-bg); color: var(--info-fg); }
+    .status.error { background: var(--error-bg); color: var(--error-fg); }
+    .status.success { background: var(--success-bg); color: var(--success-fg); }
+    /* Status and progress stick to the bottom edge (above the connection bar)
+       while their natural position is below the fold, so a run's progress and
+       any error are visible no matter where the form is scrolled. */
+    #stickyStatus { position: sticky; bottom: 34px; z-index: 500; background: var(--bg); }
+    .progress { background: var(--surface-3); height: 8px; border-radius: 4px; overflow: hidden; margin-top: 4px; }
+    .progress > div { background: var(--accent); height: 100%; width: 0%; transition: width 0.2s; }
+    /* Run errors, grouped by message. */
+    #errorDetails {
+      margin-top: 4px; max-height: 180px; overflow-y: auto;
+      font-size: 11px; border: 1px solid var(--border); border-radius: 4px;
+    }
+    .err-group { border-bottom: 1px solid var(--border); }
+    .err-group:last-child { border-bottom: 0; }
+    .err-group > summary {
+      list-style: none; cursor: pointer; display: flex; gap: 6px; align-items: baseline;
+      padding: 3px 6px; background: var(--error-bg); color: var(--error-fg);
+    }
+    .err-group > summary::-webkit-details-marker { display: none; }
+    .err-group .cnt { flex: 0 0 auto; font-weight: 700; }
+    .err-group .msg { min-width: 0; overflow-wrap: anywhere; }
+    .err-group .rows { padding: 3px 6px 5px 6px; color: var(--muted); font-family: monospace; overflow-wrap: anywhere; }
+    hr { margin: 12px 0; border: 0; border-top: 1px solid var(--border); }
+
+    /* The Excel task pane is ~350px wide and the layout is built for it — but
+       the same page runs in a browser tab (dvload gui) and in the ToolBox,
+       where one narrow column wastes the screen. Side by side there: setup on
+       the left, mapping and options on the right. The column wrappers are
+       display:contents at narrow widths, so the task pane layout is untouched. */
+    .paneCol { display: contents; }
+    @media (min-width: 720px) {
+      body { max-width: 1100px; margin: 0 auto; }
+      /* :not([hidden]) keeps this below the [hidden] rule — a bare #panelImport
+         out-specifies .tabpanel[hidden] and would hold the tab open forever. */
+      #panelImport:not([hidden]) { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 0 20px; align-items: start; }
+      .paneCol { display: block; min-width: 0; }
+      #connBar { left: 50%; transform: translateX(-50%); width: 100%; max-width: 1100px; box-sizing: border-box; }
+    }
   </style>
 </head>
 <body>
@@ -143,6 +271,8 @@
   <!-- ===================== Tab 1: Import ================================= -->
   <div id="panelImport" class="tabpanel" role="tabpanel" aria-labelledby="tabImport">
 
+  <div class="paneCol" id="colSetup">
+
     <!--
       Identity first, destination second. Sign-in is per environment under the
       hood (the token's scope is the environment's own origin), but that is an
@@ -154,196 +284,227 @@
     <!-- Hidden wholesale in the Power Platform ToolBox: the ToolBox owns the
          connection, so there is no account to pick and no environment to type.
          The connection bar at the bottom still says where records will land. -->
-    <div id="sidecarAuthBlock">
-    <div class="step"><span class="n">1</span><span class="t">Account</span>
-      <span class="sub">— carried across environments</span></div>
-    <div class="row">
-      <span id="authDot" style="font-size:16px; line-height:1;">&#9679;</span>
-      <select id="account" style="flex:1">
-        <option value="">Not signed in</option>
-      </select>
-      <button id="signin" type="button" style="width:auto;">Sign in</button>
-    </div>
-    <div id="accountHint" class="hint"></div>
+    <details class="section" id="sidecarAuthBlock" open>
+      <summary class="sec-head"><span class="n">1</span><span class="t">Connection</span><span
+        class="sum" id="secConnectionSum"></span><span class="chev"></span></summary>
+      <div class="sec-body">
+        <label>Account <span class="subnote">— carried across environments</span></label>
+        <div class="row">
+          <span id="authDot" style="font-size:16px; line-height:1;">&#9679;</span>
+          <select id="account" style="flex:1">
+            <option value="">Not signed in</option>
+          </select>
+          <button id="signin" type="button" style="width:auto;">Sign in</button>
+        </div>
+        <div id="accountHint" class="hint"></div>
 
-    <div class="step"><span class="n">2</span><span class="t">Environment</span>
-      <span class="sub">— where the records land</span></div>
-    <div class="row">
-      <select id="profile" style="flex:1"></select>
-      <button id="profileDelete" class="secondary icon" type="button" title="Remove selected profile">✕</button>
-    </div>
+        <label>Environment <span class="subnote">— where the records land</span></label>
+        <div class="row">
+          <select id="profile" style="flex:1"></select>
+          <button id="profileDelete" class="secondary icon" type="button" title="Remove selected profile">✕</button>
+        </div>
 
-    <label for="env">Environment URL</label>
-    <input id="env" placeholder="https://contoso.crm.dynamics.com" />
-    <div id="profileSaveRow" class="row" style="margin-top:4px; display:none;">
-      <input id="profileName" placeholder="Name this environment…" style="flex:1" />
-      <button id="profileSaveConfirm" type="button" style="width:auto;">Save</button>
-      <button id="profileSaveCancel" class="secondary icon" type="button">Cancel</button>
-    </div>
-    <div style="margin-top:4px;">
-      <button id="profileSaveBtn" class="secondary" type="button" style="font-size:11px;">Save as profile…</button>
-    </div>
-    </div><!-- /sidecarAuthBlock -->
-
-    <hr />
+        <label for="env">Environment URL</label>
+        <div class="row">
+          <input id="env" placeholder="https://contoso.crm.dynamics.com" style="flex:1" />
+          <button id="connect" type="button" style="width:auto;"
+            title="Sign in to this environment (if needed) and load its entities">Connect</button>
+        </div>
+        <div id="profileSaveRow" class="row" style="margin-top:4px; display:none;">
+          <input id="profileName" placeholder="Name this environment…" style="flex:1" />
+          <button id="profileSaveConfirm" type="button" style="width:auto;">Save</button>
+          <button id="profileSaveCancel" class="secondary icon" type="button">Cancel</button>
+        </div>
+        <div style="margin-top:4px;">
+          <button id="profileSaveBtn" class="secondary" type="button" style="font-size:11px;">Save as profile…</button>
+        </div>
+      </div>
+    </details><!-- /sidecarAuthBlock -->
 
     <!--
-      Two blocks, reordered at runtime by applyHostCapabilities(): in the
-      browser there is no open workbook, so the picker is empty until a file is
-      added and the file block has to come first. In Excel the picker already
-      has the workbook's tables, so it leads.
+      Two blocks inside the Source section, reordered at runtime by
+      applyHostCapabilities(): in the browser there is no open workbook, so the
+      picker is empty until a file is added and the file block has to come
+      first. In Excel the picker already has the workbook's tables, so it leads.
     -->
-    <div id="sourceFilesBlock">
-      <label>Source files</label>
-      <div class="row">
-        <button id="pickFile" class="secondary" type="button" style="width:auto;"
-          title="Add .xlsx workbooks or .csv/.tsv files. Every table inside them becomes selectable below.">
-          Add files…
-        </button>
-        <span id="fileSourceInfo" style="font-size:11px; color:#605e5c; flex:1;"></span>
+    <details class="section" id="secSource" open>
+      <summary class="sec-head"><span class="n">2</span><span class="t">Source</span><span
+        class="sum" id="secSourceSum"></span><span class="chev"></span></summary>
+      <div class="sec-body">
+        <div id="sourceFilesBlock">
+          <label>Source files</label>
+          <div class="row">
+            <button id="pickFile" class="secondary" type="button" style="width:auto;"
+              title="Add .xlsx workbooks or .csv/.tsv files. Every table inside them becomes selectable below.">
+              Add files…
+            </button>
+            <span id="fileSourceInfo" style="font-size:11px; color:var(--muted); flex:1;"></span>
+          </div>
+          <div id="fileList" style="display:none; margin-top:4px;"></div>
+        </div>
+
+        <div id="sourceTableBlock">
+          <label for="table">Source table</label>
+          <select id="table"><option value="">Loading…</option></select>
+        </div>
       </div>
-      <div id="fileList" style="display:none; margin-top:4px;"></div>
-    </div>
+    </details><!-- /secSource -->
 
-    <div id="sourceTableBlock">
-      <label for="table">Source table</label>
-      <select id="table"><option value="">Loading…</option></select>
-    </div>
+    <details class="section" id="secTarget" open>
+      <summary class="sec-head"><span class="n">3</span><span class="t">Target</span><span
+        class="sum" id="secTargetSum"></span><span class="chev"></span></summary>
+      <div class="sec-body">
+        <label for="solution">Solution</label>
+        <select id="solution" disabled><option value="">All entities (Default solution)</option></select>
 
-    <label for="solution">Solution</label>
-    <select id="solution" disabled><option value="">All entities (Default solution)</option></select>
+        <label for="entity">Target Dataverse entity</label>
+        <select id="entity" disabled><option value="">Sign in to load entities</option></select>
 
-    <label for="entity">Target Dataverse entity</label>
-    <select id="entity" disabled><option value="">Sign in to load entities</option></select>
-
-    <div id="createTablePanel" style="display:none; border:1px solid #c8c6c4; border-radius:4px; padding:8px; margin-top:6px;">
-      <label>New table</label>
-      <div class="row">
-        <input id="ctPrefix" value="new" style="width:64px" title="Publisher customization prefix (letters/digits, starts with a letter)" />
-        <input id="ctDisplayName" style="flex:1" placeholder="Display name" />
+        <div id="createTablePanel" style="display:none; border:1px solid var(--border-strong); border-radius:4px; padding:8px; margin-top:6px;">
+          <label>New table</label>
+          <div class="row">
+            <input id="ctPrefix" value="new" style="width:64px" title="Publisher customization prefix (letters/digits, starts with a letter)" />
+            <input id="ctDisplayName" style="flex:1" placeholder="Display name" />
+          </div>
+          <div class="row" style="margin-top:4px; align-items:center;">
+            <span style="font-size:11px; color:var(--muted); white-space:nowrap;">Schema name:</span>
+            <span id="ctPrefixEcho" style="font-size:11px; color:var(--muted);">new_</span>
+            <input id="ctSchemaSuffix" style="flex:1"
+              title="The table's schema name (letters/digits, no spaces). Follows the display name until you edit it." />
+          </div>
+          <div id="ctColumns" style="margin-top:6px;"></div>
+          <div class="row" style="margin-top:6px;">
+            <span style="font-size:11px; align-self:center; white-space:nowrap;">Owner for all records:</span>
+            <span style="flex:1; position:relative; display:inline-block;">
+              <input id="ctOwner" placeholder="(optional) type to search users, or paste a user GUID" autocomplete="off" spellcheck="false" />
+              <div id="ctOwnerList" class="search-list" style="display:none;"></div>
+            </span>
+          </div>
+          <div style="font-size:11px; color:var(--muted); margin-top:4px;">
+            One string column must be the table's <b>Primary name</b>. <b>Key</b> columns form an
+            alternate key (text / whole number / decimal only) — its index activates in the
+            background, so upserts against it may need a minute after creation.
+          </div>
+        </div>
       </div>
-      <div class="row" style="margin-top:4px; align-items:center;">
-        <span style="font-size:11px; color:#605e5c; white-space:nowrap;">Schema name:</span>
-        <span id="ctPrefixEcho" style="font-size:11px; color:#605e5c;">new_</span>
-        <input id="ctSchemaSuffix" style="flex:1"
-          title="The table's schema name (letters/digits, no spaces). Follows the display name until you edit it." />
+    </details><!-- /secTarget -->
+
+  </div><!-- /colSetup -->
+
+  <div class="paneCol" id="colWork">
+
+    <details class="section" id="secMapping" open>
+      <summary class="sec-head"><span class="n">4</span><span class="t">Column mapping</span><span
+        class="sum" id="secMappingSum"></span><span class="chev"></span></summary>
+      <div class="sec-body">
+        <div id="mappingSection">
+          <div id="mappingHead" class="mapping-row mapping-head" style="display:none;">
+            <span>Source column</span><span>Type</span><span>Target field</span><span></span>
+          </div>
+          <div id="mappings"></div>
+          <div id="mappingHealth" class="hint" style="display:none;"></div>
+          <div class="row" style="margin-top: 6px;">
+            <button id="addMap" class="secondary" type="button">Add column</button>
+            <button id="addConst" class="secondary" type="button"
+              title="Set a field to a fixed value on every record (e.g. a fixed owner) instead of reading a table column">
+              Add fixed value
+            </button>
+            <button id="suggest" class="secondary" type="button" title="Suggest mappings by header name similarity">
+              Suggest from names
+            </button>
+          </div>
+        </div>
       </div>
-      <div id="ctColumns" style="margin-top:6px;"></div>
-      <div class="row" style="margin-top:6px;">
-        <span style="font-size:11px; align-self:center; white-space:nowrap;">Owner for all records:</span>
-        <span style="flex:1; position:relative; display:inline-block;">
-          <input id="ctOwner" placeholder="(optional) type to search users, or paste a user GUID" autocomplete="off" spellcheck="false" />
-          <div id="ctOwnerList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
-        </span>
+    </details><!-- /secMapping -->
+
+    <details class="section" id="secOptions" open>
+      <summary class="sec-head"><span class="n">5</span><span class="t">Import options</span><span
+        class="sum" id="secOptionsSum"></span><span class="chev"></span></summary>
+      <div class="sec-body">
+        <div class="opts-grid" style="margin-top:6px;">
+          <label for="conflictMode">On existing rows</label>
+          <select id="conflictMode">
+            <option value="insert">Insert only</option>
+            <option value="upsert">Upsert (update or create)</option>
+            <option value="skip-if-exists">Skip if exists</option>
+            <option value="sync">Sync (upsert + remove missing)</option>
+          </select>
+
+          <label for="upsertKey" id="upsertKeyLabel" style="display:none">Match existing rows on</label>
+          <input id="upsertKey" style="display:none"
+            placeholder="e.g. emailaddress1, or accountid to match on the record's own id"
+            title="A Dataverse alternate key (comma-separate the parts of a compound key), or a single uniqueidentifier column holding the record id — dvload then creates the row with that id if it doesn't exist." />
+
+          <label for="syncAction" id="syncActionLabel" style="display:none">Missing records</label>
+          <select id="syncAction" style="display:none">
+            <option value="deactivate">Deactivate (statecode = 1)</option>
+            <option value="delete">Delete permanently</option>
+          </select>
+
+          <label for="batchSize">Batch size</label>
+          <input id="batchSize" type="number" min="1" max="1000" value="100" />
+
+          <label for="concurrency">Parallel batches</label>
+          <input id="concurrency" type="number" min="1" max="8" value="1" />
+
+          <div class="check">
+            <input id="bypassCustomLogic" type="checkbox" />
+            <label for="bypassCustomLogic">Bypass plugins &amp; Power Automate flows (needs bypass privilege)</label>
+          </div>
+          <div class="check">
+            <input id="skipUnchanged" type="checkbox" />
+            <label for="skipUnchanged">Skip unchanged rows (upsert/sync; one extra read per row)</label>
+          </div>
+          <div class="check">
+            <input id="dryRun" type="checkbox" />
+            <label for="dryRun">Dry run — coerce and plan everything, but don't write to Dataverse</label>
+          </div>
+        </div>
+
+        <details id="advancedOptions" style="margin-top:8px;">
+          <summary style="font-size:12px; font-weight:600; cursor:pointer;">Advanced</summary>
+          <div class="opts-grid" style="margin-top:6px;">
+            <label for="mappingName">Mapping name</label>
+            <input id="mappingName" placeholder="Defaults to the source table name" />
+
+            <label for="mappingDescription">Description</label>
+            <input id="mappingDescription" placeholder="Optional note saved in the mapping" />
+
+            <label for="maxErrors" title="Stop the run after this many row errors. 0 = never stop early.">Stop after N errors</label>
+            <input id="maxErrors" type="number" min="0" value="0" />
+
+            <label for="notifyUrl" title="A {text: summary} JSON POST after the run — Teams and Slack incoming webhooks accept this shape.">Notify webhook</label>
+            <input id="notifyUrl" placeholder="https://… (Teams/Slack incoming webhook)" />
+
+            <label for="impersonateUser" title="Records are created as this user (MSCRMCallerID). Needs prvActOnBehalfOfAnotherUser.">Run as user</label>
+            <span style="position:relative; display:inline-block; width:100%;">
+              <input id="impersonateUser" placeholder="(optional) type to search users, or paste a user GUID"
+                     autocomplete="off" spellcheck="false" />
+              <div id="impersonateUserList" class="search-list" style="display:none;"></div>
+            </span>
+          </div>
+        </details>
       </div>
-      <div style="font-size:11px; color:#605e5c; margin-top:4px;">
-        One string column must be the table's <b>Primary name</b>. <b>Key</b> columns form an
-        alternate key (text / whole number / decimal only) — its index activates in the
-        background, so upserts against it may need a minute after creation.
-      </div>
-    </div>
+    </details><!-- /secOptions -->
 
-    <div id="mappingSection">
-      <label>Column mapping</label>
-      <div id="mappings"></div>
-      <div class="row" style="margin-top: 6px;">
-        <button id="addMap" class="secondary" type="button">Add column</button>
-        <button id="addConst" class="secondary" type="button"
-          title="Set a field to a fixed value on every record (e.g. a fixed owner) instead of reading a table column">
-          Add fixed value
-        </button>
-        <button id="suggest" class="secondary" type="button" title="Suggest mappings by header name similarity">
-          Suggest from names
-        </button>
-      </div>
-    </div>
-
-    <hr />
-
-    <label>Import options</label>
-    <div class="opts-grid">
-      <label for="conflictMode">On existing rows</label>
-      <select id="conflictMode">
-        <option value="insert">Insert only</option>
-        <option value="upsert">Upsert (update or create)</option>
-        <option value="skip-if-exists">Skip if exists</option>
-        <option value="sync">Sync (upsert + remove missing)</option>
-      </select>
-
-      <label for="upsertKey" id="upsertKeyLabel" style="display:none">Match existing rows on</label>
-      <input id="upsertKey" style="display:none"
-        placeholder="e.g. emailaddress1, or accountid to match on the record's own id"
-        title="A Dataverse alternate key (comma-separate the parts of a compound key), or a single uniqueidentifier column holding the record id — dvload then creates the row with that id if it doesn't exist." />
-
-      <label for="syncAction" id="syncActionLabel" style="display:none">Missing records</label>
-      <select id="syncAction" style="display:none">
-        <option value="deactivate">Deactivate (statecode = 1)</option>
-        <option value="delete">Delete permanently</option>
-      </select>
-
-      <label for="batchSize">Batch size</label>
-      <input id="batchSize" type="number" min="1" max="1000" value="100" />
-
-      <label for="concurrency">Parallel batches</label>
-      <input id="concurrency" type="number" min="1" max="8" value="1" />
-
-      <div class="check">
-        <input id="bypassCustomLogic" type="checkbox" />
-        <label for="bypassCustomLogic">Bypass plugins &amp; Power Automate flows (needs bypass privilege)</label>
-      </div>
-      <div class="check">
-        <input id="skipUnchanged" type="checkbox" />
-        <label for="skipUnchanged">Skip unchanged rows (upsert/sync; one extra read per row)</label>
-      </div>
-      <div class="check">
-        <input id="dryRun" type="checkbox" />
-        <label for="dryRun">Dry run — coerce and plan everything, but don't write to Dataverse</label>
-      </div>
-    </div>
-
-    <details id="advancedOptions" style="margin-top:8px;">
-      <summary style="font-size:12px; font-weight:600; cursor:pointer;">Advanced</summary>
-      <div class="opts-grid" style="margin-top:6px;">
-        <label for="mappingName">Mapping name</label>
-        <input id="mappingName" placeholder="Defaults to the source table name" />
-
-        <label for="mappingDescription">Description</label>
-        <input id="mappingDescription" placeholder="Optional note saved in the mapping" />
-
-        <label for="maxErrors" title="Stop the run after this many row errors. 0 = never stop early.">Stop after N errors</label>
-        <input id="maxErrors" type="number" min="0" value="0" />
-
-        <label for="notifyUrl" title="A {text: summary} JSON POST after the run — Teams and Slack incoming webhooks accept this shape.">Notify webhook</label>
-        <input id="notifyUrl" placeholder="https://… (Teams/Slack incoming webhook)" />
-
-        <label for="impersonateUser" title="Records are created as this user (MSCRMCallerID). Needs prvActOnBehalfOfAnotherUser.">Run as user</label>
-        <span style="position:relative; display:inline-block; width:100%;">
-          <input id="impersonateUser" placeholder="(optional) type to search users, or paste a user GUID"
-                 autocomplete="off" spellcheck="false" />
-          <div id="impersonateUserList" style="position:absolute;left:0;right:0;top:100%;z-index:1000;display:none;
-               max-height:160px;overflow-y:auto;background:#fff;border:1px solid #8a8886;
-               box-shadow:0 4px 8px rgba(0,0,0,.15);font-size:12px;"></div>
-        </span>
-      </div>
-    </details>
-
-    <hr />
-
-    <div class="row">
+    <div class="row" style="margin-top:10px;">
       <button id="resetAll" class="secondary" type="button" title="Clear source, target, mappings and options and start over">Reset</button>
       <button id="save" class="secondary" type="button">Save mapping…</button>
       <button id="load" class="secondary" type="button">Load mapping…</button>
       <button id="run" type="button" style="margin-left: auto;">Run import</button>
-      <button id="cancelRun" type="button" style="margin-left: auto; display:none; background:#a4262c; color:#fff;">
+      <button id="cancelRun" type="button" style="margin-left: auto; display:none; background:var(--danger); color:var(--danger-fg);">
         Cancel import
       </button>
     </div>
     <div id="resumeRow" class="row" style="margin-top:6px; display:none;">
-      <span id="resumeText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <span id="resumeText" style="font-size:11px; color:var(--muted); flex:1;"></span>
       <button id="resumeRun" class="secondary" type="button" style="width:auto; font-size:11px;">Resume</button>
       <button id="discardResume" class="secondary icon" type="button" style="font-size:11px;"
               title="Forget the checkpoint and start from the first row next time">✕</button>
     </div>
+
+  </div><!-- /colWork -->
+
   </div><!-- /panelImport -->
 
   <!-- ===================== Tab 2: Run plan =============================== -->
@@ -406,9 +567,9 @@
         Load
       </button>
     </div>
-    <div id="dataflowInfo" style="font-size:11px; color:#605e5c; margin-top:4px;"></div>
+    <div id="dataflowInfo" style="font-size:11px; color:var(--muted); margin-top:4px;"></div>
     <div id="dataflowResult" class="row" style="margin-top:6px; display:none;">
-      <span id="dataflowResultText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <span id="dataflowResultText" style="font-size:11px; color:var(--muted); flex:1;"></span>
       <button id="dataflowDownload" type="button" style="width:auto; font-size:11px;">Download</button>
       <button id="dataflowDismiss" class="secondary icon" type="button" style="font-size:11px;"
         title="Discard">&#10005;</button>
@@ -447,7 +608,7 @@
               title="Build an .xlsx containing every query in this .pqt as a real Power Query, ready for &quot;Load To…&quot;">Create workbook</button>
     </div>
     <div id="pqtXlsxRow" class="row" style="margin-top:6px; display:none;">
-      <span id="pqtXlsxText" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <span id="pqtXlsxText" style="font-size:11px; color:var(--muted); flex:1;"></span>
       <button id="pqtXlsxDownload" type="button" style="width:auto; font-size:11px;">Download</button>
       <button id="pqtXlsxDismiss" class="secondary icon" type="button" style="font-size:11px;"
               title="Discard the generated workbook">✕</button>
@@ -459,19 +620,21 @@
     reporting while you look at the run plan, and an error from any tab lands
     in the same place.
   -->
-  <label id="telemetryRow" style="display:none; font-size:11px; color:#605e5c; margin-top:6px;">
+  <label id="telemetryRow" style="display:none; font-size:11px; color:var(--muted); margin-top:6px;">
     <input type="checkbox" id="telemetryOptIn" style="width:auto; vertical-align:middle;" />
     Share anonymous usage data
     (<a href="https://github.com/PowerPlatformProfessor/dvload/blob/main/TELEMETRY.md" target="_blank" rel="noopener noreferrer">what's collected?</a>)
   </label>
 
-  <div id="status" class="status info" style="display:none"></div>
-  <div id="progressWrap" style="display:none">
-    <div class="progress"><div id="progressBar"></div></div>
-    <div id="progressText" style="font-size:12px; color:#555; margin-top:4px;"></div>
-    <div style="font-size:11px; color:#605e5c; margin-top:4px;">
-      While you wait — give feedback to the
-      <a href="https://www.linkedin.com/in/danijel-buljat/" target="_blank" rel="noopener noreferrer">author</a>.
+  <div id="stickyStatus">
+    <div id="status" class="status info" style="display:none"></div>
+    <div id="progressWrap" style="display:none">
+      <div class="progress"><div id="progressBar"></div></div>
+      <div id="progressText" style="font-size:12px; color:var(--muted); margin-top:4px;"></div>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">
+        While you wait — give feedback to the
+        <a href="https://www.linkedin.com/in/danijel-buljat/" target="_blank" rel="noopener noreferrer">author</a>.
+      </div>
     </div>
   </div>
   <div id="logWrap" style="display:none; margin-top:6px;">
@@ -481,13 +644,11 @@
       Download failed rows…
     </button>
     <div class="row" style="margin-top:4px;">
-      <span id="logSummary" style="font-size:11px; color:#605e5c; flex:1;"></span>
+      <span id="logSummary" style="font-size:11px; color:var(--muted); flex:1;"></span>
       <button id="clearLog" class="secondary icon" type="button" style="font-size:11px;"
               title="Discard this run's log and free the memory it's holding">Clear log</button>
     </div>
-    <div id="errorDetails" style="display:none; margin-top:4px; max-height:140px; overflow-y:auto;
-         font-size:11px; font-family:monospace; white-space:pre-wrap;
-         background:#fde7e9; color:#5c0011; padding:6px; border-radius:4px;"></div>
+    <div id="errorDetails" style="display:none;"></div>
   </div>
 
   <!--
