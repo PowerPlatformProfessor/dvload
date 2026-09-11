@@ -46,6 +46,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # typecheck and the addin tests resolve @dvload/core through its built
+      # dist, so verify needs the workspaces built first — same as ci.yml.
+      - run: npm run build
       - run: npm run verify
 
   exe:
