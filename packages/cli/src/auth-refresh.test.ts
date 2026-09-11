@@ -61,9 +61,7 @@ vi.mock("@azure/msal-node", async (importOriginal) => {
     /** The real one opens a browser here. Never in a unit test. */
     acquireTokenInteractive() {
       msal.interactiveClientIds.push(this.clientId);
-      return msal.interactive
-        ? msal.interactive(this.clientId)
-        : new Promise(() => {});
+      return msal.interactive ? msal.interactive(this.clientId) : new Promise(() => {});
     }
     acquireTokenByDeviceCode() {
       msal.interactiveClientIds.push(this.clientId);
@@ -73,15 +71,9 @@ vi.mock("@azure/msal-node", async (importOriginal) => {
   return { ...actual, PublicClientApplication: FakePublicClientApplication };
 });
 
-const {
-  getTokenProvider,
-  needsInteractiveSignIn,
-  isInteractiveSignInRequired,
-  clearLoopbackProbeCache,
-} = await import("./auth.js");
-const { InteractionRequiredAuthError, ClientAuthError, ServerError } = await import(
-  "@azure/msal-node"
-);
+const { getTokenProvider, needsInteractiveSignIn, isInteractiveSignInRequired, clearLoopbackProbeCache } =
+  await import("./auth.js");
+const { InteractionRequiredAuthError, ClientAuthError, ServerError } = await import("@azure/msal-node");
 
 /** What a refresh that failed on the wire looks like coming out of MSAL. */
 const networkFailure = (): Error => new ClientAuthError("network_error", "socket hang up");
@@ -148,10 +140,7 @@ afterEach(() => {
 /* -------------------------------------------------------------------------- */
 
 test("needsInteractiveSignIn is true only for MSAL's interaction-required errors", () => {
-  assert.equal(
-    needsInteractiveSignIn(new InteractionRequiredAuthError("refresh_token_expired")),
-    true
-  );
+  assert.equal(needsInteractiveSignIn(new InteractionRequiredAuthError("refresh_token_expired")), true);
   assert.equal(needsInteractiveSignIn(new InteractionRequiredAuthError("login_required")), true);
 
   // Transient / environmental: retrying is the right answer, not a browser.
@@ -201,8 +190,7 @@ test("a genuinely expired session still escalates to sign-in", async () => {
     ++calls === 1
       ? Promise.reject(new InteractionRequiredAuthError("refresh_token_expired"))
       : Promise.resolve({ accessToken: "fresh", account: {} });
-  msal.interactive = () =>
-    Promise.resolve({ accessToken: "fresh", account: { homeAccountId: "h" } });
+  msal.interactive = () => Promise.resolve({ accessToken: "fresh", account: { homeAccountId: "h" } });
 
   const getToken = await getTokenProvider({ environmentUrl: ENV, forceUser: true });
   assert.equal(await getToken(), "fresh");

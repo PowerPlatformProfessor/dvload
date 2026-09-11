@@ -49,9 +49,8 @@ const getTokenProvider = vi.hoisted(() =>
  * what happens to a session whose username can no longer be read.
  */
 const listDelegatedSessions = vi.hoisted(() =>
-  vi.fn(
-    (): Promise<Array<{ host: string; environmentUrl: string; username: string | null }>> =>
-      Promise.resolve([])
+  vi.fn((): Promise<Array<{ host: string; environmentUrl: string; username: string | null }>> =>
+    Promise.resolve([])
   )
 );
 
@@ -62,9 +61,8 @@ const listDelegatedSessions = vi.hoisted(() =>
  * cache the other routes' tests assume.
  */
 const loginDelegated = vi.hoisted(() =>
-  vi.fn(
-    (_opts?: { environmentUrl?: string; onAuthorizeUrl?: (url: string) => void }): Promise<unknown> =>
-      Promise.reject(new Error("loginDelegated not stubbed for this test"))
+  vi.fn((_opts?: { environmentUrl?: string; onAuthorizeUrl?: (url: string) => void }): Promise<unknown> =>
+    Promise.reject(new Error("loginDelegated not stubbed for this test"))
   )
 );
 const logoutDelegated = vi.hoisted(() => vi.fn((_env?: string): Promise<void> => Promise.resolve()));
@@ -514,9 +512,21 @@ test("signing in as a different user signs the previous user out everywhere", as
     Promise.resolve(env === "https://new.crm.dynamics.com" ? { username: "new@contoso.com" } : null)
   );
   listDelegatedSessions.mockResolvedValueOnce([
-    { host: "old.crm.dynamics.com", environmentUrl: "https://old.crm.dynamics.com", username: "Old@contoso.com" },
-    { host: "old2.crm.dynamics.com", environmentUrl: "https://old2.crm.dynamics.com", username: "Old@contoso.com" },
-    { host: "new.crm.dynamics.com", environmentUrl: "https://new.crm.dynamics.com", username: "NEW@contoso.com" },
+    {
+      host: "old.crm.dynamics.com",
+      environmentUrl: "https://old.crm.dynamics.com",
+      username: "Old@contoso.com",
+    },
+    {
+      host: "old2.crm.dynamics.com",
+      environmentUrl: "https://old2.crm.dynamics.com",
+      username: "Old@contoso.com",
+    },
+    {
+      host: "new.crm.dynamics.com",
+      environmentUrl: "https://new.crm.dynamics.com",
+      username: "NEW@contoso.com",
+    },
     { host: "gone.crm.dynamics.com", environmentUrl: "https://gone.crm.dynamics.com", username: null },
   ]);
 
@@ -527,7 +537,10 @@ test("signing in as a different user signs the previous user out everywhere", as
     });
     assert.equal(res.status, 200);
     // The response names the account the pane is now acting as.
-    assert.equal((JSON.parse(res.body) as { account: { username: string } }).account.username, "new@contoso.com");
+    assert.equal(
+      (JSON.parse(res.body) as { account: { username: string } }).account.username,
+      "new@contoso.com"
+    );
     // Only the other user's sessions were signed out — comparison is
     // case-insensitive, so NEW@ was recognised as the same person as new@.
     assert.deepEqual(

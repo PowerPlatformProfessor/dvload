@@ -331,11 +331,7 @@ describe("extract-pqt: workbook → .pqt with an injected mapping", () => {
     const item1 = await xlsx.file("customXml/item1.xml")!.async("string");
     const b64 = /<DataMashup[^>]*>([\s\S]*?)<\/DataMashup>/.exec(item1)![1];
     const blob = Buffer.from(b64.replace(/\s+/g, ""), "base64");
-    const packageLength = new DataView(
-      blob.buffer,
-      blob.byteOffset,
-      blob.byteLength
-    ).getUint32(4, true);
+    const packageLength = new DataView(blob.buffer, blob.byteOffset, blob.byteLength).getUint32(4, true);
 
     const inner = await JSZip.loadAsync(blob.subarray(8, 8 + packageLength));
     expect(Object.values(inner.files).filter((f) => f.dir)).toEqual([]);

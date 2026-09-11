@@ -503,7 +503,10 @@ describe("probeLoopbackRedirect", () => {
 
   it("caches a definitive answer per client id", async () => {
     const res = stubResponse(200, {}, "AADSTS500113");
-    assert.equal(await probeLoopbackRedirect("probe-cached", "organizations", fetchReturning(res)), "unusable");
+    assert.equal(
+      await probeLoopbackRedirect("probe-cached", "organizations", fetchReturning(res)),
+      "unusable"
+    );
     const explode = (async () => {
       throw new Error("should not be called — answer was cached");
     }) as unknown as typeof fetch;

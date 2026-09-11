@@ -23,7 +23,9 @@ function pptbTemplate() {
   const html = fs.readFileSync(path.join(ADDIN, "src/taskpane/taskpane.html"), "utf8");
   const stripped = html.replace(/^\s*<script[^>]*appsforoffice[^>]*><\/script>\s*$/m, "");
   if (stripped === html) {
-    throw new Error("Expected to strip the office.js <script> tag from taskpane.html and didn't — check the template.");
+    throw new Error(
+      "Expected to strip the office.js <script> tag from taskpane.html and didn't — check the template."
+    );
   }
   return stripped.replace(/<title>[^<]*<\/title>/, "<title>dvload — Excel to Dataverse</title>");
 }

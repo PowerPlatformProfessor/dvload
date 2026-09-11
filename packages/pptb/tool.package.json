@@ -9,16 +9,7 @@
     "minAPI": "1.2.0"
   },
   "author": "PowerPlatformProfessor",
-  "keywords": [
-    "powerplatform",
-    "dataverse",
-    "toolbox",
-    "excel",
-    "import",
-    "data-load",
-    "upsert",
-    "csv"
-  ],
+  "keywords": ["powerplatform", "dataverse", "toolbox", "excel", "import", "data-load", "upsert", "csv"],
   "repository": {
     "type": "git",
     "url": "https://github.com/PowerPlatformProfessor/dvload"

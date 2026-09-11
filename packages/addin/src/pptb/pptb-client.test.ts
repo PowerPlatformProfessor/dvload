@@ -16,10 +16,12 @@ function fakeBridge(overrides: Partial<PptbDataverseApi> = {}): PptbDataverseApi
   calls: Array<{ method: string; args: unknown[] }>;
 } {
   const calls: Array<{ method: string; args: unknown[] }> = [];
-  const notStubbed = (name: string) => async (...args: unknown[]) => {
-    calls.push({ method: name, args });
-    throw new Error(`bridge method ${name} not stubbed for this test`);
-  };
+  const notStubbed =
+    (name: string) =>
+    async (...args: unknown[]) => {
+      calls.push({ method: name, args });
+      throw new Error(`bridge method ${name} not stubbed for this test`);
+    };
   const record = <F extends (...args: never[]) => unknown>(name: string, fn: F): F =>
     ((...args: never[]) => {
       calls.push({ method: name, args });
@@ -39,9 +41,7 @@ function fakeBridge(overrides: Partial<PptbDataverseApi> = {}): PptbDataverseApi
     "createAttribute",
   ]) {
     const override = (overrides as Record<string, unknown>)[name];
-    base[name] = override
-      ? record(name, override as (...args: never[]) => unknown)
-      : notStubbed(name);
+    base[name] = override ? record(name, override as (...args: never[]) => unknown) : notStubbed(name);
   }
   return { ...(base as unknown as PptbDataverseApi), calls };
 }
@@ -124,10 +124,13 @@ describe("PptbDataverseClient.batch", () => {
       { contentId: 1, method: "POST", url: "contacts", body: { lastname: "A" } },
       { contentId: 2, method: "POST", url: "contacts", body: { lastname: "B" } },
     ]);
-    assert.deepEqual(results.map((r) => [r.contentId, r.status, r.ok, r.id]), [
-      [1, 201, true, GUID_A],
-      [2, 201, true, GUID_A],
-    ]);
+    assert.deepEqual(
+      results.map((r) => [r.contentId, r.status, r.ok, r.id]),
+      [
+        [1, 201, true, GUID_A],
+        [2, 201, true, GUID_A],
+      ]
+    );
   });
 
   it("updates when a PATCH-by-guid target exists (204), creates when it doesn't (201, id back in body)", async () => {
@@ -149,10 +152,13 @@ describe("PptbDataverseClient.batch", () => {
       { contentId: 1, method: "PATCH", url: `contacts(${GUID_A})`, body: { lastname: "X" } },
       { contentId: 2, method: "PATCH", url: `contacts(${GUID_B})`, body: { lastname: "Y" } },
     ]);
-    assert.deepEqual(results.map((r) => [r.contentId, r.status, r.ok]), [
-      [1, 204, true],
-      [2, 201, true],
-    ]);
+    assert.deepEqual(
+      results.map((r) => [r.contentId, r.status, r.ok]),
+      [
+        [1, 204, true],
+        [2, 201, true],
+      ]
+    );
     // The engine strips the primary id from an id-upsert body; the create
     // fallback must restore it or the record gets a random id.
     assert.equal(createdBody!.contactid, GUID_B);
@@ -178,7 +184,10 @@ describe("PptbDataverseClient.batch", () => {
         body: { emailaddress1: "a'b@x.io", lastname: "Z" },
       },
     ]);
-    assert.deepEqual(results.map((r) => [r.status, r.ok, r.id]), [[201, true, GUID_A]]);
+    assert.deepEqual(
+      results.map((r) => [r.status, r.ok, r.id]),
+      [[201, true, GUID_A]]
+    );
     // The probe re-encodes the decoded key value with formatKeyLiteral.
     assert.ok(queries.some((q) => q.includes(`emailaddress1 eq ${formatKeyLiteral("a'b@x.io")}`)));
   });
@@ -208,10 +217,13 @@ describe("PptbDataverseClient.batch", () => {
         headers: { "If-None-Match": "*" },
       },
     ]);
-    assert.deepEqual(results.map((r) => [r.contentId, r.status, r.ok]), [
-      [1, 412, false],
-      [2, 201, true],
-    ]);
+    assert.deepEqual(
+      results.map((r) => [r.contentId, r.status, r.ok]),
+      [
+        [1, 412, false],
+        [2, 201, true],
+      ]
+    );
   });
 
   it("drops lookup-clear nulls from an emulated-upsert create, and only those", async () => {
@@ -254,10 +266,13 @@ describe("PptbDataverseClient.batch", () => {
       { contentId: 1, method: "DELETE", url: `contacts(${GUID_A})` },
       { contentId: 2, method: "DELETE", url: `contacts(${GUID_B})` },
     ]);
-    assert.deepEqual(results.map((r) => [r.contentId, r.status, r.ok]), [
-      [1, 204, true],
-      [2, 404, false],
-    ]);
+    assert.deepEqual(
+      results.map((r) => [r.contentId, r.status, r.ok]),
+      [
+        [1, 204, true],
+        [2, 404, false],
+      ]
+    );
     assert.match(results[1].errorMessage ?? "", /does not exist/);
   });
 
@@ -310,8 +325,7 @@ describe("PptbDataverseClient queries", () => {
         if (!q.includes("skiptoken")) {
           return {
             value: [{ n: 1 }],
-            "@odata.nextLink":
-              "https://org.crm.dynamics.com/api/data/v9.2/contacts?$select=n&$skiptoken=abc",
+            "@odata.nextLink": "https://org.crm.dynamics.com/api/data/v9.2/contacts?$select=n&$skiptoken=abc",
           };
         }
         return { value: [{ n: 2 }] };
