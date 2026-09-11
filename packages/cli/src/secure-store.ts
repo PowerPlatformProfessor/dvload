@@ -106,7 +106,8 @@ async function load(): Promise<SecretMap> {
       throw new Error(
         `Could not read the dvload secret store (${file}). ` +
           `If it is corrupt, delete it and run \`dvload login\` / \`dvload app-login\` again. ` +
-          `Underlying error: ${e instanceof Error ? e.message : String(e)}`
+          `Underlying error: ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e }
       );
     }
   }

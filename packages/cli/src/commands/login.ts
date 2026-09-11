@@ -113,7 +113,8 @@ export async function appLoginCommand(opts: AppLoginOpts): Promise<void> {
     throw new Error(
       `Saved credentials but token acquisition failed (rolled back): ${(e as Error).message}\n` +
         "Common causes: wrong tenant id, wrong client secret, or the Application User has not " +
-        "been created in Dataverse yet. See README → \"App-only auth setup\"."
+        "been created in Dataverse yet. See README → \"App-only auth setup\".",
+      { cause: e }
     );
   }
 }

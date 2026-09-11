@@ -26,7 +26,8 @@ export async function readProfiles(): Promise<Profiles> {
   } catch (e) {
     throw new Error(
       `${PROFILES_FILE} is not valid JSON (${(e as Error).message}). ` +
-        `Fix or delete the file, then re-add profiles with \`dvload profile add\`.`
+        `Fix or delete the file, then re-add profiles with \`dvload profile add\`.`,
+      { cause: e }
     );
   }
 }

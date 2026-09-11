@@ -96,7 +96,9 @@ try {
     "  `dvload serve` and `dvload gui` will fail with a 'could not find the\n" +
     "  built add-in UI' error. Run `npm run build --workspace=@dvload/addin`\n" +
     "  before bundling a release.";
-  if (requireWeb) throw new Error(`${message}\n  (--require-web was set, so this is fatal.)\n\n${err}`);
+  if (requireWeb) {
+    throw new Error(`${message}\n  (--require-web was set, so this is fatal.)\n\n${err}`, { cause: err });
+  }
   console.warn(`\n  WARNING: ${message}\n`);
 }
 

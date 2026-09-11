@@ -15,7 +15,9 @@
 
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
-import vitest from "eslint-plugin-vitest";
+// The maintained successor of eslint-plugin-vitest, which capped its eslint
+// peer at 9 and broke `npm ci` when dependabot moved eslint to 10.
+import vitest from "@vitest/eslint-plugin";
 
 /** Everything that is real, checked-in source. */
 const SOURCE = ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"];

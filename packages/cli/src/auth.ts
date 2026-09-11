@@ -1260,7 +1260,7 @@ export async function loginDelegated(opts: DelegatedAuthOptions): Promise<Accoun
  */
 async function loginWithClient(opts: DelegatedAuthOptions): Promise<AccountInfo> {
   const flow = opts.flow ?? defaultLoginFlow();
-  let result: AuthenticationResult | null = null;
+  let result: AuthenticationResult | null;
 
   if (flow === "interactive") {
     try {

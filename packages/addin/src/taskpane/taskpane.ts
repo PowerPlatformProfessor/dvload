@@ -2034,16 +2034,9 @@ async function refreshAccountUI(): Promise<void> {
   // per-environment, and there is nothing meaningful to report before then.
   // Failures here are not fatal: they render as "not signed in", and the
   // Sign in button surfaces the real error when the user acts on it.
-  let acc = null;
-  if (state.environmentUrl) {
-    try {
-      acc = await getAccount(state.environmentUrl);
-    } catch {
-      acc = null;
-    }
-  } else {
-    acc = await getAccount();
-  }
+  const acc = state.environmentUrl
+    ? await getAccount(state.environmentUrl).catch(() => null)
+    : await getAccount();
   state.account = acc ? { username: acc.username } : null;
   // A real session for this environment is the most authoritative answer to
   // "who am I", so it wins over anything remembered.
