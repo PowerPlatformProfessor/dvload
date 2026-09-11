@@ -107,6 +107,10 @@ function stubProbe(verdicts: Record<string, "usable" | "unusable">): void {
 }
 
 beforeEach(() => {
+  // Pin the login flow: on headless Linux (CI) defaultLoginFlow() picks
+  // device code, whose fake above never resolves — these tests are about
+  // the interactive chain, on every platform.
+  vi.stubEnv("DVLOAD_AUTH_FLOW", "interactive");
   msal.silent = null;
   msal.interactive = null;
   msal.interactiveClientIds = [];
@@ -133,6 +137,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 /* -------------------------------------------------------------------------- */
