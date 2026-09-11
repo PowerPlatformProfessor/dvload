@@ -7,11 +7,11 @@ MinimumOSVersion: 10.0.17763.0
 InstallerType: portable
 Commands:
   - dvload
-ReleaseDate: 1970-01-01
+ReleaseDate: 2026-09-11
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/PowerPlatformProfessor/dvload/releases/download/v0.1.0/dvload.exe
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: beb70d360509a0cff34abc1c74d18db57c20d93d126cd5ff68281389bd56d5d6
     PortableCommandAlias: dvload
 ManifestType: installer
 ManifestVersion: 1.6.0

@@ -6,7 +6,7 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/PowerPlatformProfessor/dvload/releases/download/v0.1.0/dvload.exe",
-      "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      "hash": "beb70d360509a0cff34abc1c74d18db57c20d93d126cd5ff68281389bd56d5d6"
     }
   },
   "bin": "dvload.exe",
