@@ -6,8 +6,8 @@
 
   The pane is served by `dvload serve` on port 44321, so start that first or
   the pane will not load. The port is hardcoded here because SourceLocation
-  is a literal URL — if you run `dvload serve --port N`, edit these URLs to
-  match.
+  is a literal URL (XML comments forbid double hyphens, so: if you serve on
+  a different port via the port flag, edit these URLs to match).
 -->
 <OfficeApp
   xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"

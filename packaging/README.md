@@ -99,8 +99,10 @@ instead of needing its own Entra app registration with an `spa` redirect URI
 - **Strangers:** AppSource via Partner Center, only worth it for public
   distribution.
 
-`deploy-addin.yml` publishes `packages/addin/dist` to GitHub Pages for the
-hosted manifest and UI previews. That build is not what the exe serves.
+There is no hosted copy of the pane: the UI ships only inside the exe and
+is served from loopback by `dvload serve`. (A GitHub Pages deployment
+existed once for previews and was removed — nothing outside the exe needs
+the build.)
 
 ## Client id
 

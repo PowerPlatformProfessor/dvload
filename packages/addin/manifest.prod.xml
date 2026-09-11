@@ -23,14 +23,17 @@
   xsi:type="TaskPaneApp">
 
   <Id>a0f4f5da-47e0-47ec-80a1-1919128f464a</Id>
-  <Version>0.1.0.0</Version>
+  <!-- The Office manifest version is independent of the product version;
+       the validator rejects anything below 1.0. -->
+  <Version>1.0.0.0</Version>
   <ProviderName>dvload</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Dataverse Load"/>
   <Description DefaultValue="Map an Excel table to a Dataverse entity and load via the OData Web API."/>
+  <!-- Schema order matters here: IconUrl before SupportUrl. -->
+  <IconUrl DefaultValue="https://localhost:44321/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://localhost:44321/assets/icon-80.png"/>
   <SupportUrl DefaultValue="https://github.com/PowerPlatformProfessor/dvload/issues"/>
-  <IconUrl DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-80.png"/>
 
   <!--
     No AppDomains entry: the pane never navigates off its own origin. The
@@ -91,9 +94,9 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-16.png"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-32.png"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://powerplatformprofessor.github.io/dvload/assets/icon-80.png"/>
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:44321/assets/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:44321/assets/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:44321/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/PowerPlatformProfessor/dvload#readme"/>

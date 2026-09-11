@@ -10,7 +10,7 @@
     "watch": "webpack --mode development --watch",
     "start": "office-addin-debugging start manifest.xml",
     "stop": "office-addin-debugging stop manifest.xml",
-    "validate": "office-addin-manifest validate manifest.xml",
+    "validate": "office-addin-manifest validate manifest.prod.xml",
     "test": "vitest run --root ../.. --project addin"
   },
   "dependencies": {
