@@ -106,8 +106,9 @@ jobs:
 
       # The ratchet: fails if coverage dropped below the recorded baseline.
       # See scripts/coverage-gate.mjs for why this beats a fixed threshold.
-      # Only one matrix leg runs it, so the number is measured consistently
-      # and cannot drift between platforms.
+      # Baselines are per platform (coverage-baseline.<platform>.json):
+      # platform-gated code paths make the absolute numbers differ between
+      # win32 dev machines and this linux leg, so each ratchets its own file.
       - name: Coverage ratchet
         if: ${{ matrix.coverage }}
         run: npm run coverage:gate
@@ -116,14 +117,14 @@ jobs:
         if: ${{ matrix.coverage && !cancelled() }}
         shell: bash
         run: |
-          if ! git diff --quiet -- .github/coverage-baseline.json; then
+          if ! git diff --quiet -- '.github/coverage-baseline.*.json'; then
             {
               echo "### Coverage improved"
               echo
               echo "The baseline was raised. Commit the updated file so the next PR is held to it:"
               echo
               echo '```diff'
-              git diff -- .github/coverage-baseline.json
+              git diff -- '.github/coverage-baseline.*.json'
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi

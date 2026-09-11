@@ -94,8 +94,9 @@ hand-written fake client will happily agree with a buggy serializer.
 
 ### Coverage can go up, not down
 
-The gate compares against `.github/coverage-baseline.json` and fails on a
-drop. If you legitimately can't avoid a decrease, run
+The gate compares against `.github/coverage-baseline.<platform>.json` (one
+baseline per OS — platform-gated code makes the absolute numbers differ
+between Windows and Linux) and fails on a drop. If you legitimately can't avoid a decrease, run
 `npm run coverage:accept` and explain why in the PR description — the baseline
 change shows up in the diff and gets reviewed like any other change.
 

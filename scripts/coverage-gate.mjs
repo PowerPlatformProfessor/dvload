@@ -10,7 +10,13 @@
  * A ratchet avoids that: the gate is whatever coverage the repo achieved last
  * time, minus a small tolerance for measurement noise. Coverage can go up
  * freely and is recorded automatically. It can only go DOWN by an explicit,
- * reviewable commit to .github/coverage-baseline.json.
+ * reviewable commit to the baseline file.
+ *
+ * Baselines are PER PLATFORM (.github/coverage-baseline.<platform>.json):
+ * platform-gated code (DPAPI secure store, Windows scheduling, browser
+ * launch) never executes on Linux, so absolute numbers differ by about a
+ * point between a dev machine on win32 and CI on linux — a shared baseline
+ * whichever side wrote it last would permanently fail the other side.
  *
  * Usage:
  *   node scripts/coverage-gate.mjs            # check (exits 1 on regression)
@@ -26,7 +32,8 @@ import process from "node:process";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const SUMMARY = path.join(REPO_ROOT, "coverage", "coverage-summary.json");
-const BASELINE = path.join(REPO_ROOT, ".github", "coverage-baseline.json");
+const BASELINE = path.join(REPO_ROOT, ".github", `coverage-baseline.${process.platform}.json`);
+const BASELINE_REL = path.relative(REPO_ROOT, BASELINE);
 
 /**
  * Tolerance, in percentage points. V8 coverage can wobble by a hair between
@@ -131,7 +138,7 @@ if (improvements.length > 0) {
   console.log(
     `coverage-gate: coverage improved (${improvements
       .map((r) => `${r.metric} +${r.delta}`)
-      .join(", ")}) — baseline raised. Commit .github/coverage-baseline.json.`
+      .join(", ")}) — baseline raised. Commit ${BASELINE_REL}.`
   );
 } else {
   console.log("coverage-gate: OK");

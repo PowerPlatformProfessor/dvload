@@ -157,8 +157,10 @@ shell, and would hide both.
 | `packages/addin/src` | 34% | Only the pure suggestion logic is in scope |
 
 On top of the floors sits a **ratchet** (`scripts/coverage-gate.mjs`). It
-compares against `.github/coverage-baseline.json` and fails on a drop of more
-than 0.5 points. Coverage can rise freely and the baseline is raised
+compares against `.github/coverage-baseline.<platform>.json` — one baseline
+per OS, because platform-gated code (DPAPI, Windows scheduling, browser
+launch) makes the absolute numbers differ between Windows and Linux — and
+fails on a drop of more than 0.5 points. Coverage can rise freely and the baseline is raised
 automatically; lowering it takes an explicit, reviewable commit.
 
 Why a ratchet rather than a fixed threshold: set the number low and it never

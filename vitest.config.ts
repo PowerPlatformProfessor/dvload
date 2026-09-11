@@ -178,7 +178,8 @@ export default defineConfig({
        *
        * These are the "never below this, ever" net. The real gate is the
        * ratchet in scripts/coverage-gate.mjs, which compares against
-       * .github/coverage-baseline.json and refuses to let a PR lower it.
+       * .github/coverage-baseline.<platform>.json and refuses to let a PR
+       * lower it.
        */
       thresholds: {
         // The mapping/coercion/load engine. Every bug here writes wrong data
