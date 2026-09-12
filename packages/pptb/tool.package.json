@@ -12,7 +12,7 @@
   "keywords": ["powerplatform", "dataverse", "toolbox", "excel", "import", "data-load", "upsert", "csv"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/PowerPlatformProfessor/dvload"
+    "url": "git+https://github.com/PowerPlatformProfessor/dvload.git"
   },
   "license": "MIT"
 }
