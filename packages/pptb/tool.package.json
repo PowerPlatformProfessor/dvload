@@ -6,9 +6,22 @@
   "main": "index.html",
   "icon": "icon.svg",
   "features": {
-    "minAPI": "1.2.0"
+    "minAPI": "1.2.0",
+    "multiConnection": "none",
+    "connectionRequirement": "required"
   },
   "author": "PowerPlatformProfessor",
+  "contributors": [
+    {
+      "name": "PowerPlatformProfessor",
+      "url": "https://github.com/PowerPlatformProfessor"
+    }
+  ],
+  "configurations": {
+    "repository": "https://github.com/PowerPlatformProfessor/dvload",
+    "website": "https://github.com/PowerPlatformProfessor/dvload#readme",
+    "readmeUrl": "https://raw.githubusercontent.com/PowerPlatformProfessor/dvload/main/packages/pptb/README.md"
+  },
   "keywords": ["powerplatform", "dataverse", "toolbox", "excel", "import", "data-load", "upsert", "csv"],
   "repository": {
     "type": "git",
