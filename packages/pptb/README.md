@@ -57,10 +57,26 @@ displayName, icon, `features.minAPI`).
 ## Try it locally
 
 1. Power Platform ToolBox → **Settings** → enable **Show Debug Menu**.
-2. **Debug** in the sidebar → **Load Local Tool** → Browse to this package's
-   `dist/` folder → Load Tool.
+2. **Debug** in the sidebar → **Load Local Tool** → Browse to **this package's
+   own folder** (`packages/pptb`) → Load Tool. Pick the folder that *contains*
+   `dist/`, not `dist/` itself: the ToolBox looks for `<folder>/dist/index.html`
+   and reports "No dist/index.html found" when handed the built output
+   directly.
 3. Pick a connection, open the tool. After a rebuild, close and reopen the
    tool tab.
+
+To try the **published** package instead of the working tree, install it
+somewhere outside this repo (inside it, npm resolves the name to the
+workspace and you end up testing your own source) and wrap it so the loader
+finds it:
+
+```powershell
+mkdir pptb-verify; cd pptb-verify; npm init -y; npm i @dvload/pptb
+mkdir published\dist
+copy node_modules\@dvload\pptb\* published\dist\ /s
+```
+
+Then load `pptb-verify\published`.
 
 ## Publish
 

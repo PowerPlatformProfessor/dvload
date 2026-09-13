@@ -279,8 +279,11 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 ## 19b. Power Platform ToolBox tool
 
 Build `packages/pptb` (`npm run build --workspace=@dvload/pptb`), then load
-`packages/pptb/dist` via PPTB → Settings → Show Debug Menu → Debug → Load
-Local Tool. Needs a ToolBox connection to the sandbox environment.
+**`packages/pptb`** via PPTB → Settings → Show Debug Menu → Debug → Load Local
+Tool — the folder that contains `dist/`, not `dist/` itself, which the loader
+rejects with "No dist/index.html found". Needs a ToolBox connection to the
+sandbox environment. To exercise the published package instead, see "Try it
+locally" in `packages/pptb/README.md`.
 
 | # | Test | Expected | Result |
 |---|---|---|---|
