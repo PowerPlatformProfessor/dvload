@@ -1,6 +1,6 @@
 {
   "name": "@dvload/pptb",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Load Excel / Power Query output into Dataverse from inside the Power Platform ToolBox: map columns, resolve lookups, upsert, sync.",
   "private": true,
   "scripts": {
