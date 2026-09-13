@@ -10,7 +10,7 @@
 #
 # Validate before submitting:  winget validate --manifest packaging/winget
 PackageIdentifier: PowerPlatformProfessor.dvload
-PackageVersion: 0.1.0
+PackageVersion: 0.2.0
 DefaultLocale: en-US
 ManifestType: version
 ManifestVersion: 1.6.0

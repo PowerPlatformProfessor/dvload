@@ -1,5 +1,5 @@
 PackageIdentifier: PowerPlatformProfessor.dvload
-PackageVersion: 0.1.0
+PackageVersion: 0.2.0
 MinimumOSVersion: 10.0.17763.0
 # "portable" is the right type for a bare exe: winget puts a shim on PATH and
 # handles upgrade/uninstall itself. An installer type would mean authoring an
@@ -7,11 +7,11 @@ MinimumOSVersion: 10.0.17763.0
 InstallerType: portable
 Commands:
   - dvload
-ReleaseDate: 2026-09-11
+ReleaseDate: 2026-09-13
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/PowerPlatformProfessor/dvload/releases/download/v0.1.0/dvload.exe
-    InstallerSha256: beb70d360509a0cff34abc1c74d18db57c20d93d126cd5ff68281389bd56d5d6
+    InstallerUrl: https://github.com/PowerPlatformProfessor/dvload/releases/download/v0.2.0/dvload.exe
+    InstallerSha256: 3446f37d0353f53c21e75d15e157ebc2f1ff257f416943d67a314115456e69af
     PortableCommandAlias: dvload
 ManifestType: installer
 ManifestVersion: 1.6.0
