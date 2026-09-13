@@ -12,7 +12,7 @@ declare const ADDIN_AI_CONNECTION: string; // injected by webpack DefinePlugin
 
 const ENABLED_KEY = "dvload:telemetry-enabled";
 const NOTIFIED_KEY = "dvload:telemetry-notified";
-const TOOL_VERSION = "0.1.0";
+const TOOL_VERSION = "0.2.0"; // keep in sync with package.json
 
 // GDPR posture: the very first pane session sends NOTHING — the user sees
 // the checkbox and can untick it before any data leaves the machine.

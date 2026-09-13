@@ -1,6 +1,6 @@
 {
   "name": "@dvload/addin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Excel task pane add-in. Picks an Excel table, builds a Dataverse mapping, runs an import.",
   "private": true,
   "scripts": {
@@ -14,7 +14,7 @@
     "test": "vitest run --root ../.. --project addin"
   },
   "dependencies": {
-    "@dvload/core": "0.1.0"
+    "@dvload/core": "0.2.0"
   },
   "devDependencies": {
     "@types/office-js": "^1.0.608",

@@ -1,6 +1,6 @@
 {
   "name": "@dvload/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mapping engine and Dataverse OData client. Used by both the Excel add-in and the CLI.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

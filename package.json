@@ -2,7 +2,7 @@
   "name": "dvload-monorepo",
   "private": true,
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Map Excel/Power Query output to Dataverse tables and load via the OData Web API. Excel add-in + CLI.",
   "workspaces": [
     "packages/*"

@@ -34,7 +34,7 @@ const CONNECTION_STRING =
   process.env.DVLOAD_AI_CONNECTION_STRING ??
   (typeof __DVLOAD_AI_DEFAULT__ === "string" ? __DVLOAD_AI_DEFAULT__ : "");
 
-const TOOL_VERSION = "0.1.0"; // keep in sync with package.json
+const TOOL_VERSION = "0.2.0"; // keep in sync with package.json
 
 const CONFIG_PATH = path.join(os.homedir(), ".dvload", "telemetry.json");
 

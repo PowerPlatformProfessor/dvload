@@ -1,6 +1,6 @@
 {
   "name": "dvload",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Load Excel/Power Query tables into Microsoft Dataverse from the command line. Schedules via Windows Task Scheduler.",
   "license": "MIT",
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@azure/msal-node": "^2.6.0",
-    "@dvload/core": "0.1.0",
+    "@dvload/core": "0.2.0",
     "commander": "^12.0.0",
     "esbuild": "^0.28.2",
     "kleur": "^4.1.5",
