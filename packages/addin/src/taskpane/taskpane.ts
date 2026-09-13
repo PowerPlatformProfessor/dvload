@@ -4570,6 +4570,19 @@ function preflightSummary(
   const n = rowCount - startOffset;
   const lines: string[] = [];
   if (dryRun) lines.push("Dry run — nothing will be written.");
+  // With several mappings open, "Run import" runs exactly the one in the
+  // editor. Saying so here, before the write, is the difference between a
+  // one-table import and someone believing all their tables just loaded.
+  if (state.drafts.length > 1) {
+    const others = state.drafts.length - 1;
+    lines.push(
+      `This runs ONLY the open mapping “${mapping.name}” — ` +
+        `the other ${others} mapping${others === 1 ? "" : "s"} on the Import tab ` +
+        `${others === 1 ? "is" : "are"} not included.`
+    );
+    lines.push("(To run them all in order, use Run all steps on the Run plan tab.)");
+    lines.push("");
+  }
   lines.push(`${verbs[mapping.conflictMode]} ${n} row${n === 1 ? "" : "s"} → ${mapping.targetEntitySet}`);
   lines.push(`Environment: ${where || "(none)"}`);
   const who = state.account?.username ?? state.username ?? "current connection";
@@ -4793,6 +4806,18 @@ async function onResetAll(): Promise<void> {
   setStatus("info", "Reset. Pick a source table and target entity to start again.");
 }
 
+/**
+ * Names the mapping in run messages once more than one is open.
+ *
+ * Run import runs the mapping in the editor, and only that one. With a
+ * single mapping open that is obvious and the prefix would be noise; with
+ * several it is the whole question, and the answer has to appear on the
+ * status line too — the pre-flight dialog is skipped for a clean dry run.
+ */
+function runScopeLabel(mapping: Mapping): string {
+  return state.drafts.length > 1 ? `“${mapping.name}” only — ` : "";
+}
+
 async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
   if (runController) return; // already running
   try {
@@ -4854,7 +4879,7 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
 
     setStatus(
       "info",
-      `${dryRun ? "Dry run: planning" : "Loading"} ${rows.length - startOffset} rows…` +
+      `${runScopeLabel(mapping)}${dryRun ? "Dry run: planning" : "Loading"} ${rows.length - startOffset} rows…` +
         (startOffset > 0 ? ` (resuming at row ${startOffset + 1})` : "")
     );
     runStartedAt = Date.now();
@@ -4920,7 +4945,7 @@ async function onRun(opts: { resume?: boolean } = {}): Promise<void> {
       (result.unchanged > 0 ? ` (${result.unchanged} unchanged)` : "") +
       (result.removed > 0 ? `, ${result.removed} removed` : "") +
       `, ${result.failed} failed`;
-    const prefix = dryRun ? "Dry run — nothing was written. " : "";
+    const prefix = runScopeLabel(mapping) + (dryRun ? "Dry run — nothing was written. " : "");
     const retryNote = retries > 0 ? ` (recovered from ${retries} dropped or throttled request${retries === 1 ? "" : "s"})` : "";
     if (result.cancelled) {
       setStatus("info", `${prefix}Cancelled. ${summary} — skipped rows were not attempted.`);
