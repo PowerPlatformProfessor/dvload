@@ -113,6 +113,32 @@
     .plan-card .plan-head input { font-weight: 600; }
     /* Reordering: the grip is the only draggable part, so text in the step's
        inputs still selects normally. */
+    /* The open-mappings strip above the Source section. */
+    .draft-bar {
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface-2, var(--surface)); padding: 6px 8px; margin-bottom: 8px;
+    }
+    .draft-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .draft-row + .draft-row { margin-top: 6px; }
+    .draft-title { font-size: 11px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+    .draft-list { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; min-width: 0; }
+    .draft-chip {
+      display: inline-flex; align-items: center;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--surface); overflow: hidden; max-width: 100%;
+    }
+    .draft-chip.active { border-color: var(--accent, #0078d4); background: var(--surface-3, var(--surface)); }
+    .draft-chip .draft-open {
+      width: auto; background: none; border: none; color: inherit;
+      font-size: 11px; padding: 2px 8px; cursor: pointer;
+      max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .draft-chip.active .draft-open { font-weight: 600; }
+    .draft-chip .draft-close {
+      width: auto; background: none; border: none; color: var(--muted);
+      font-size: 10px; padding: 2px 6px 2px 0; cursor: pointer;
+    }
+    .draft-chip .draft-close:hover { color: var(--danger, #d13438); }
     .plan-grip { cursor: grab; user-select: none; color: var(--muted); font-size: 13px; line-height: 1; padding: 0 2px; }
     .plan-grip:active { cursor: grabbing; }
     .plan-card.drag-source { opacity: 0.4; }
@@ -331,6 +357,28 @@
         </div>
       </div>
     </details><!-- /sidecarAuthBlock -->
+
+    <!--
+      The mappings open in this pane. It sits above Source because it scopes
+      everything below it: each mapping owns its own source, target, columns
+      and options, and the chips choose which one the controls are editing.
+    -->
+    <div id="draftBar" class="draft-bar">
+      <div class="draft-row">
+        <span class="draft-title">Mappings</span>
+        <div id="draftList" class="draft-list"></div>
+      </div>
+      <div class="draft-row">
+        <button id="draftNew" class="secondary" type="button"
+          title="Start another mapping. Added files stay available; the new mapping gets its own source, target and columns.">
+          + New mapping
+        </button>
+        <button id="draftSaveAll" class="secondary" type="button" style="margin-left:auto;"
+          title="Save every open mapping to a .dvmap.json and turn them into run-plan steps.">
+          Save all → Run plan
+        </button>
+      </div>
+    </div>
 
     <!--
       Two blocks inside the Source section, reordered at runtime by

@@ -81,6 +81,8 @@ import {
 
 const SETTINGS_KEY = "dvload:lastMapping";
 const PLAN_SETTINGS_KEY = "dvload:lastRunPlan";
+/** Every mapping open on the Import tab, so a session survives a reload. */
+const DRAFTS_SETTINGS_KEY = "dvload:mappingDrafts";
 const CHECKPOINT_KEY = "dvload:runCheckpoint";
 const PROFILES_KEY = "dvload:profiles";
 /**
@@ -355,6 +357,24 @@ interface AppState {
   mappingExtras: Partial<Mapping>;
   planMeta: { name: string; description?: string; stopOnError: boolean; createdAt?: string };
   checkpoint: Checkpoint | null;
+  /**
+   * Every mapping open on the Import tab. Exactly one — `activeDraftId` — is
+   * live in the editor's controls at any moment; the rest are parked here as
+   * whole Mappings. Loading several tables of one dataset is the normal case
+   * (a plan needs one mapping per table), and re-entering an entire mapping
+   * to fix one column was the cost of not having this.
+   */
+  drafts: MappingDraft[];
+  activeDraftId: string;
+}
+
+/** One mapping open on the Import tab, plus where it reads its rows from. */
+interface MappingDraft {
+  /** Session-local identity for switching. Never written to a .dvmap.json. */
+  id: string;
+  mapping: Mapping;
+  /** `SourceRef.id` this mapping edits — its name alone can be ambiguous. */
+  sourceId: string;
 }
 
 const state: AppState = {
@@ -375,6 +395,8 @@ const state: AppState = {
   mappingExtras: {},
   planMeta: { name: "Run plan", stopOnError: true },
   checkpoint: null,
+  drafts: [],
+  activeDraftId: "",
 };
 
 const lookupTargetsCache = new Map<string, string[]>();
@@ -450,6 +472,10 @@ async function bootstrap(): Promise<void> {
   // perfectly good cached session.
   restoreMapping();
   restoreRunPlan();
+  // After restoreMapping: with no stored draft list, the single draft is
+  // built from whatever that just put in the editor.
+  restoreDrafts();
+  renderDraftBar();
 
   initTabs();
 
@@ -546,6 +572,10 @@ async function bootstrap(): Promise<void> {
     const inp = el<HTMLInputElement>("ctSchemaSuffix");
     inp.value = inp.value.replace(/[^A-Za-z0-9]/g, "").replace(/^[^A-Za-z]+/, "");
   });
+  el<HTMLButtonElement>("draftNew").addEventListener("click", () => void onDraftNew());
+  el<HTMLButtonElement>("draftSaveAll").addEventListener("click", () => void onDraftSaveAll());
+  // The active chip shows the name as typed, so it tracks the field.
+  el<HTMLInputElement>("mappingName").addEventListener("input", renderDraftBar);
   el<HTMLButtonElement>("addMap").addEventListener("click", () => addMapping());
   el<HTMLButtonElement>("addConst").addEventListener("click", () => addConstant());
   el<HTMLButtonElement>("suggest").addEventListener("click", onSuggest);
@@ -738,6 +768,13 @@ function tabButtons(): HTMLButtonElement[] {
  * started on one tab keeps updating controls on another.
  */
 function showTab(panelId: TabId): void {
+  // Leaving the editor is the natural moment to bank what is in it: the
+  // chips and "Save all" both read from the draft list, and a mapping that
+  // was edited but never switched away from would otherwise be the stale one.
+  if (panelId !== "panelImport" && state.drafts.length > 0) {
+    captureActiveDraft();
+    persistDrafts();
+  }
   for (const btn of tabButtons()) {
     const selected = btn.dataset.panel === panelId;
     btn.setAttribute("aria-selected", String(selected));
@@ -1690,6 +1727,10 @@ function selectSource(id: string): void {
   el<HTMLSelectElement>("table").value = id;
   renderFileList();
   rerenderMappings();
+  // An unnamed mapping is labelled by its source table, so the chip follows
+  // the selection. Guarded: sources are also selected during start-up,
+  // before there is a draft list to render.
+  if (state.drafts.length > 0) renderDraftBar();
 }
 
 /** The added-files list, with a remove button each. */
@@ -4189,6 +4230,317 @@ function buildMapping(): Mapping {
   return m;
 }
 
+/* --------------------------------------------------------------------------
+ * Mapping drafts — the Import tab's list of open mappings.
+ *
+ * A run plan needs one mapping per table, and building those one at a time,
+ * each wiping the last, made a multi-table load an exercise in re-entering
+ * work. The editor now holds several: one is live in the controls, the rest
+ * are parked as whole Mappings, and "Save all" writes every one out and
+ * turns them into plan steps.
+ * -------------------------------------------------------------------------- */
+
+let draftSeq = 0;
+
+function nextDraftId(): string {
+  return `d${++draftSeq}`;
+}
+
+/** A fresh mapping that inherits only the environment. */
+function blankMapping(): Mapping {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    name: "",
+    environmentUrl: state.environmentUrl,
+    targetEntitySet: "",
+    sourceTable: "",
+    columns: [],
+    conflictMode: "insert",
+    batchSize: 100,
+    maxErrors: 0,
+    logDir: "./logs",
+    concurrency: 1,
+    bypassCustomLogic: false,
+    skipUnchanged: false,
+  };
+}
+
+/** What a draft is called in the chip list. */
+function draftLabel(draft: MappingDraft): string {
+  if (draft.id === state.activeDraftId) {
+    // The live one's name is whatever the editor currently says, not what was
+    // last captured.
+    const typed = el<HTMLInputElement>("mappingName").value.trim();
+    return typed || currentSource()?.tableName || state.selectedTable?.name || "Untitled";
+  }
+  return draft.mapping.name || draft.mapping.sourceTable || "Untitled";
+}
+
+/** Fold the editor's live controls back into the draft they belong to. */
+function captureActiveDraft(): void {
+  const draft = state.drafts.find((d) => d.id === state.activeDraftId);
+  if (!draft) return;
+  draft.mapping = buildMapping();
+  draft.sourceId = state.selectedSourceId;
+}
+
+/** Load a draft into the editor's controls. */
+async function applyDraftToEditor(draft: MappingDraft): Promise<void> {
+  state.entitySet = draft.mapping.targetEntitySet;
+  state.mappings = draft.mapping.columns;
+  state.mappingExtras = { createdAt: draft.mapping.createdAt, logDir: draft.mapping.logDir };
+  writeOptionsFromMapping(draft.mapping);
+
+  if (draft.sourceId && state.sources.some((s) => s.id === draft.sourceId)) {
+    selectSource(draft.sourceId);
+  } else {
+    state.selectedSourceId = "";
+    state.selectedTable = null;
+    el<HTMLSelectElement>("table").value = "";
+    rerenderMappings();
+  }
+
+  // No-ops when the environment is unchanged, which is the common case;
+  // when it does change it reloads the entity list and restores the
+  // selection from state.entitySet by itself.
+  if (draft.mapping.environmentUrl) await setEnvironment(draft.mapping.environmentUrl);
+
+  // Entities already loaded for this environment: point the select at this
+  // draft's target and fetch its attributes, so the column editor has
+  // something to offer the moment the draft opens.
+  const entSel = el<HTMLSelectElement>("entity");
+  if (state.entitySet && [...entSel.options].some((o) => o.value === state.entitySet)) {
+    entSel.value = state.entitySet;
+    const logical = entSel.selectedOptions[0]?.dataset.logical;
+    if (logical) {
+      await loadEntityAttributes(logical);
+      rerenderMappings();
+    }
+  }
+}
+
+function renderDraftBar(): void {
+  const list = el<HTMLDivElement>("draftList");
+  list.innerHTML = "";
+  for (const draft of state.drafts) {
+    const chip = document.createElement("span");
+    chip.className = "draft-chip" + (draft.id === state.activeDraftId ? " active" : "");
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "draft-open";
+    open.textContent = draftLabel(draft);
+    open.title =
+      draft.id === state.activeDraftId
+        ? "This mapping is open in the editor below"
+        : `Switch the editor to ${draftLabel(draft)}`;
+    open.addEventListener("click", () => void switchDraft(draft.id));
+    chip.appendChild(open);
+
+    // Nothing to close when it's the only one — an editor with no mapping
+    // open has no meaningful state to show.
+    if (state.drafts.length > 1) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "draft-close";
+      close.textContent = "✕";
+      close.title = `Close ${draftLabel(draft)} (its saved file is not deleted)`;
+      close.addEventListener("click", () => void closeDraft(draft.id));
+      chip.appendChild(close);
+    }
+    list.appendChild(chip);
+  }
+}
+
+async function switchDraft(id: string): Promise<void> {
+  if (id === state.activeDraftId) return;
+  if (runController) {
+    setStatus("error", "An import is running — wait for it to finish before switching mapping.");
+    return;
+  }
+  const target = state.drafts.find((d) => d.id === id);
+  if (!target) return;
+  captureActiveDraft();
+  state.activeDraftId = id;
+  await applyDraftToEditor(target);
+  persistDrafts();
+  renderDraftBar();
+  setStatus("info", `Editing ${draftLabel(target)}.`);
+}
+
+async function onDraftNew(): Promise<void> {
+  if (runController) {
+    setStatus("error", "An import is running — wait for it to finish before adding a mapping.");
+    return;
+  }
+  captureActiveDraft();
+  const draft: MappingDraft = { id: nextDraftId(), mapping: blankMapping(), sourceId: "" };
+  state.drafts.push(draft);
+  state.activeDraftId = draft.id;
+  await applyDraftToEditor(draft);
+  persistDrafts();
+  renderDraftBar();
+  setStatus("info", "New mapping — pick its source table and target entity. The files you added are still available.");
+}
+
+async function closeDraft(id: string): Promise<void> {
+  if (state.drafts.length <= 1) return;
+  const index = state.drafts.findIndex((d) => d.id === id);
+  if (index < 0) return;
+  const wasActive = id === state.activeDraftId;
+  const label = draftLabel(state.drafts[index]);
+  state.drafts.splice(index, 1);
+  if (wasActive) {
+    const next = state.drafts[Math.min(index, state.drafts.length - 1)];
+    state.activeDraftId = next.id;
+    await applyDraftToEditor(next);
+  }
+  persistDrafts();
+  renderDraftBar();
+  setStatus("info", `Closed ${label}.`);
+}
+
+/**
+ * Write every open mapping to a file and turn the set into run-plan steps.
+ *
+ * This is the bridge between the two tabs: the Import tab is where a mapping
+ * is built, the Run plan tab is where the order between them is decided, and
+ * until now nothing carried a mapping from one to the other except retyping
+ * a file path.
+ */
+async function onDraftSaveAll(): Promise<void> {
+  if (runController) {
+    setStatus("error", "An import is running — wait for it to finish.");
+    return;
+  }
+  captureActiveDraft();
+
+  // Two mappings sharing a name would overwrite each other on disk and
+  // collapse into one plan step, which is a silent way to lose work.
+  const byFile = new Map<string, string[]>();
+  for (const draft of state.drafts) {
+    const key = mappingFileName(draft.mapping).toLowerCase();
+    byFile.set(key, [...(byFile.get(key) ?? []), draftLabel(draft)]);
+  }
+  const clash = [...byFile].find(([, labels]) => labels.length > 1);
+  if (clash) {
+    setStatus(
+      "error",
+      `Two mappings would both save as ${clash[0]} (${clash[1].join(", ")}). ` +
+        `Give them different names under Import options → Advanced → Mapping name.`
+    );
+    return;
+  }
+
+  const problems = state.drafts.flatMap((d) =>
+    validateMapping(d.mapping).map((e) => `${draftLabel(d)}: ${e}`)
+  );
+  if (problems.length > 0) {
+    const proceed = await confirmDialog(
+      "Some mappings have errors and the plan will refuse to run them:\n\n" +
+        problems.map((p) => `• ${p}`).join("\n") +
+        "\n\nSave them anyway?",
+      "Save anyway"
+    );
+    if (!proceed) {
+      setStatus("error", `Nothing saved — ${problems.length} problem(s) to fix.`);
+      return;
+    }
+  }
+
+  let stage = Math.max(0, ...state.planSteps.map((s) => s.stage ?? 1));
+  let saved = 0;
+  const added: string[] = [];
+  for (const draft of state.drafts) {
+    const fileName = mappingFileName(draft.mapping);
+    // A breath between files. In the ToolBox each save is a native dialog and
+    // this is invisible; in a browser, several downloads fired in one tick is
+    // exactly the pattern that gets throttled or silently dropped.
+    if (saved > 0) await new Promise((r) => setTimeout(r, 150));
+    const ok = await host().saveFile(serializeMapping(draft.mapping), fileName, "application/json");
+    if (!ok) {
+      setStatus("info", `Stopped after ${saved} mapping(s) — ${fileName} wasn't saved.`);
+      break;
+    }
+    saved++;
+    // In-session too, so running the plan straight after doesn't ask for
+    // files that were just written.
+    planMappingFiles.set(fileName.toLowerCase(), draft.mapping);
+
+    const source = state.sources.find((s) => s.id === draft.sourceId);
+    const workbook = source?.fileName ? `./${source.fileName}` : "./workbook.xlsx";
+    // Re-saving a mapping updates its step in place: stages and dependencies
+    // tuned on the other tab are the user's work, not ours to reset.
+    const existing = state.planSteps.find((s) => planPathName(s.mapping) === fileName.toLowerCase());
+    if (existing) {
+      existing.workbook = workbook;
+    } else {
+      state.planSteps.push({
+        id: nextStepId(),
+        mapping: `./${fileName}`,
+        workbook,
+        stage: ++stage,
+      });
+      added.push(fileName);
+    }
+  }
+
+  if (saved === 0) return;
+  persistRunPlan();
+  rerenderRunPlan();
+  showTab("panelPlan");
+  const noWorkbook = state.drafts.filter((d) => !state.sources.find((s) => s.id === d.sourceId)?.fileName).length;
+  setStatus(
+    "success",
+    `Saved ${saved} mapping(s); the plan has ${state.planSteps.length} step(s)` +
+      (added.length > 0 ? ` (${added.length} new)` : " (all updated in place)") +
+      `. Set stages and dependencies here, then Run all steps.` +
+      (noWorkbook > 0 ? ` ${noWorkbook} step(s) need a workbook path — their source isn't an added file.` : "")
+  );
+}
+
+function persistDrafts(): void {
+  host().settings.set(DRAFTS_SETTINGS_KEY, JSON.stringify({ activeDraftId: state.activeDraftId, drafts: state.drafts }));
+  host().settings.save();
+}
+
+/**
+ * Seed the draft list at start-up.
+ *
+ * Restores the drafts from the previous session where there are any, and
+ * otherwise wraps whatever `restoreMapping` put in the editor, so a pane
+ * that has only ever had one mapping still has exactly one chip.
+ */
+function restoreDrafts(): void {
+  const raw = host().settings.get(DRAFTS_SETTINGS_KEY);
+  if (typeof raw === "string" && raw) {
+    try {
+      const stored = JSON.parse(raw) as { activeDraftId?: string; drafts?: MappingDraft[] };
+      const drafts = (stored.drafts ?? []).filter((d) => d && typeof d.id === "string" && d.mapping);
+      if (drafts.length > 0) {
+        state.drafts = drafts;
+        draftSeq = drafts.length;
+        state.activeDraftId = drafts.some((d) => d.id === stored.activeDraftId)
+          ? (stored.activeDraftId as string)
+          : drafts[0].id;
+        // Put the active draft into the editor, overriding whatever
+        // restoreMapping left there. Without this the controls show the
+        // last-RUN mapping while the chips claim something else is open —
+        // and the first switch would capture those stale controls over the
+        // draft, losing it.
+        const active = state.drafts.find((d) => d.id === state.activeDraftId)!;
+        applyStoredMappingToEditor(active.mapping, active.sourceId);
+        return;
+      }
+    } catch {
+      // Fall through to a single draft from the editor's own state.
+    }
+  }
+  const draft: MappingDraft = { id: nextDraftId(), mapping: buildMapping(), sourceId: state.selectedSourceId };
+  state.drafts = [draft];
+  state.activeDraftId = draft.id;
+}
+
 /**
  * What the Run button is about to do, spelled out: rows, mode, entity,
  * environment, identity — plus every flag that changes the blast radius.
@@ -4358,6 +4710,7 @@ async function onResetAll(): Promise<void> {
   const ok = await confirmDialog(
     "Start over?\n\n" +
       "This clears the source table, target entity, all column mappings, import options, " +
+      (state.drafts.length > 1 ? `and all ${state.drafts.length} open mappings, ` : "") +
       "and the mapping remembered for this workbook. Your sign-in, environment URL, and " +
       "saved profiles are kept.",
     "Reset"
@@ -4412,6 +4765,14 @@ async function onResetAll(): Promise<void> {
   el<HTMLSelectElement>("table").value = "";
   renderFileList();
   updateOptionsVisibility();
+
+  // Back to a single empty mapping: the editor was just cleared, and leaving
+  // chips pointing at mappings whose contents are gone would be a lie.
+  const fresh: MappingDraft = { id: nextDraftId(), mapping: blankMapping(), sourceId: "" };
+  state.drafts = [fresh];
+  state.activeDraftId = fresh.id;
+  host().settings.remove(DRAFTS_SETTINGS_KEY);
+  renderDraftBar();
 
   // Forget the remembered mapping so it doesn't restore on reload.
   host().settings.remove(SETTINGS_KEY);
@@ -4870,27 +5231,37 @@ async function downloadRunLog(
   );
 }
 
+/**
+ * Put a stored mapping into the editor at start-up, before any async work.
+ *
+ * Shared by the single-mapping restore and the draft restore, so whichever
+ * one runs, the controls and `state` agree about what is being edited.
+ * `sourceId` is honoured when the session still has that source; otherwise
+ * the table is matched by name, because ids are per-session and depend on
+ * which files happen to be loaded.
+ */
+function applyStoredMappingToEditor(m: Mapping, sourceId?: string): void {
+  // Same normalization as setEnvironment, so the session lookup that keys
+  // off this URL matches the one sign-in created.
+  state.environmentUrl = m.environmentUrl.trim().replace(/\/+$/, "");
+  el<HTMLInputElement>("env").value = state.environmentUrl;
+  state.entitySet = m.targetEntitySet;
+  state.mappings = m.columns;
+  state.mappingExtras = { createdAt: m.createdAt, logDir: m.logDir };
+  const match =
+    (sourceId ? state.sources.find((s) => s.id === sourceId) : undefined) ??
+    state.sources.find((s) => s.origin === "workbook" && s.tableName === m.sourceTable) ??
+    state.sources.find((s) => s.tableName === m.sourceTable);
+  if (match) selectSource(match.id);
+  writeOptionsFromMapping(m);
+  rerenderMappings();
+}
+
 function restoreMapping(): void {
   const raw = host().settings.get(SETTINGS_KEY);
   if (!raw || typeof raw !== "string") return;
   try {
-    const m = parseMapping(JSON.parse(raw));
-    // Same normalization as setEnvironment, so the session lookup that keys
-    // off this URL matches the one sign-in created.
-    state.environmentUrl = m.environmentUrl.trim().replace(/\/+$/, "");
-    el<HTMLInputElement>("env").value = state.environmentUrl;
-    state.entitySet = m.targetEntitySet;
-    state.mappings = m.columns;
-    state.mappingExtras = { createdAt: m.createdAt, logDir: m.logDir };
-    // A mapping names a table, not a source id — ids are per-session and
-    // depend on which files happen to be loaded. Match by name, preferring
-    // the open workbook when a file supplies a table of the same name.
-    const match =
-      state.sources.find((s) => s.origin === "workbook" && s.tableName === m.sourceTable) ??
-      state.sources.find((s) => s.tableName === m.sourceTable);
-    if (match) selectSource(match.id);
-    writeOptionsFromMapping(m);
-    rerenderMappings();
+    applyStoredMappingToEditor(parseMapping(JSON.parse(raw)));
   } catch {
     // ignore: stored mapping was a different schema version
   }
