@@ -78,7 +78,7 @@ module.exports = (env, argv) => {
       }),
       new CopyWebpackPlugin({
         patterns: [
-          { from: "assets/icon.svg", to: "icon.svg" },
+          { from: "assets/icon.svg", to: "icons/icon.svg" },
           // tool.package.json IS the published manifest; the workspace's own
           // package.json is only the build harness.
           { from: "tool.package.json", to: "package.json" },
