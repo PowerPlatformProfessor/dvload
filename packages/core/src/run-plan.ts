@@ -218,6 +218,19 @@ export function validateRunPlan(plan: RunPlan): string[] {
     ids.add(step.id);
   }
 
+  // parseRunPlan refuses blank paths on the way in, but a plan assembled in
+  // an editor can still hold a half-filled step. Catching it here means the
+  // editor flags it, the pane refuses to run it, and it never reaches a
+  // "couldn't find file ''" further down.
+  for (const step of plan.steps) {
+    if (!step.mapping || step.mapping.trim() === "") {
+      errors.push(`Step ${step.id} needs a mapping file`);
+    }
+    if (!step.workbook || step.workbook.trim() === "") {
+      errors.push(`Step ${step.id} needs a workbook file`);
+    }
+  }
+
   for (const step of plan.steps) {
     for (const dep of step.dependsOn ?? []) {
       if (!ids.has(dep)) errors.push(`Step ${step.id} dependsOn unknown step "${dep}"`);

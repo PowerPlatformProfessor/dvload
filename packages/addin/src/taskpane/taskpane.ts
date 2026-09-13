@@ -569,7 +569,7 @@ async function bootstrap(): Promise<void> {
   el<HTMLButtonElement>("dataflowDownload").addEventListener("click", () => void onDataflowDownload());
   el<HTMLButtonElement>("dataflowDismiss").addEventListener("click", clearDataflowResult);
   el<HTMLButtonElement>("planAddStep").addEventListener("click", onPlanAddStep);
-  el<HTMLButtonElement>("planFromCurrent").addEventListener("click", onPlanAddFromCurrent);
+  el<HTMLButtonElement>("planFromCurrent").addEventListener("click", () => void onPlanAddFromCurrent());
   el<HTMLButtonElement>("planSave").addEventListener("click", onPlanSave);
   el<HTMLButtonElement>("planLoad").addEventListener("click", onPlanLoad);
   el<HTMLButtonElement>("planRunAll").addEventListener("click", () => void onPlanRunAll());
@@ -3674,6 +3674,32 @@ function renderMappingHealth(): void {
 /* Run / save / load                                                           */
 /* -------------------------------------------------------------------------- */
 
+/** Index in `state.planSteps` of the step currently being dragged. */
+let planDragFrom: number | null = null;
+
+/**
+ * Move a step to where it was dropped.
+ *
+ * When the plan uses stages, the step also adopts the stage of the step it
+ * landed on — otherwise dragging a card into another stage's group would
+ * leave it sitting there while still executing with its old stage, which is
+ * a lie the UI shouldn't tell.
+ */
+function movePlanStep(from: number, to: number): void {
+  if (from === to) return;
+  const stagesInUse = state.planSteps.some((s) => typeof s.stage === "number");
+  const targetStage = state.planSteps[to]?.stage;
+  const [moved] = state.planSteps.splice(from, 1);
+  if (stagesInUse) moved.stage = targetStage ?? 1;
+  // Insert at the target's ORIGINAL index: after the removal above that slot
+  // is the target's place when dragging up, and just past it when dragging
+  // down — i.e. the dropped step lands where the card it was dropped on was,
+  // in both directions.
+  state.planSteps.splice(to, 0, moved);
+  persistRunPlan();
+  rerenderRunPlan();
+}
+
 function rerenderRunPlan(): void {
   const root = el<HTMLDivElement>("planSteps");
   root.innerHTML = "";
@@ -3687,8 +3713,33 @@ function rerenderRunPlan(): void {
   }
   root.style.fontSize = "";
   root.style.color = "";
-  for (let i = 0; i < state.planSteps.length; i++) {
-    const step = state.planSteps[i];
+
+  // Cards are shown in execution order — by stage, then by the order they
+  // were added — so editing a stage number visibly moves the step into the
+  // group it will actually run with. `index` stays the position in
+  // state.planSteps: everything below mutates through it, never through the
+  // display position.
+  const ordered = state.planSteps
+    .map((step, index) => ({ step, index }))
+    .sort((a, b) => {
+      const sa = a.step.stage ?? 1;
+      const sb = b.step.stage ?? 1;
+      return sa !== sb ? sa - sb : a.index - b.index;
+    });
+  const stagesInUse = state.planSteps.some((s) => typeof s.stage === "number");
+  let lastStage: number | null = null;
+
+  for (const { step, index: i } of ordered) {
+    if (stagesInUse && (step.stage ?? 1) !== lastStage) {
+      lastStage = step.stage ?? 1;
+      const header = document.createElement("div");
+      header.className = "plan-stage-head";
+      const text = document.createElement("span");
+      text.textContent = `Stage ${lastStage}`;
+      header.appendChild(text);
+      root.appendChild(header);
+    }
+
     // One card per step. The previous layout was a nine-column grid — in a
     // ~350px task pane that's ~30px per field, unlabeled and unreadable.
     const card = document.createElement("div");
@@ -3725,11 +3776,15 @@ function rerenderRunPlan(): void {
     stage.type = "number";
     stage.min = "1";
     stage.value = String(step.stage ?? 1);
-    stage.title = "Stage (same stage runs in parallel)";
+    stage.title = "Stage (steps sharing a stage have no ordering between them)";
     stage.addEventListener("change", () => {
       const n = Number(stage.value);
       state.planSteps[i].stage = Number.isInteger(n) && n > 0 ? n : 1;
       persistRunPlan();
+      // Re-render so the card moves under its new stage heading. Safe on
+      // `change` (fires on blur/Enter) — on `input` it would yank focus away
+      // mid-keystroke.
+      rerenderRunPlan();
     });
 
     const dependsOn = document.createElement("input");
@@ -3811,10 +3866,50 @@ function rerenderRunPlan(): void {
       rerenderRunPlan();
     });
 
+    // Reordering. Only the grip is draggable, so the step's inputs keep
+    // normal text selection; the drag image is the whole card so what you
+    // see moving is what moves.
+    const grip = document.createElement("span");
+    grip.className = "plan-grip";
+    grip.textContent = "⠿";
+    grip.draggable = true;
+    grip.title = stagesInUse
+      ? "Drag to reorder — dropping onto a step in another stage moves this step to that stage"
+      : "Drag to reorder";
+    grip.addEventListener("dragstart", (e) => {
+      planDragFrom = i;
+      card.classList.add("drag-source");
+      e.dataTransfer?.setData("text/plain", String(i));
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setDragImage(card, 12, 12);
+      }
+    });
+    grip.addEventListener("dragend", () => {
+      planDragFrom = null;
+      card.classList.remove("drag-source");
+      for (const c of root.querySelectorAll(".drop-into")) c.classList.remove("drop-into");
+    });
+
+    card.addEventListener("dragover", (e) => {
+      if (planDragFrom === null || planDragFrom === i) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      card.classList.add("drop-into");
+    });
+    card.addEventListener("dragleave", () => card.classList.remove("drop-into"));
+    card.addEventListener("drop", (e) => {
+      e.preventDefault();
+      card.classList.remove("drop-into");
+      if (planDragFrom === null || planDragFrom === i) return;
+      movePlanStep(planDragFrom, i);
+      planDragFrom = null;
+    });
+
     const head = document.createElement("div");
     head.className = "plan-head";
     id.style.flex = "1";
-    head.append(id, refreshWrap, remove);
+    head.append(grip, id, refreshWrap, remove);
 
     const grid = document.createElement("div");
     grid.className = "plan-grid";
@@ -3922,30 +4017,76 @@ function parseAlternateKeyLinksText(text: string): RunPlanStep["alternateKeyLink
   });
 }
 
+/** A `step-N` id not already taken — removing a step used to free an id that
+ *  the next "add" would then hand out twice, which validateRunPlan rejects. */
+function nextStepId(): string {
+  const used = new Set(state.planSteps.map((s) => s.id));
+  let n = state.planSteps.length + 1;
+  while (used.has(`step-${n}`)) n++;
+  return `step-${n}`;
+}
+
 function onPlanAddStep(): void {
-  const next = state.planSteps.length + 1;
   state.planSteps.push({
-    id: `step-${next}`,
+    id: nextStepId(),
     mapping: "",
     workbook: "",
-    stage: next,
+    stage: state.planSteps.length + 1,
   });
   persistRunPlan();
   rerenderRunPlan();
 }
 
-function onPlanAddFromCurrent(): void {
+/** The mapping file name a mapping saves itself as, here and in Save mapping. */
+function mappingFileName(mapping: Mapping): string {
+  return `${mapping.name.replace(/\W+/g, "-").toLowerCase()}.dvmap.json`;
+}
+
+async function onPlanAddFromCurrent(): Promise<void> {
   const mapping = buildMapping();
-  const next = state.planSteps.length + 1;
+  const errs = validateMapping(mapping);
+  if (errs.length > 0) {
+    const proceed = await confirmDialog(
+      "This mapping has errors and the plan will refuse to run it:\n\n" +
+        errs.map((e) => `• ${e}`).join("\n") +
+        "\n\nAdd it as a step anyway?",
+      "Add anyway"
+    );
+    if (!proceed) {
+      setStatus("error", "Step not added — " + errs.join("; "));
+      return;
+    }
+  }
+
+  // A step points at a mapping FILE, so write the file now. Adding a step
+  // that referenced a path nobody had saved was the main way a plan ended up
+  // unrunnable — by the CLI, which couldn't open it, and here, where the
+  // pick-a-mapping prompt had nothing to offer.
+  const fileName = mappingFileName(mapping);
+  const saved = await host().saveFile(serializeMapping(mapping), fileName, "application/json");
+  if (!saved) {
+    setStatus("info", `Step not added — ${fileName} wasn't saved.`);
+    return;
+  }
+  // Also keep it in memory, so running the plan in this session doesn't ask
+  // for a file that was just written.
+  planMappingFiles.set(fileName.toLowerCase(), mapping);
+
+  const source = currentSource();
+  const id = nextStepId();
   state.planSteps.push({
-    id: `step-${next}`,
-    mapping: `./${mapping.name.replace(/\W+/g, "-").toLowerCase()}.dvmap.json`,
-    workbook: "./workbook.xlsx",
-    stage: next,
+    id,
+    mapping: `./${fileName}`,
+    workbook: source?.fileName ? `./${source.fileName}` : "./workbook.xlsx",
+    stage: state.planSteps.length + 1,
   });
   persistRunPlan();
   rerenderRunPlan();
-  setStatus("info", "Added a step from the current mapping. Adjust paths and dependencies.");
+  setStatus(
+    "success",
+    `Saved ${fileName} and added it as ${id}.` +
+      (source?.fileName ? "" : " Set the step's workbook path — the current source isn't an added file.")
+  );
 }
 
 function buildRunPlan(): RunPlan {
@@ -3964,11 +4105,44 @@ function persistRunPlan(): void {
   host().settings.save();
 }
 
+/**
+ * Re-read the plan the editor stashed in settings.
+ *
+ * Deliberately lenient where `parseRunPlan` is strict: that function guards
+ * the FILE contract, and a file whose step names no mapping is invalid — but
+ * this is the editor's own scratch state, where a step someone is halfway
+ * through filling in has to survive closing the pane. Only the shape is
+ * trusted here (this code wrote it); completeness is left to
+ * `validateRunPlan`, which reports it in the errors line instead of
+ * discarding the work.
+ */
+function coerceStoredPlan(raw: unknown): RunPlan {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const steps = Array.isArray(obj.steps) ? (obj.steps as Record<string, unknown>[]) : [];
+  return {
+    schemaVersion: RUN_PLAN_SCHEMA_VERSION,
+    name: typeof obj.name === "string" ? obj.name : "Run plan",
+    description: typeof obj.description === "string" ? obj.description : undefined,
+    createdAt: typeof obj.createdAt === "string" ? obj.createdAt : undefined,
+    stopOnError: obj.stopOnError !== false,
+    steps: steps.map((s, i) => ({
+      id: typeof s.id === "string" && s.id.trim() ? s.id : `step-${i + 1}`,
+      mapping: typeof s.mapping === "string" ? s.mapping : "",
+      workbook: typeof s.workbook === "string" ? s.workbook : "",
+      refresh: s.refresh === true ? true : undefined,
+      stage: typeof s.stage === "number" && Number.isInteger(s.stage) && s.stage > 0 ? s.stage : undefined,
+      dependsOn: Array.isArray(s.dependsOn) ? (s.dependsOn as string[]).filter((d) => typeof d === "string") : undefined,
+      overrides: (s.overrides ?? undefined) as RunPlanStep["overrides"],
+      alternateKeyLinks: (s.alternateKeyLinks ?? undefined) as RunPlanStep["alternateKeyLinks"],
+    })),
+  };
+}
+
 function restoreRunPlan(): void {
   const raw = host().settings.get(PLAN_SETTINGS_KEY);
   if (!raw || typeof raw !== "string") return;
   try {
-    applyRunPlan(parseRunPlan(JSON.parse(raw)));
+    applyRunPlan(coerceStoredPlan(JSON.parse(raw)));
   } catch {
     state.planSteps = [];
   }
@@ -4771,7 +4945,11 @@ async function onPlanSave(): Promise<void> {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase();
-  await host().saveFile(serializeRunPlan(plan), `${stem}.dvplan.json`, "application/json");
+  const saved = await host().saveFile(serializeRunPlan(plan), `${stem}.dvplan.json`, "application/json");
+  if (saved) {
+    planSavedJson = JSON.stringify(plan);
+    setStatus("success", `Saved ${stem}.dvplan.json.`);
+  }
 }
 
 function onLoad(): void {
@@ -4818,6 +4996,14 @@ function onLoad(): void {
 
 /** Mapping files picked for plan runs, keyed by lowercased file name. */
 const planMappingFiles = new Map<string, Mapping>();
+
+/**
+ * The plan as it was when last saved to a file, for an unsaved-changes check.
+ * Session-scoped on purpose: after a reload the pane has the plan back from
+ * its settings store but no idea whether a file on disk still matches it, and
+ * offering to save is the safe answer to not knowing.
+ */
+let planSavedJson: string | null = null;
 
 /** The file-name part of a plan path — steps store `./contacts.dvmap.json`. */
 function planPathName(p: string): string {
@@ -4980,6 +5166,19 @@ async function onPlanRunAll(): Promise<void> {
   if (planErrors.length > 0) {
     setStatus("error", `Plan has errors: ${planErrors.join("; ")}`);
     return;
+  }
+
+  // Offer to write the plan out before running it. A plan only earns its
+  // keep by being re-runnable — from here tomorrow, or from `dvload run-all`
+  // on a schedule — and the moment someone runs it is the moment they know
+  // it is worth keeping.
+  if (planSavedJson !== JSON.stringify(plan)) {
+    const save = await confirmDialog(
+      `This run plan hasn't been saved${planSavedJson === null ? "" : " since it was last changed"}.\n\n` +
+        "Save it now? Cancel runs without saving.",
+      "Save plan…"
+    );
+    if (save) await onPlanSave();
   }
 
   // Resolve step files, asking for mapping files once if any are missing.

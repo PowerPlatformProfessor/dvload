@@ -187,3 +187,18 @@ describe("buildExecutionBatches", () => {
     );
   });
 });
+
+describe("validateRunPlan — incomplete steps", () => {
+  it("requires a mapping and a workbook on every step", () => {
+    // A step added in an editor starts blank; without this the pane would go
+    // looking for a file called "".
+    const errs = validateRunPlan({
+      schemaVersion: 1,
+      name: "half-built",
+      stopOnError: true,
+      steps: [{ id: "step-1", mapping: "", workbook: "" }],
+    });
+    assert.ok(errs.some((e) => e.includes("needs a mapping file")));
+    assert.ok(errs.some((e) => e.includes("needs a workbook file")));
+  });
+});
