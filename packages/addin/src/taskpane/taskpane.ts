@@ -4319,12 +4319,75 @@ async function applyDraftToEditor(draft: MappingDraft): Promise<void> {
   }
 }
 
+/**
+ * The chip being renamed in place, if any.
+ *
+ * Held here rather than in the DOM because a rename can be requested while a
+ * switch is still in flight: double-clicking an inactive chip fires the
+ * single-click switch too, and that redraws the bar. The renderer owns
+ * entering edit mode, so the input survives however many redraws land on top
+ * of it.
+ */
+let renameDraftId: string | null = null;
+
+function commitRename(draft: MappingDraft, raw: string): void {
+  const name = raw.trim();
+  if (draft.id === state.activeDraftId) {
+    // The live mapping's name is the editor field — buildMapping reads it
+    // from there, so writing anywhere else would be overwritten on capture.
+    el<HTMLInputElement>("mappingName").value = name;
+    // And capture straight away: persistDrafts writes what the draft holds,
+    // which is otherwise still the pre-rename mapping, so the new name would
+    // not survive reopening the pane.
+    captureActiveDraft();
+  } else {
+    draft.mapping = { ...draft.mapping, name };
+  }
+  renameDraftId = null;
+  persistDrafts();
+  renderDraftBar();
+}
+
 function renderDraftBar(): void {
   const list = el<HTMLDivElement>("draftList");
+  // A redraw mid-rename must not discard what has been typed so far.
+  const editing = list.querySelector<HTMLInputElement>(".draft-rename");
+  const inProgress = editing && renameDraftId ? editing.value : null;
   list.innerHTML = "";
   for (const draft of state.drafts) {
     const chip = document.createElement("span");
     chip.className = "draft-chip" + (draft.id === state.activeDraftId ? " active" : "");
+
+    if (draft.id === renameDraftId) {
+      const input = document.createElement("input");
+      input.className = "draft-rename";
+      input.value = inProgress ?? (draft.id === state.activeDraftId ? el<HTMLInputElement>("mappingName").value : draft.mapping.name);
+      input.placeholder = "Mapping name";
+      input.title = "Enter to rename, Escape to cancel";
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitRename(draft, input.value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          renameDraftId = null;
+          renderDraftBar();
+        }
+      });
+      // Clicking away keeps the edit rather than throwing it away — the
+      // common accident is losing focus, not changing one's mind.
+      input.addEventListener("blur", () => {
+        if (renameDraftId === draft.id) commitRename(draft, input.value);
+      });
+      chip.appendChild(input);
+      list.appendChild(chip);
+      // Focus after it is in the document; select so typing replaces.
+      setTimeout(() => {
+        input.focus();
+        if (inProgress === null) input.select();
+      }, 0);
+      continue;
+    }
 
     const open = document.createElement("button");
     open.type = "button";
@@ -4332,9 +4395,14 @@ function renderDraftBar(): void {
     open.textContent = draftLabel(draft);
     open.title =
       draft.id === state.activeDraftId
-        ? "This mapping is open in the editor below"
-        : `Switch the editor to ${draftLabel(draft)}`;
+        ? "This mapping is open in the editor below. Double-click to rename it."
+        : `Switch the editor to ${draftLabel(draft)}. Double-click to rename it.`;
     open.addEventListener("click", () => void switchDraft(draft.id));
+    open.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      renameDraftId = draft.id;
+      renderDraftBar();
+    });
     chip.appendChild(open);
 
     // Nothing to close when it's the only one — an editor with no mapping
