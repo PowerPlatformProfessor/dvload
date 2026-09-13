@@ -279,11 +279,12 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 ## 19b. Power Platform ToolBox tool
 
 Build `packages/pptb` (`npm run build --workspace=@dvload/pptb`), then load
-**`packages/pptb`** via PPTB → Settings → Show Debug Menu → Debug → Load Local
-Tool — the folder that contains `dist/`, not `dist/` itself, which the loader
-rejects with "No dist/index.html found". Needs a ToolBox connection to the
-sandbox environment. To exercise the published package instead, see "Try it
-locally" in `packages/pptb/README.md`.
+**`packages/pptb/publish`** via PPTB → Settings → Show Debug Menu → Debug →
+Load Local Tool. That folder is what the build assembles and what npm
+publishes, so this exercises the shipping artifact. Pointing the loader at
+`dist/` instead fails with "No dist/index.html found" — it wants the folder
+*containing* `dist/`, alongside a `package.json`. Needs a ToolBox connection
+to the sandbox environment.
 
 | # | Test | Expected | Result |
 |---|---|---|---|

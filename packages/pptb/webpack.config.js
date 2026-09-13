@@ -78,11 +78,11 @@ module.exports = (env, argv) => {
       }),
       new CopyWebpackPlugin({
         patterns: [
+          // Icons resolve under dist/, which is where `icon` in the manifest
+          // points. The manifest and README are NOT copied here: they belong
+          // beside dist/ in the assembled package, not inside it — see
+          // scripts/assemble-package.mjs.
           { from: "assets/icon.svg", to: "icons/icon.svg" },
-          // tool.package.json IS the published manifest; the workspace's own
-          // package.json is only the build harness.
-          { from: "tool.package.json", to: "package.json" },
-          { from: "README.md", to: "README.md" },
         ],
       }),
     ],

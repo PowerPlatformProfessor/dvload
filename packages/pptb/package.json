@@ -1,12 +1,13 @@
 {
   "name": "@dvload/pptb",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Load Excel / Power Query output into Dataverse from inside the Power Platform ToolBox: map columns, resolve lookups, upsert, sync.",
   "private": true,
   "scripts": {
-    "build": "webpack --mode production",
+    "build": "webpack --mode production && node scripts/assemble-package.mjs",
     "clean": "rimraf dist",
-    "watch": "webpack --mode development --watch"
+    "watch": "webpack --mode development --watch",
+    "package": "node scripts/assemble-package.mjs"
   },
   "dependencies": {
     "@dvload/addin": "0.2.0",

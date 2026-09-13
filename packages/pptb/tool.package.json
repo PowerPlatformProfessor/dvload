@@ -1,6 +1,6 @@
 {
   "name": "@dvload/pptb",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "displayName": "dvload — Excel to Dataverse",
   "description": "Map an Excel table or CSV (typically a Power Query output) to a Dataverse table and load it: column mapping with suggestions, lookup resolution by GUID / alternate key / text, insert / upsert / skip / sync modes, dry runs, resumable imports, and dataflow import.",
   "main": "index.html",

@@ -57,43 +57,57 @@ displayName, icon, `features.minAPI`).
 ## Try it locally
 
 1. Power Platform ToolBox → **Settings** → enable **Show Debug Menu**.
-2. **Debug** in the sidebar → **Load Local Tool** → Browse to **this package's
-   own folder** (`packages/pptb`) → Load Tool.
+2. **Debug** in the sidebar → **Load Local Tool** → Browse to
+   **`packages/pptb/publish`** → Load Tool.
 3. Pick a connection, open the tool. After a rebuild, close and reopen the
    tool tab.
 
-The loader wants a tool *project*, not the built output: it reads
-`<folder>/package.json` and `<folder>/dist/index.html`, and refuses anything
-else ("No dist/index.html found" / "No package.json found"). So always pick
-the folder that contains `dist/` — never `dist/` itself.
+`publish/` is what the build assembles and what `npm publish` uploads, so the
+tool you debug is byte-for-byte the tool that ships.
 
-That contract is why the **published** package cannot be loaded as it comes:
-the npm package root *is* the dist content. To test what actually shipped,
-install it outside this repo — inside it, npm resolves the name to the
-workspace and you would be testing your own source — and rebuild the project
-shape around it:
+Both the loader and the registry want the same shape — a tool *project*, not
+the built output:
+
+```
+package.json        the PPTB manifest (from tool.package.json)
+dist/index.html     the entry named by `main`, beside the bundle and icons/
+```
+
+Handing either of them `dist/` itself fails: the loader says "No
+dist/index.html found" (it appends `dist/` to whatever folder you pick), and
+submission fails `structure_validation` with "dist folder is required but not
+found in the package". `main` and `icon` are resolved relative to `dist/`.
+
+To load a *published* version rather than the working tree, install it
+somewhere outside this repo — inside it, npm resolves the name to the
+workspace and you would be testing your own source — and point the loader at
+the package folder, which already has the right shape:
 
 ```powershell
 mkdir pptb-verify; cd pptb-verify; npm init -y; npm i @dvload/pptb
-mkdir published\dist
-xcopy node_modules\@dvload\pptb published\dist /s /e /y
-copy published\dist\package.json published\package.json
 ```
 
-Then load `pptb-verify\published`. Verified against the published 0.2.0.
+Then load `pptb-verify\node_modules\@dvload\pptb` (0.2.1 and later).
 
 ## Publish
 
-The published artifact is `dist/`, not this workspace package (this
-`package.json` is only the build harness, and it is `private`).
+The published artifact is `publish/`, assembled by the build from `dist/` plus
+`tool.package.json`. This workspace's own `package.json` is only the build
+harness — it is `private`, and its dependencies (`@dvload/core`,
+`@dvload/addin`) are never published, so publishing it directly would give
+consumers a package npm cannot install.
 
 ```powershell
 npm run build --workspace=@dvload/pptb
-cd packages/pptb/dist
+cd packages/pptb/publish
+npx @pptb/validate
 npm publish --access public
 ```
 
-Then submit it to the ToolBox registry via the Tool Submission Form on
-powerplatformtoolbox.com (npm package name, display name, description, repo
-URL, tags). Before first publish, check the npm scope in
-`tool.package.json` — `@dvload` must be a scope you own, or rename.
+npm versions are immutable, so bump `version` in `tool.package.json` for every
+publish. Before the first one, check the scope — `@dvload` must be one you own.
+
+Then submit it at <https://www.powerplatformtoolbox.com/submit-tool> (login
+required): npm package name plus up to three tags. Automated checks run first
+— including the structure validation described above — then a human review,
+quoted at 48–72 hours.
