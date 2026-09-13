@@ -1,6 +1,15 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
-import { parseRunPlan, RunPlanParseError, validateRunPlan } from "./run-plan.js";
+import {
+  buildExecutionBatches,
+  crossValidatePlanMappings,
+  parseRunPlan,
+  RunPlanParseError,
+  validateRunPlan,
+  type RunPlan,
+  type RunPlanStep,
+} from "./run-plan.js";
+import type { ColumnMapping, Mapping } from "./mapping.js";
 
 describe("run-plan", () => {
   it("parses the new .dvplan.json shape", () => {
@@ -74,5 +83,107 @@ describe("run-plan", () => {
       ],
     });
     assert.ok(errs.some((e) => e.includes("cycle")));
+  });
+});
+
+describe("crossValidatePlanMappings", () => {
+  const plan = (steps: RunPlanStep[]): RunPlan => ({
+    schemaVersion: 1,
+    name: "p",
+    stopOnError: true,
+    steps,
+  });
+  const child: RunPlanStep = {
+    id: "lines",
+    mapping: "./lines.dvmap.json",
+    workbook: "./x.xlsx",
+    alternateKeyLinks: [{ fromStep: "orders", lookupTarget: "orderid", keyAttribute: "ordernumber" }],
+  };
+  const parent: RunPlanStep = { id: "orders", mapping: "./orders.dvmap.json", workbook: "./x.xlsx" };
+  const mapping = (over: Partial<Mapping>): Mapping =>
+    ({
+      name: "m",
+      environmentUrl: "https://x.crm.dynamics.com",
+      targetEntitySet: "orders",
+      sourceTable: "t",
+      conflictMode: "insert",
+      columns: [],
+      ...over,
+    }) as Mapping;
+
+  it("accepts a correctly linked parent/child pair", () => {
+    const errs = crossValidatePlanMappings(
+      plan([parent, child]),
+      new Map([
+        ["orders", mapping({ upsertKey: ["ordernumber"] })],
+        [
+          "lines",
+          mapping({
+            columns: [
+              {
+                source: "order",
+                target: "orderid",
+                kind: "lookup",
+                lookupResolution: "alternateKey",
+                keyAttribute: "ordernumber",
+              } as ColumnMapping,
+            ],
+          }),
+        ],
+      ])
+    );
+    assert.deepEqual(errs, []);
+  });
+
+  it("flags an upstream step whose upsertKey lacks the link attribute", () => {
+    const errs = crossValidatePlanMappings(
+      plan([parent, child]),
+      new Map([
+        ["orders", mapping({})],
+        [
+          "lines",
+          mapping({
+            columns: [
+              {
+                source: "order",
+                target: "orderid",
+                kind: "lookup",
+                lookupResolution: "alternateKey",
+                keyAttribute: "ordernumber",
+              } as ColumnMapping,
+            ],
+          }),
+        ],
+      ])
+    );
+    assert.ok(errs.some((e) => e.includes("upsertKey")));
+  });
+
+  it("skips steps whose mapping the caller could not load", () => {
+    const errs = crossValidatePlanMappings(plan([parent, child]), new Map());
+    assert.deepEqual(errs, []);
+  });
+});
+
+describe("buildExecutionBatches", () => {
+  it("orders alternate-key-linked steps parent-first without explicit stages", () => {
+    const batches = buildExecutionBatches({
+      schemaVersion: 1,
+      name: "p",
+      stopOnError: true,
+      steps: [
+        {
+          id: "lines",
+          mapping: "./l.dvmap.json",
+          workbook: "./x.xlsx",
+          alternateKeyLinks: [{ fromStep: "orders", lookupTarget: "orderid", keyAttribute: "no" }],
+        },
+        { id: "orders", mapping: "./o.dvmap.json", workbook: "./x.xlsx" },
+      ],
+    });
+    assert.deepEqual(
+      batches.map((b) => b.map((s) => s.id)),
+      [["orders"], ["lines"]]
+    );
   });
 });

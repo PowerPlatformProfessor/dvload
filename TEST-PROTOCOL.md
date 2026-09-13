@@ -268,6 +268,7 @@ Sideload per `packages/addin` dev instructions. Test in Excel desktop.
 | 19.17 | Status is shared | Start an import, switch to the Run plan tab while it runs | Progress and the final summary stay visible from every tab | |
 | 19.18 | Create table from a file source | With an **added file** (not a workbook table) selected — in Excel and again in `dvload gui`, where files are the only source kind — choose "＋ Create new table from source…": the panel lists every source column with suggested names/types. Regression guard: this used to read rows off the live workbook only, leaving the grid empty for file sources | |
 | 19.19 | Table names are editable | In the create-table panel: the **Schema name** field follows the display name as you type (e.g. "Order Lines" → `new_OrderLines`), stops following once edited by hand, and the created table carries exactly the shown `prefix_SchemaName`. Changing the prefix updates the `prefix_` echo | |
+| 19.20 | Run plan in the pane | Run plan tab → **Run all steps** with a two-step plan (parent + child via alternate-key link, workbooks added on the Import tab): prompts once for the `.dvmap.json` files, shows one confirm listing stages, executes parent before child, per-step counts land in the status log, and `stopOnError` halts on a failing step. A step whose workbook name isn't among the added files is named in the error before anything writes. The same `.dvplan.json` runs unmodified via `dvload run-all` | |
 
 ## 19b. Power Platform ToolBox tool
 
@@ -291,6 +292,7 @@ Local Tool. Needs a ToolBox connection to the sandbox environment.
 | 19b.12 | Connection switch | Switching the ToolBox connection reloads the tool against the new environment; no stale entity/metadata from the old one | |
 | 19b.13 | Portability | A `.dvmap.json` saved here runs unmodified via `dvload run`, and vice versa | |
 | 19b.14 | Sync paging | (Record behavior) sync mode against a >5k-row target: verify the removal pass sees all rows, or note the bridge's paging limit in the result | |
+| 19b.15 | Run plan in the ToolBox | Same as 19.20, against the ToolBox connection: Run all steps executes parent-then-child through the bridge; a plan step carrying bypass/impersonation (or `user`) is refused/flagged up front naming the step, before any write | |
 
 ## 20. CSV / TSV input
 

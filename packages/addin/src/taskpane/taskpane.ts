@@ -12,6 +12,8 @@ import {
   validateMapping,
   validateColumn,
   validateRunPlan,
+  buildExecutionBatches,
+  crossValidatePlanMappings,
   mappingWarnings,
   type Mapping,
   type ColumnMapping,
@@ -570,6 +572,7 @@ async function bootstrap(): Promise<void> {
   el<HTMLButtonElement>("planFromCurrent").addEventListener("click", onPlanAddFromCurrent);
   el<HTMLButtonElement>("planSave").addEventListener("click", onPlanSave);
   el<HTMLButtonElement>("planLoad").addEventListener("click", onPlanLoad);
+  el<HTMLButtonElement>("planRunAll").addEventListener("click", () => void onPlanRunAll());
   el<HTMLButtonElement>("pickFile").addEventListener("click", onPickFileSource);
   el<HTMLButtonElement>("resumeRun").addEventListener("click", () => void onRun({ resume: true }));
   el<HTMLButtonElement>("discardResume").addEventListener("click", () => {
@@ -4797,6 +4800,296 @@ function onLoad(): void {
     }
   };
   input.click();
+}
+
+/* --------------------------------------------------------------------------
+ * In-pane run-plan execution.
+ *
+ * The same .dvplan.json the CLI's `dvload run-all` executes, run here — the
+ * ToolBox has no CLI alongside it, and a plan you can build but not run is
+ * half a feature. Steps reference mapping and workbook FILES (that is what
+ * makes plans portable), so the pane resolves them by file name: workbooks
+ * against the files added as sources, mappings against .dvmap.json files
+ * picked when the run starts. Ordering comes from core's
+ * buildExecutionBatches — identical to the CLI — but steps run sequentially
+ * here: the ToolBox bridge serializes requests anyway, and one progress bar
+ * reporting two concurrent imports would be noise.
+ * -------------------------------------------------------------------------- */
+
+/** Mapping files picked for plan runs, keyed by lowercased file name. */
+const planMappingFiles = new Map<string, Mapping>();
+
+/** The file-name part of a plan path — steps store `./contacts.dvmap.json`. */
+function planPathName(p: string): string {
+  const parts = p.split(/[\\/]/);
+  return (parts[parts.length - 1] ?? p).toLowerCase();
+}
+
+/** Pick .dvmap.json files for the plan's steps. Resolves when the picker closes. */
+function pickPlanMappingFiles(): Promise<void> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = ".json,.dvmap.json,application/json";
+    // The window regains focus BEFORE change fires, and parsing is async, so
+    // the focus fallback must not resolve out from under a pick in progress:
+    // it only applies while nothing has been selected.
+    let picking = false;
+    input.onchange = async () => {
+      picking = true;
+      const picked = [...(input.files ?? [])];
+      const problems: string[] = [];
+      for (const file of picked) {
+        try {
+          planMappingFiles.set(file.name.toLowerCase(), parseMapping(JSON.parse(await file.text())));
+        } catch (e) {
+          problems.push(`${file.name}: ${(e as Error).message}`);
+        }
+      }
+      if (problems.length) setStatus("error", `Couldn't parse ${problems.length} mapping(s): ${problems.join("; ")}`);
+      resolve();
+    };
+    // Cancelling fires no event at all, so without this the run would hang on
+    // a dialog the user already dismissed.
+    window.addEventListener(
+      "focus",
+      () => {
+        setTimeout(() => {
+          if (!picking) resolve();
+        }, 300);
+      },
+      { once: true }
+    );
+    input.click();
+  });
+}
+
+interface ResolvedPlanStep {
+  step: RunPlanStep;
+  mapping: Mapping;
+  file: LoadedFile;
+}
+
+/** Match every step's mapping and workbook paths against in-pane files. */
+function resolvePlanSteps(steps: RunPlanStep[]): {
+  resolved: Map<string, ResolvedPlanStep>;
+  missingMappings: string[];
+  missingWorkbooks: string[];
+} {
+  const resolved = new Map<string, ResolvedPlanStep>();
+  const missingMappings: string[] = [];
+  const missingWorkbooks: string[] = [];
+  for (const step of steps) {
+    const mapping = planMappingFiles.get(planPathName(step.mapping));
+    const file = state.files.find((f) => f.name.toLowerCase() === planPathName(step.workbook));
+    if (!mapping) missingMappings.push(`${step.id}: ${planPathName(step.mapping)}`);
+    if (!file) missingWorkbooks.push(`${step.id}: ${planPathName(step.workbook)}`);
+    if (mapping && file) resolved.set(step.id, { step, mapping, file });
+  }
+  return { resolved, missingMappings, missingWorkbooks };
+}
+
+/** Rows for a plan step — like readSourceRows, but for an explicit file. */
+async function readRowsForLoadedFile(
+  file: LoadedFile,
+  mapping: Mapping
+): Promise<{ rows: Array<Record<string, unknown>>; headers: string[] }> {
+  if (file.kind === "csv") {
+    return readTableFromCsvString(file.text ?? "", { delimiter: file.delimiter ?? "," });
+  }
+  // `mapping.sourceTable` names a real table for some sources and a whole
+  // SHEET for others (a workbook range with no table gets the sheet's name).
+  // Handing a sheet name to the reader as `tableName` throws "not found", so
+  // the file's own catalogue decides which it is — the same distinction
+  // readSourceRows gets from the picked SourceRef.
+  const known = (fileTablesCache.get(file.id) ?? []).find((t) => t.name === mapping.sourceTable);
+  return await readTableFromBuffer(file.buffer!, {
+    tableName: known?.kind === "sheet" ? undefined : mapping.sourceTable || undefined,
+    sheetName: known?.sheetName ?? mapping.sourceSheet ?? undefined,
+  });
+}
+
+/** One step's import, with the shared progress UI. Returns the result. */
+async function runPlanStep(
+  { step, mapping, file }: ResolvedPlanStep,
+  position: string,
+  planDryRun: boolean
+): Promise<LoadResult> {
+  const o: RunPlanStepOverrides = step.overrides ?? {};
+  // Overrides patch a copy — never the parsed original, which may be shared
+  // by a later attempt after a failure.
+  const effective: Mapping = {
+    ...mapping,
+    maxErrors: o.maxErrors ?? mapping.maxErrors,
+    concurrency: o.concurrency ?? mapping.concurrency,
+  };
+  const dryRun = o.dryRun ?? planDryRun;
+
+  setStatus("info", `${position} ${step.id}: reading ${file.name}…`);
+  const { rows } = await readRowsForLoadedFile(file, effective);
+
+  setStatus("info", `${position} ${step.id}: ${dryRun ? "dry run over" : "loading"} ${rows.length} rows…`);
+  const requestLog: RequestLogEntry[] = [];
+  const client: DataverseGateway = isPptb()
+    ? new PptbDataverseClient({
+        dataverse: pptbGlobals()!.dataverse,
+        onRequest: (entry) => requestLog.push(entry),
+      })
+    : new DataverseClient({
+        environmentUrl: effective.environmentUrl,
+        getToken: makeTokenProvider(effective.environmentUrl),
+        onRequest: (entry) => requestLog.push(entry),
+      });
+
+  const result = await loadRows({
+    mapping: effective,
+    rows,
+    client,
+    dryRun,
+    signal: runController?.signal,
+    onProgress: (e) => {
+      if (e.type === "batch") {
+        setProgress(e.processed, e.total, {
+          created: e.created,
+          updated: e.updated,
+          failed: e.failed,
+          skipped: e.skipped,
+        });
+      }
+    },
+  });
+  trackTelemetry("addin_run", {
+    mode: effective.conflictMode,
+    rows: telemetryBucket(result.total),
+    failed: telemetryBucket(result.failed),
+    outcome: result.cancelled ? "cancelled" : result.failed > 0 ? "partial" : "ok",
+    dryRun: String(dryRun),
+  });
+  return result;
+}
+
+async function onPlanRunAll(): Promise<void> {
+  if (runController) return; // an import is already running
+  if (state.planSteps.length === 0) {
+    setStatus("error", "The plan has no steps — add one, or load a .dvplan.json.");
+    return;
+  }
+  const plan = buildRunPlan();
+  const planErrors = validateRunPlan(plan);
+  if (planErrors.length > 0) {
+    setStatus("error", `Plan has errors: ${planErrors.join("; ")}`);
+    return;
+  }
+
+  // Resolve step files, asking for mapping files once if any are missing.
+  let resolution = resolvePlanSteps(plan.steps);
+  if (resolution.missingMappings.length > 0) {
+    setStatus(
+      "info",
+      `Pick the plan's mapping file(s): ${resolution.missingMappings.map((m) => m.split(": ")[1]).join(", ")}`
+    );
+    await pickPlanMappingFiles();
+    resolution = resolvePlanSteps(plan.steps);
+  }
+  const stillMissing = [
+    ...resolution.missingMappings.map((m) => `mapping ${m}`),
+    ...resolution.missingWorkbooks.map((w) => `workbook ${w}`),
+  ];
+  if (stillMissing.length > 0) {
+    setStatus(
+      "error",
+      `Can't run the plan — not found in the pane: ${stillMissing.join("; ")}. ` +
+        `Workbooks must be added via "Add files…" on the Import tab; mappings are picked when the run starts.`
+    );
+    return;
+  }
+
+  // Everything the CLI would refuse per-step, refused up front instead.
+  const mappingsByStep = new Map([...resolution.resolved].map(([id, r]) => [id, r.mapping]));
+  const preErrors: string[] = [];
+  for (const [id, r] of resolution.resolved) {
+    for (const e of validateMapping(r.mapping)) preErrors.push(`${id}: ${e}`);
+    if (isPptb() && (r.mapping.bypassCustomLogic || r.mapping.impersonateUserId)) {
+      preErrors.push(
+        `${id}: "Bypass plugins" / "Run as user" aren't supported in the Power Platform ToolBox — ` +
+          `clear them, or run this plan with the CLI.`
+      );
+    }
+  }
+  preErrors.push(...crossValidatePlanMappings(plan, mappingsByStep));
+  if (preErrors.length > 0) {
+    setStatus("error", `Plan validation failed: ${preErrors.join("; ")}`);
+    return;
+  }
+
+  const ignored: string[] = [];
+  for (const step of plan.steps) {
+    if (step.refresh) ignored.push(`${step.id}: refresh (Power Query refresh is CLI/Excel-only)`);
+    if (step.overrides?.notifyUrl) ignored.push(`${step.id}: notifyUrl (webhooks post from the CLI)`);
+    if (step.overrides?.user !== undefined) ignored.push(`${step.id}: user (the pane always runs as you)`);
+  }
+
+  const batches = buildExecutionBatches(plan);
+  const planDryRun = el<HTMLInputElement>("dryRun").checked;
+  const anyRealWrite = plan.steps.some((s) => !(s.overrides?.dryRun ?? planDryRun));
+  const stageLines = batches
+    .map((b, i) => `  Stage ${i + 1}: ${b.map((s) => s.id).join(", ")}`)
+    .join("\n");
+  const proceed = await confirmDialog(
+    `Run ${plan.steps.length} step(s) in ${batches.length} stage(s):\n${stageLines}\n` +
+      (anyRealWrite ? "Records WILL be written." : "Dry run — nothing will be written.") +
+      (ignored.length > 0 ? `\nIgnored in the pane: ${ignored.join("; ")}` : ""),
+    anyRealWrite ? "Run plan" : "Dry-run plan",
+    anyRealWrite
+  );
+  if (!proceed) {
+    setStatus("info", "Plan run cancelled.");
+    return;
+  }
+
+  runController = new AbortController();
+  setRunning(true);
+  clearRunLog();
+  const summaries: string[] = [];
+  let failedSteps = 0;
+  let attempted = 0;
+  try {
+    outer: for (const batch of batches) {
+      for (const step of batch) {
+        attempted++;
+        const position = `[${attempted}/${plan.steps.length}]`;
+        try {
+          const r = await runPlanStep(resolution.resolved.get(step.id)!, position, planDryRun);
+          const line =
+            `${step.id}: ${r.created} created, ${r.updated} updated, ${r.skipped} skipped, ${r.failed} failed` +
+            (r.cancelled ? " (cancelled)" : "");
+          summaries.push(line);
+          setStatus(r.failed > 0 ? "error" : "info", `${position} ${line}`);
+          if (r.cancelled) break outer;
+          if (r.failed > 0) {
+            failedSteps++;
+            if (plan.stopOnError) break outer;
+          }
+        } catch (e) {
+          failedSteps++;
+          summaries.push(`${step.id}: failed — ${(e as Error).message}`);
+          if (plan.stopOnError) break outer;
+        }
+      }
+    }
+  } finally {
+    runController = null;
+    setRunning(false);
+  }
+
+  const skippedNote =
+    attempted < plan.steps.length ? ` ${plan.steps.length - attempted} step(s) not attempted.` : "";
+  if (failedSteps === 0 && attempted === plan.steps.length) {
+    setStatus("success", `Plan done — all ${plan.steps.length} step(s) completed. ${summaries.join(" · ")}`);
+  } else {
+    setStatus("error", `Plan finished with problems.${skippedNote} ${summaries.join(" · ")}`);
+  }
 }
 
 function onPlanLoad(): void {

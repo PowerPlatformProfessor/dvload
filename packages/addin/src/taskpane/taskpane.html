@@ -511,9 +511,11 @@
   <div id="panelPlan" class="tabpanel" role="tabpanel" aria-labelledby="tabPlan" hidden>
     <label>Run plan (.dvplan.json)</label>
     <div class="hint">
-      Several mappings executed as one job. Steps with the same stage run in
-      parallel; use dependsOn for explicit ordering. The plan runs from the
-      CLI (<code>dvload run-all</code>) — this tab builds and saves it.
+      Several mappings executed as one job. Steps with the same stage have no
+      ordering between them; use dependsOn for explicit ordering. Run it here
+      with <b>Run all steps</b> (workbooks come from the files added on the
+      Import tab; mapping files are picked when the run starts), or
+      unattended from the CLI (<code>dvload run-all plan.dvplan.json</code>).
     </div>
     <div class="row" style="margin-bottom:4px;">
       <input id="planName" placeholder="Plan name" style="flex:1" title="Saved as the plan's name" />
@@ -530,6 +532,10 @@
       <button id="planFromCurrent" class="secondary" type="button">Add current mapping as step</button>
       <button id="planSave" class="secondary" type="button">Save plan…</button>
       <button id="planLoad" class="secondary" type="button">Load plan…</button>
+      <button id="planRunAll" type="button"
+        title="Execute every step in stage/dependency order. Workbooks resolve against the files added on the Import tab; .dvmap.json files are picked when the run starts.">
+        Run all steps
+      </button>
     </div>
   </div><!-- /panelPlan -->
 

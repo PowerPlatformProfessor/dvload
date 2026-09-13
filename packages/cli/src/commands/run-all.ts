@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import kleur from "kleur";
 import {
+  buildExecutionBatches,
+  crossValidatePlanMappings,
   mappingWarnings,
   parseMapping,
   parseRunPlan,
@@ -11,6 +13,11 @@ import {
   type RunPlanStep,
 } from "@dvload/core";
 import { executeRun, type RunOpts } from "./run.js";
+
+// Ordering logic lives in @dvload/core (the task pane executes plans too);
+// re-exported here because this module's tests and callers historically
+// imported it from the command.
+export { buildExecutionBatches } from "@dvload/core";
 
 export interface RunAllOpts {
   dryRun?: boolean;
@@ -127,106 +134,8 @@ export async function validatePlanMappings(
     }
   }
 
-  for (const step of plan.steps) {
-    for (const link of step.alternateKeyLinks ?? []) {
-      const from = mappings.get(link.fromStep);
-      const current = mappings.get(step.id);
-      if (!from || !current) continue;
-
-      if (!from.upsertKey?.includes(link.keyAttribute)) {
-        errors.push(
-          `step "${step.id}" alternateKeyLinks: upstream step "${link.fromStep}" must include ` +
-            `"${link.keyAttribute}" in upsertKey`
-        );
-      }
-
-      const col = current.columns.find((c) => c.target === link.lookupTarget);
-      if (!col) {
-        errors.push(
-          `step "${step.id}" alternateKeyLinks: lookup target "${link.lookupTarget}" is not mapped`
-        );
-        continue;
-      }
-      if (col.kind !== "lookup") {
-        errors.push(
-          `step "${step.id}" alternateKeyLinks: "${link.lookupTarget}" must be a lookup mapping`
-        );
-        continue;
-      }
-      if (col.lookupResolution !== "alternateKey") {
-        errors.push(
-          `step "${step.id}" alternateKeyLinks: "${link.lookupTarget}" must set lookupResolution=alternateKey`
-        );
-      }
-      if (col.keyAttribute !== link.keyAttribute) {
-        errors.push(
-          `step "${step.id}" alternateKeyLinks: "${link.lookupTarget}" keyAttribute must be ` +
-            `"${link.keyAttribute}"`
-        );
-      }
-    }
-  }
+  errors.push(...crossValidatePlanMappings(plan, mappings));
 
   return { errors, warnings };
 }
 
-export function buildExecutionBatches(plan: RunPlan): RunPlanStep[][] {
-  const byId = new Map(plan.steps.map((s) => [s.id, s]));
-  const originalOrder = new Map(plan.steps.map((s, i) => [s.id, i]));
-  const stagesPresent = plan.steps.some((s) => typeof s.stage === "number");
-  const stepStage = (s: RunPlanStep): number => (stagesPresent ? s.stage ?? 1 : 1);
-
-  const deps = new Map<string, Set<string>>();
-  for (const step of plan.steps) {
-    const d = new Set<string>(step.dependsOn ?? []);
-    for (const link of step.alternateKeyLinks ?? []) d.add(link.fromStep);
-    deps.set(step.id, d);
-  }
-
-  if (stagesPresent) {
-    for (const step of plan.steps) {
-      const curStage = stepStage(step);
-      for (const maybeDep of plan.steps) {
-        if (step.id === maybeDep.id) continue;
-        if (stepStage(maybeDep) < curStage) deps.get(step.id)?.add(maybeDep.id);
-      }
-    }
-  }
-
-  const pending = new Set(plan.steps.map((s) => s.id));
-  const completed = new Set<string>();
-  const batches: RunPlanStep[][] = [];
-
-  while (pending.size > 0) {
-    const ready = [...pending]
-      .filter((id) => {
-        const d = deps.get(id) ?? new Set<string>();
-        for (const dep of d) {
-          if (pending.has(dep) && !completed.has(dep)) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        const sa = stepStage(byId.get(a)!);
-        const sb = stepStage(byId.get(b)!);
-        if (sa !== sb) return sa - sb;
-        return (originalOrder.get(a) ?? 0) - (originalOrder.get(b) ?? 0);
-      });
-
-    if (ready.length === 0) {
-      throw new Error("Run plan has unsatisfied dependencies.");
-    }
-
-    const minStage = stepStage(byId.get(ready[0])!);
-    const batchIds = ready.filter((id) => stepStage(byId.get(id)!) === minStage);
-    const batch = batchIds.map((id) => byId.get(id)!);
-    batches.push(batch);
-
-    for (const id of batchIds) {
-      pending.delete(id);
-      completed.add(id);
-    }
-  }
-
-  return batches;
-}

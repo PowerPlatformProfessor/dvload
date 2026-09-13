@@ -1,6 +1,8 @@
 // Shared run-plan schema for orchestrating multiple .dvmap runs.
 // Used by both CLI and add-in. Keeps the single-table Mapping contract intact.
 
+import type { Mapping } from "./mapping.js";
+
 export const RUN_PLAN_SCHEMA_VERSION = 1 as const;
 
 export interface AlternateKeyLink {
@@ -258,4 +260,129 @@ export function validateRunPlan(plan: RunPlan): string[] {
 
 export function serializeRunPlan(plan: RunPlan): string {
   return JSON.stringify({ ...plan, updatedAt: new Date().toISOString() }, null, 2) + "\n";
+}
+
+/**
+ * Cross-mapping checks for a plan whose step mappings have been loaded.
+ *
+ * Callers own the loading (the CLI reads files, the pane resolves in-memory
+ * mappings by name) and pass the results keyed by step id; a step absent from
+ * the map is skipped here because the caller has already reported why it
+ * couldn't be loaded.
+ */
+export function crossValidatePlanMappings(
+  plan: RunPlan,
+  mappings: ReadonlyMap<string, Mapping>
+): string[] {
+  const errors: string[] = [];
+  for (const step of plan.steps) {
+    for (const link of step.alternateKeyLinks ?? []) {
+      const from = mappings.get(link.fromStep);
+      const current = mappings.get(step.id);
+      if (!from || !current) continue;
+
+      if (!from.upsertKey?.includes(link.keyAttribute)) {
+        errors.push(
+          `step "${step.id}" alternateKeyLinks: upstream step "${link.fromStep}" must include ` +
+            `"${link.keyAttribute}" in upsertKey`
+        );
+      }
+
+      const col = current.columns.find((c) => c.target === link.lookupTarget);
+      if (!col) {
+        errors.push(
+          `step "${step.id}" alternateKeyLinks: lookup target "${link.lookupTarget}" is not mapped`
+        );
+        continue;
+      }
+      if (col.kind !== "lookup") {
+        errors.push(`step "${step.id}" alternateKeyLinks: "${link.lookupTarget}" must be a lookup mapping`);
+        continue;
+      }
+      if (col.lookupResolution !== "alternateKey") {
+        errors.push(
+          `step "${step.id}" alternateKeyLinks: "${link.lookupTarget}" must set lookupResolution=alternateKey`
+        );
+      }
+      if (col.keyAttribute !== link.keyAttribute) {
+        errors.push(
+          `step "${step.id}" alternateKeyLinks: "${link.lookupTarget}" keyAttribute must be ` +
+            `"${link.keyAttribute}"`
+        );
+      }
+    }
+  }
+  return errors;
+}
+
+/**
+ * Order a plan's steps into sequential batches; steps inside one batch have
+ * no ordering constraints between them, so an executor may run a batch in
+ * parallel (the CLI does) or sequentially (the task pane does — the ToolBox
+ * bridge serializes requests anyway).
+ *
+ * Constraints considered: explicit `dependsOn`, implied dependencies from
+ * `alternateKeyLinks` (the parent rows must exist before a lookup can resolve
+ * against them), and `stage` numbers — when any step declares a stage, every
+ * lower-staged step precedes every higher-staged one.
+ */
+export function buildExecutionBatches(plan: RunPlan): RunPlanStep[][] {
+  const byId = new Map(plan.steps.map((s) => [s.id, s]));
+  const originalOrder = new Map(plan.steps.map((s, i) => [s.id, i]));
+  const stagesPresent = plan.steps.some((s) => typeof s.stage === "number");
+  const stepStage = (s: RunPlanStep): number => (stagesPresent ? (s.stage ?? 1) : 1);
+
+  const deps = new Map<string, Set<string>>();
+  for (const step of plan.steps) {
+    const d = new Set<string>(step.dependsOn ?? []);
+    for (const link of step.alternateKeyLinks ?? []) d.add(link.fromStep);
+    deps.set(step.id, d);
+  }
+
+  if (stagesPresent) {
+    for (const step of plan.steps) {
+      const curStage = stepStage(step);
+      for (const maybeDep of plan.steps) {
+        if (step.id === maybeDep.id) continue;
+        if (stepStage(maybeDep) < curStage) deps.get(step.id)?.add(maybeDep.id);
+      }
+    }
+  }
+
+  const pending = new Set(plan.steps.map((s) => s.id));
+  const completed = new Set<string>();
+  const batches: RunPlanStep[][] = [];
+
+  while (pending.size > 0) {
+    const ready = [...pending]
+      .filter((id) => {
+        const d = deps.get(id) ?? new Set<string>();
+        for (const dep of d) {
+          if (pending.has(dep) && !completed.has(dep)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const sa = stepStage(byId.get(a)!);
+        const sb = stepStage(byId.get(b)!);
+        if (sa !== sb) return sa - sb;
+        return (originalOrder.get(a) ?? 0) - (originalOrder.get(b) ?? 0);
+      });
+
+    if (ready.length === 0) {
+      throw new Error("Run plan has unsatisfied dependencies.");
+    }
+
+    const minStage = stepStage(byId.get(ready[0])!);
+    const batchIds = ready.filter((id) => stepStage(byId.get(id)!) === minStage);
+    const batch = batchIds.map((id) => byId.get(id)!);
+    batches.push(batch);
+
+    for (const id of batchIds) {
+      pending.delete(id);
+      completed.add(id);
+    }
+  }
+
+  return batches;
 }
