@@ -57,6 +57,7 @@ dvload/
 | [docs/schema/](./docs/schema/) | JSON Schemas for `.dvmap.json` and `.dvplan.json` |
 | [docs/AUTH-NOTES.md](./docs/AUTH-NOTES.md) | what's been verified about Entra/Conditional Access, and what hasn't |
 | [docs/SCHEDULED-RUNS.md](./docs/SCHEDULED-RUNS.md) | end-user guide for unattended nightly imports |
+| [docs/AGENTS.md](./docs/AGENTS.md) | using dvload from AI agents — the `dvload mcp` server and the script-safe CLI flags |
 | [TEST-PROTOCOL.md](./TEST-PROTOCOL.md) | 22-section manual/E2E protocol, up to 100k rows |
 | [TELEMETRY.md](./TELEMETRY.md) | what is collected, and how to turn it off |
 | [PRE-RELEASE-CHECKLIST.md](./PRE-RELEASE-CHECKLIST.md) | what must be done before shipping |
@@ -422,6 +423,23 @@ dvload run-all ./nightly.dvplan.json
 Failed rows are written to `logs/failed_<workbook>_<timestamp>.xlsx` in the
 same column shape as the source table — fix the cells and re-run just that
 file. Suppress with `--no-failed-rows` if the data is sensitive.
+
+### AI agents
+
+`dvload mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio, so Claude, GitHub Copilot, Cursor and similar agents can
+inspect a source file, validate a mapping, and run it — as a dry run unless
+they explicitly ask otherwise. `dvload mcp --read-only` refuses real runs
+altogether.
+
+```bash
+claude mcp add dvload -- dvload mcp
+```
+
+It is a local server: the agent has to run on the machine dvload is installed
+on, so cloud-hosted agents such as Copilot Studio can't use it. Setup for
+other hosts, the tool list and the safety model are in
+[docs/AGENTS.md](./docs/AGENTS.md).
 
 ### UI (development)
 

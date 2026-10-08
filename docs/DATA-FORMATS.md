@@ -590,7 +590,8 @@ trailing `.dvmap` stripped, then every non-`[\w.-]` character replaced by
 
 ### `--json` output
 
-With `--json`, progress rendering is suppressed and the `LoadResult` is
+With `--json`, progress rendering is suppressed and the `LoadResult`, plus
+`failedRowsFile` (path or `null`) and `retries`, is
 printed to stdout as a single JSON object. Exit code is 1 when
 `result.failed > 0`, 2 when the mapping failed validation.
 

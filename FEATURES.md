@@ -16,6 +16,7 @@
 | `extract-pqt` | Extract Power Query M code from an `.xlsx` into a `.pqt` archive, optionally injecting a column mapping into `MashupMetadata.json`. |
 | `import-pqt` | Synthesise a `.dvmap.json` from the `MashupMetadata.json` inside an existing `.pqt`. `--all-queries` emits one mapping per query; `--emit-m` writes the M document. |
 | `pqt-to-xlsx` | **Experimental:** build an `.xlsx` with the `.pqt`'s queries embedded natively in Power Query (QDEFF/DataMashup writer). Queries arrive connection-only; use "Load To…" in Excel. `--open` launches it in Excel when done (interactive runs ask; `--no-open` for scripts). Also in the pane as *Create workbook*, download-only. |
+| `mcp` | Model Context Protocol server on stdio for AI agents (Claude, Copilot, Cursor). Tools: `inspect_source`, `validate_mapping`, `run_mapping` (dry run by default), `auth_status`, `list_profiles`, `list_dataflows`. `--read-only` refuses real runs. Never prompts for sign-in. See [docs/AGENTS.md](./docs/AGENTS.md). |
 | `schedule` | Register a Windows Scheduled Task for nightly unattended imports (`dvload run --refresh`). |
 | `addin` | Launch/stop add-in local workflow from CLI (`dvload addin start|stop|dev`). |
 

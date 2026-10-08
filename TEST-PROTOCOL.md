@@ -98,7 +98,11 @@ Use `contacts-load-insert.dvmap.json` + `contacts_1k.xlsx`.
 | 6.2 | Insert 1k | `dvload run …` | `created: 1000, failed: 0`; spot-check 5 records in Dataverse (all 8 fields populated, types correct: birthdate date-only, creditlimit money, donotemail boolean) | |
 | 6.3 | Run log | Inspect `logs/*.jsonl` | One entry per event; final `done` entry matches console counts | |
 | 6.4 | `--json` | Re-run with `--json` on a fresh 1k file | Machine-readable result on stdout, parseable, counts correct; suitable for pipelines | |
-| 6.5 | `--non-interactive` | Run with no cached token and `--non-interactive` | Fails fast with clear error instead of prompting | |
+| 6.5 | `--non-interactive` | Run with no cached token and `--non-interactive` | Fails once, before loading, with the `dvload login` hint and exit 1; no prompt, no per-row errors, no failed-rows file | |
+| 6.6 | MCP dry run | Register `dvload mcp` in an agent host (docs/AGENTS.md); ask it to run the mapping | Agent calls `run_mapping` without `dryRun: false`; counts returned; no records created | |
+| 6.7 | MCP real run | Ask the agent to load for real | Host asks for approval; `created: 1000, failed: 0`; records in Dataverse | |
+| 6.8 | MCP `--read-only` | Register `dvload mcp --read-only`; ask for a real run | Tool error naming `--read-only`; no records created | |
+| 6.9 | MCP, no session | `dvload logout`, then ask the agent for a real run | One tool error naming `dvload login`; no browser opens; no failed-rows file written | |
 
 ## 7. Conflict modes
 

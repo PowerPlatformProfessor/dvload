@@ -4,6 +4,27 @@ All notable changes to dvload are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and dvload adheres
 to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`dvload mcp`** — a Model Context Protocol server on stdio, so AI agents
+  (Claude, GitHub Copilot, Cursor) can use dvload through typed tools:
+  `inspect_source`, `validate_mapping`, `run_mapping`, `auth_status`,
+  `list_profiles` and `list_dataflows`. `run_mapping` is a dry run unless
+  the agent passes `dryRun: false`, and `dvload mcp --read-only` refuses real
+  runs outright. Sign-in is never started from the server; an expired session
+  is reported with the `dvload login` command to run.
+- [docs/AGENTS.md](./docs/AGENTS.md): setup per agent host, the tool list and
+  safety model, and the script-safe CLI flags for agents that use a shell.
+
+### Fixed
+
+- `dvload run` (and each `run-all` step) with no valid session now fails
+  once, before loading, with the `dvload login` hint. Previously a
+  non-interactive run marked every row as failed with the same token error
+  and wrote a failed-rows file containing the entire source.
+
 ## [0.2.0] - 2026-09-13
 
 ### Added

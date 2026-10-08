@@ -18,6 +18,7 @@ import { dataflowsCommand, importDataflowCommand } from "./commands/dataflow.js"
 import { profileAddCommand, profileRemoveCommand, profileListCommand } from "./commands/profile.js";
 import { addinCommand } from "./commands/addin.js";
 import { serveCommand, guiCommand, DEFAULT_PORT } from "./commands/serve.js";
+import { mcpCommand } from "./commands/mcp.js";
 import { telemetryCommand } from "./telemetry.js";
 
 const program = new Command();
@@ -252,6 +253,13 @@ program
     "With action=start, run the webpack dev server (equivalent to npm run dev:addin)."
   )
   .action(addinCommand);
+
+// AI agents ----------------------------------------------------------------
+program
+  .command("mcp")
+  .description("Run a Model Context Protocol server on stdio so AI agents can use dvload (see docs/AGENTS.md).")
+  .option("--read-only", "Refuse real runs; agents can only inspect, validate and dry-run.")
+  .action(mcpCommand);
 
 // Scheduling ---------------------------------------------------------------
 program

@@ -553,13 +553,28 @@ The run pipeline, in order: parse mapping → `validateMapping` (exit 2 on
 error) → print warnings → apply `--max-errors`/`--concurrency` overrides →
 optional resume (checkpoint read, which also *disables* `--refresh`, since
 refreshing would change the data under a resume) → optional PQ refresh →
-read source → build token provider → construct client → `loadRows` →
+read source → build token provider → acquire a token once (skipped for a
+dry run) → construct client → `loadRows` →
 write `.jsonl` log, delete the checkpoint, write failed-rows workbook →
 notify webhook → print summary.
 
 `--non-interactive` defaults to `!process.stdout.isTTY`, so scheduled and
 piped runs fail fast instead of hanging on a device-code prompt written into
 a log nobody reads.
+
+The up-front token acquisition exists because `loadRows` records a token
+failure against the row that hit it. Without it, an expired session comes
+back as every row failed and a failed-rows workbook holding the whole source.
+
+`mcp.ts` is the one command that is a server rather than a one-shot: an MCP
+server on stdio whose tools call the same functions the commands do
+(`executeRun`, `checkMapping`, `listDataflows`) in-process. Two constraints
+follow from stdout being the protocol channel and nobody being at a prompt:
+tools run with `silent: true` (`mcpCommand` also points `console.log` at
+stderr as a net), and every token provider is `silentOnly`. Tool handlers
+return failures as `isError` results and reset `process.exitCode`, since the
+commands signal failure through it and the server outlives the call. A new
+tool must not print to stdout and must not prompt.
 
 Checkpoint writes are serialised through a promise chain
 (`checkpointChain`), because concurrent workers emit `checkpoint` events

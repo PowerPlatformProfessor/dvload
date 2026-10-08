@@ -41,6 +41,22 @@ export interface RunOpts {
   nonInteractive?: boolean;
   /** Emit the LoadResult as JSON on stdout; suppress pretty output. */
   json?: boolean;
+  /**
+   * Write nothing to stdout at all — not even the --json result. For
+   * in-process callers that own stdout (the MCP server, where it is the
+   * protocol channel) and read the returned RunReport instead.
+   */
+  silent?: boolean;
+  /** Cancels the load between batches; the result comes back `cancelled`. */
+  signal?: AbortSignal;
+  /** Rows processed so far, for callers that render their own progress. */
+  onProgress?: (processed: number, total: number) => void;
+}
+
+/** What `--json` prints: the LoadResult plus the run's side artifacts. */
+export interface RunReport extends LoadResult {
+  failedRowsFile: string | null;
+  retries: number;
 }
 
 export async function runCommand(mappingPath: string, opts: RunOpts): Promise<void> {
@@ -52,8 +68,8 @@ export async function runCommand(mappingPath: string, opts: RunOpts): Promise<vo
  * The actual run pipeline, shared by `run` and `run-all`.
  * Returns null when the mapping failed schema validation (exitCode set).
  */
-export async function executeRun(mappingPath: string, opts: RunOpts): Promise<LoadResult | null> {
-  const quiet = opts.json === true;
+export async function executeRun(mappingPath: string, opts: RunOpts): Promise<RunReport | null> {
+  const quiet = opts.json === true || opts.silent === true;
   const log = quiet ? () => {} : console.log.bind(console);
   const write = quiet ? () => {} : process.stdout.write.bind(process.stdout);
   const mappingFile = path.resolve(mappingPath);
@@ -122,6 +138,13 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     silentOnly: nonInteractive,
   });
 
+  // Acquire a token once before loading. The engine records a token failure
+  // against the row that hit it, so a dead session would otherwise come back
+  // as "every row failed" plus a failed-rows file of the whole source —
+  // for a problem no amount of fixing rows can solve. A dry run never calls
+  // Dataverse, so it needs no session.
+  if (!opts.dryRun) await getToken();
+
   const requestLog: RequestLogEntry[] = [];
   const successLog: RowSuccess[] = [];
   let retryCount = 0;
@@ -162,6 +185,7 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     client,
     dryRun: opts.dryRun,
     startOffset,
+    signal: opts.signal,
     onProgress: (e) => {
       if (e.type === "row-success") {
         successLog.push(e.success);
@@ -182,6 +206,7 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
           `\r  sync: ${e.removed}/${e.toRemove} removed (${e.checked} target records checked)     `
         );
       } else if (e.type === "batch") {
+        opts.onProgress?.(e.processed, e.total);
         const pct = Math.round((e.processed / Math.max(1, e.total)) * 100);
         write(
           `\r  ${pct}%  created=${e.created}  updated=${e.updated}  ` +
@@ -213,9 +238,13 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
     }
   }
 
-  if (quiet) {
+  const report: RunReport = { ...result, failedRowsFile: failedFile ?? null, retries: retryCount };
+
+  if (opts.silent) {
+    // The caller reads the returned report.
+  } else if (quiet) {
     // Machine-readable result for pipelines/monitoring.
-    console.log(JSON.stringify({ ...result, failedRowsFile: failedFile ?? null, retries: retryCount }));
+    console.log(JSON.stringify(report));
   } else {
     printSummary(mapping, result, failedFile, retryCount);
   }
@@ -244,7 +273,7 @@ export async function executeRun(mappingPath: string, opts: RunOpts): Promise<Lo
   });
   await flushTelemetry();
 
-  return result;
+  return report;
 }
 
 /* -------------------------------------------------------------------------- */

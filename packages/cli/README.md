@@ -37,6 +37,8 @@ dvload schedule ./contacts.dvmap.json -w ./customers.xlsx --time 03:30
   auth model, all commands, mapping format, .pqt bridge
 - [Unattended scheduled runs](https://github.com/PowerPlatformProfessor/dvload/blob/main/docs/SCHEDULED-RUNS.md) —
   app-only auth setup for schedules
+- [Using dvload from AI agents](https://github.com/PowerPlatformProfessor/dvload/blob/main/docs/AGENTS.md) —
+  `dvload mcp` for Claude, GitHub Copilot and Cursor
 
 ## License
 
